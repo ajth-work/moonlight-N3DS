@@ -104,7 +104,6 @@ static void diagnostic_monitor_entry(void *context) {
 
         consoleSelect(&DebugTouchHandler::bottomScreen);
         consoleClear();
-        printf("Moonlight %s\n", DIAG_BUILD_VERSION);
         printf("Phase: %s\n", phase);
         if (watchdog_expired) {
             uint32_t free_bytes = osGetMemRegionFree(MEMREGION_APPLICATION);
@@ -120,6 +119,7 @@ static void diagnostic_monitor_entry(void *context) {
         for (unsigned int i = 0; i < line_count; i++) {
             printf("%.52s\n", lines[i]);
         }
+        n3ds_draw_diag_version_overlay();
         consoleSelect(&DebugTouchHandler::topScreen);
         gfxFlushBuffers();
         diag_watchdog_poll();
@@ -200,6 +200,7 @@ static inline void wait_for_button(std::string prompt = "") {
         printf("\n%s\n", prompt.c_str());
     }
     while (aptMainLoop()) {
+        n3ds_draw_diag_version_overlay();
         gfxSwapBuffers();
         gfxFlushBuffers();
         gspWaitForVBlank();
@@ -254,6 +255,7 @@ static int console_selection_prompt(std::string prompt,
             last_option_idx = option_idx;
         }
 
+        n3ds_draw_diag_version_overlay();
         gfxSwapBuffers();
         gfxFlushBuffers();
         gspWaitForVBlank();
@@ -468,7 +470,7 @@ static void init_3ds() {
     consoleInit(GFX_BOTTOM, &DebugTouchHandler::bottomScreen);
     consoleSelect(&DebugTouchHandler::bottomScreen);
     consoleClear();
-    printf("Moonlight %s\n", DIAG_BUILD_VERSION);
+    n3ds_draw_diag_version_overlay();
     consoleSelect(&DebugTouchHandler::topScreen);
     diag_init();
     atexit(n3ds_exit_handler);
@@ -791,6 +793,7 @@ static bool action_pair(CONFIGURATION *config, SERVER_DATA *server) {
     printf("Please enter the following PIN on the target PC:\n%s\n", pin);
 
     // Actually display the PIN on screen by swapping buffers
+    n3ds_draw_diag_version_overlay();
     gfxSwapBuffers();
     gfxFlushBuffers();
     gspWaitForVBlank();
@@ -805,6 +808,7 @@ static bool action_pair(CONFIGURATION *config, SERVER_DATA *server) {
     } else {
         printf("Succesfully paired\n");
         // Display success message before breaking
+        n3ds_draw_diag_version_overlay();
         gfxSwapBuffers();
         gfxFlushBuffers();
         gspWaitForVBlank();

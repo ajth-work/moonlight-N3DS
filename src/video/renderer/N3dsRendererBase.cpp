@@ -389,6 +389,6 @@ void n3ds_draw_diag_version_overlay() {
         consoleSelect(&DebugTouchHandler::bottomScreen);
     DebugTouchHandler::bottomScreen.frameBuffer =
         (u16 *)gfxGetFramebuffer(GFX_BOTTOM, GFX_LEFT, NULL, NULL);
-    printf("\x1b[1;1HMoonlight " DIAG_BUILD_VERSION);
+    printf("\x1b[30;1HMoonlight " DIAG_BUILD_VERSION);
     consoleSelect(previous_console);
 }
