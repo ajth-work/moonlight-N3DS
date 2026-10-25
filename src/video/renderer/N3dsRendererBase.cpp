@@ -18,7 +18,9 @@
  */
 
 #include "N3dsRenderer.hpp"
+#include "../../diagnostics.h"
 #include "vshader_shbin.h"
+#include "../../input/touch/TouchHandler.hpp"
 
 #include <3ds.h>
 #include <cstdlib>
@@ -375,5 +377,18 @@ void N3dsRendererBase::write_px_to_framebuffer_gpu(uint8_t *__restrict source) {
         draw_perf_counters();
     }
 
+    if (screen == GFX_BOTTOM) {
+        n3ds_draw_diag_version_overlay();
+    }
+
     gfxScreenSwapBuffers(screen, true);
+}
+
+void n3ds_draw_diag_version_overlay() {
+    PrintConsole *previous_console =
+        consoleSelect(&DebugTouchHandler::bottomScreen);
+    DebugTouchHandler::bottomScreen.frameBuffer =
+        (u16 *)gfxGetFramebuffer(GFX_BOTTOM, GFX_LEFT, NULL, NULL);
+    printf("\x1b[1;1HMoonlight " DIAG_BUILD_VERSION);
+    consoleSelect(previous_console);
 }

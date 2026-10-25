@@ -19,7 +19,10 @@
 
 #include "audio/audio.h"
 #include "config.hpp"
+#include "diagnostics.h"
 #include "input/n3ds_input.hpp"
+#include "input/touch/TouchHandler.hpp"
+#include "system/AtomicVar.hpp"
 #include "system/dispatcher.hpp"
 #include "system/n3ds_connection.hpp"
 #include "system/pair_record.hpp"
@@ -56,6 +59,140 @@
 
 static u32 *SOC_buffer = NULL;
 
+typedef void (*DiagnosticTaskFunction)(void *);
+
+struct DiagnosticTask {
+    DiagnosticTaskFunction function;
+    void *context;
+    char name[96];
+    bool http_cancel_supported;
+    AtomicVar<bool> done{false};
+};
+
+static const char *diagnostic_callsite(const char *name) {
+    if (strcmp(name, "connect.server_init") == 0) {
+        return "src/n3ds_main.cpp:init_server() / libgamestream/client.c:gs_init()";
+    }
+    if (strcmp(name, "connect.app_list") == 0) {
+        return "libgamestream/client.c:gs_applist()";
+    }
+    if (strcmp(name, "pair") == 0) {
+        return "libgamestream/client.c:gs_pair()";
+    }
+    if (strcmp(name, "stream.start_app") == 0) {
+        return "libgamestream/client.c:gs_start_app()";
+    }
+    if (strcmp(name, "stream.limelight_start") == 0) {
+        return "src/n3ds_main.cpp:LiStartConnection()";
+    }
+    return "diagnostic operation callback";
+}
+
+static void diagnostic_monitor_entry(void *context) {
+    DiagnosticTask *task = static_cast<DiagnosticTask *>(context);
+    bool cancel_requested = false;
+    bool cancel_unavailable = false;
+    bool pending_reported = false;
+    uint64_t cancel_time = 0;
+    while (!task->done.load()) {
+        char phase[128];
+        char lines[DIAG_RECENT_LINE_COUNT][DIAG_LOG_LINE_MAX];
+        unsigned int line_count = 0;
+        bool watchdog_expired = false;
+        diag_get_state(phase, sizeof(phase), lines, &line_count,
+                       &watchdog_expired);
+
+        consoleSelect(&DebugTouchHandler::bottomScreen);
+        consoleClear();
+        printf("Moonlight %s\n", DIAG_BUILD_VERSION);
+        printf("Phase: %s\n", phase);
+        if (watchdog_expired) {
+            uint32_t free_bytes = osGetMemRegionFree(MEMREGION_APPLICATION);
+            printf("WATCHDOG free=%lu B\n", (unsigned long)free_bytes);
+            printf("B: cancel to host list\n");
+        } else if (diag_cancel_requested()) {
+            printf("B cancel requested; waiting\n");
+        } else if (cancel_unavailable) {
+            printf("B cannot interrupt this call\n");
+        } else {
+            printf("Pair/connect trace\n");
+        }
+        for (unsigned int i = 0; i < line_count; i++) {
+            printf("%.52s\n", lines[i]);
+        }
+        consoleSelect(&DebugTouchHandler::topScreen);
+        gfxFlushBuffers();
+        diag_watchdog_poll();
+        gspWaitForVBlank();
+        hidScanInput();
+        u32 keys_down = hidKeysDown();
+        if (!cancel_requested && (keys_down & KEY_B) &&
+            diag_phase_elapsed_ms() >= DIAG_WATCHDOG_LIMIT_MS) {
+            if (task->http_cancel_supported) {
+                diag_request_cancel();
+                cancel_requested = true;
+                cancel_time = diag_elapsed_ms();
+            } else {
+                char phase[128];
+                diag_get_state(phase, sizeof(phase), NULL, NULL, NULL);
+                diag_log("CANCEL_UNAVAILABLE", "phase=%s blocked_call=%s has no abort hook",
+                         phase, diagnostic_callsite(task->name));
+                cancel_unavailable = true;
+                pending_reported = true;
+            }
+        }
+        if (!pending_reported && cancel_requested &&
+            diag_elapsed_ms() - cancel_time >= 3000) {
+            char active_http[DIAG_LOG_LINE_MAX];
+            bool http_active = false;
+            char phase[128];
+            diag_get_active_http(active_http, sizeof(active_http), &http_active);
+            diag_get_state(phase, sizeof(phase), NULL, NULL, NULL);
+            if (http_active) {
+                diag_log("CANCEL_PENDING", "phase=%s blocked_call=libgamestream/http.c:http_request()->curl_easy_perform active=%s",
+                         phase, active_http);
+            } else {
+                diag_log("CANCEL_PENDING", "operation=%s phase=%s blocked_call=%s no active HTTP transfer; no abort hook exists for this call",
+                         task->name, phase, diagnostic_callsite(task->name));
+            }
+            pending_reported = true;
+        }
+    }
+}
+
+static void run_monitored_call(const char *name,
+                               DiagnosticTaskFunction function,
+                               void *context,
+                               bool http_cancel_supported = true) {
+    DiagnosticTask task;
+    task.function = function;
+    task.context = context;
+    task.http_cancel_supported = http_cancel_supported;
+    snprintf(task.name, sizeof(task.name), "%s", name);
+    s32 priority = 0x30;
+    svcGetThreadPriority(&priority, CUR_THREAD_HANDLE);
+    diag_cancel_reset();
+    diag_log("TASK_BEGIN", "name=%s", name);
+    diag_set_phase(name);
+    Thread monitor = threadCreate(diagnostic_monitor_entry, &task, 0x20000,
+                                  priority, -1, false);
+    if (monitor == NULL) {
+        diag_log("MONITOR_ERROR", "name=%s reason=threadCreate failed; call remains synchronous without live watchdog UI", name);
+    }
+
+    /* Keep the original call on the caller thread. The monitor services the
+     * display and forwards B only to calls with an HTTP abort callback. */
+    function(context);
+    if (monitor != NULL) {
+        task.done.store(true);
+        threadJoin(monitor, 0xFFFFFFFFFFFFFFFFULL);
+        threadFree(monitor);
+    }
+
+    diag_log("TASK_END", "name=%s outcome=%s",
+             name, diag_cancel_requested() ? "cancelled" : "returned");
+}
+
 static inline void wait_for_button(std::string prompt = "") {
     if (prompt.empty()) {
         printf("\nPress any button to continue\n");
@@ -76,6 +213,8 @@ static inline void wait_for_button(std::string prompt = "") {
 }
 
 static void n3ds_exit_handler(void) {
+    diag_log("APP_EXIT", "clean exit handler entered");
+    diag_close();
     NDMU_UnlockState();
     NDMU_LeaveExclusiveState();
     ndmuExit();
@@ -327,7 +466,11 @@ static void init_3ds() {
 
     consoleInit(GFX_TOP, &DebugTouchHandler::topScreen);
     consoleInit(GFX_BOTTOM, &DebugTouchHandler::bottomScreen);
+    consoleSelect(&DebugTouchHandler::bottomScreen);
+    consoleClear();
+    printf("Moonlight %s\n", DIAG_BUILD_VERSION);
     consoleSelect(&DebugTouchHandler::topScreen);
+    diag_init();
     atexit(n3ds_exit_handler);
 
     osSetSpeedupEnable(true);
@@ -350,9 +493,27 @@ static void init_3ds() {
     }
 }
 
+struct AppListTaskContext {
+    PSERVER_DATA server;
+    PAPP_LIST list;
+    int status;
+};
+
+static void app_list_task(void *opaque) {
+    AppListTaskContext *task = static_cast<AppListTaskContext *>(opaque);
+    task->status = gs_applist(task->server, &task->list);
+}
+
 static int prompt_for_app_id(PSERVER_DATA server) {
     PAPP_LIST list = NULL;
-    if (gs_applist(server, &list) != GS_OK) {
+    AppListTaskContext task{server, NULL, GS_ERROR};
+    run_monitored_call("connect.app_list", app_list_task, &task);
+    if (diag_cancel_requested()) {
+        diag_log("CONNECT_CANCELLED", "phase=connect.applist");
+        return -1;
+    }
+    list = task.list;
+    if (task.status != GS_OK) {
         printf("Can't get app list\n");
         return -1;
     }
@@ -414,12 +575,49 @@ static inline void stream_loop(PCONFIGURATION config,
     }
 }
 
+struct LimelightStartCall {
+    PSERVER_DATA server;
+    PCONFIGURATION config;
+    PDECODER_RENDERER_CALLBACKS video_callbacks;
+    AUDIO_RENDERER_CALLBACKS *audio_callbacks;
+    int status;
+};
+
+static void limelight_start_call(void *opaque) {
+    LimelightStartCall *call = static_cast<LimelightStartCall *>(opaque);
+    call->status = LiStartConnection(
+        &call->server->serverInfo, &call->config->stream,
+        &n3ds_connection_callbacks, call->video_callbacks,
+        call->audio_callbacks, NULL, DISPLAY_FULLSCREEN,
+        call->config->audio_device, 0);
+}
+
 static void stream(PSERVER_DATA server, PCONFIGURATION config, int appId,
                    std::shared_ptr<N3dsInput> input_handler) {
     int gamepad_mask = 1;
-    int ret = gs_start_app(server, &config->stream, appId, config->sops,
-                           config->localaudio, gamepad_mask);
+    diag_log("STREAM_START_REQUESTED", "app_id=%d", appId);
+    struct StartAppCall {
+        PSERVER_DATA server;
+        PCONFIGURATION config;
+        int app_id;
+        int gamepad_mask;
+        int status;
+    } start_call{server, config, appId, gamepad_mask, GS_ERROR};
+    auto start_app_call = [](void *opaque) {
+        StartAppCall *call = static_cast<StartAppCall *>(opaque);
+        call->status = gs_start_app(call->server, &call->config->stream,
+                                    call->app_id, call->config->sops,
+                                    call->config->localaudio, call->gamepad_mask);
+    };
+    run_monitored_call("stream.start_app", start_app_call, &start_call);
+    if (diag_cancel_requested()) {
+        diag_log("STREAM_STOP", "app_id=%d reason=watchdog_cancelled", appId);
+        return;
+    }
+    int ret = start_call.status;
     if (ret < 0) {
+        diag_log("STREAM_STOP", "app_id=%d reason=start_app_failed result=%d",
+                 appId, ret);
         if (ret == GS_NOT_SUPPORTED_4K)
             printf("Server doesn't support 4K\n");
         else if (ret == GS_NOT_SUPPORTED_MODE)
@@ -468,12 +666,17 @@ static void stream(PSERVER_DATA server, PCONFIGURATION config, int appId,
 
     auto connection_listener =
         N3dsConnectionListener::create_instance(config->motion_controls);
-    int status = LiStartConnection(&server->serverInfo, &config->stream,
-                                   &n3ds_connection_callbacks, video_callbacks,
-                                   audio_callbacks, NULL, DISPLAY_FULLSCREEN,
-                                   config->audio_device, 0);
+    LimelightStartCall connection_call{server, config, video_callbacks,
+                                       audio_callbacks, GS_ERROR};
+    run_monitored_call("stream.limelight_start", limelight_start_call,
+                       &connection_call, false);
+    int status = connection_call.status;
+    diag_phase_outcome("stream.limelight_start",
+                       status == 0 ? "success" : "failed", status);
 
     if (status != 0) {
+        diag_log("STREAM_STOP", "app_id=%d reason=connection_start_failed status=%d",
+                 appId, status);
         n3ds_connection_callbacks.connectionTerminated(status);
         printf("Connection failed with error: %d\n", status);
         wait_for_button();
@@ -481,9 +684,14 @@ static void stream(PSERVER_DATA server, PCONFIGURATION config, int appId,
     }
 
     printf("Connected!\n");
+    diag_log("STREAM_STARTED", "app_id=%d", appId);
+    diag_set_phase("stream.active");
     stream_loop(config, connection_listener, input_handler);
 
+    diag_set_phase("stream.stopping");
+    diag_log("STREAM_STOP", "app_id=%d reason=connection_loop_ended", appId);
     LiStopConnection();
+    diag_phase_outcome("stream.stopping", "complete", GS_OK);
     N3dsConnectionListener::destroy_instance();
 
     if (config->quitappafter) {
@@ -493,40 +701,50 @@ static void stream(PSERVER_DATA server, PCONFIGURATION config, int appId,
 }
 
 static int init_server(CONFIGURATION *config, SERVER_DATA *server) {
-    printf("Connecting to %s:%d...\n", config->address, config->port);
+    diag_set_phase("connect.server_init");
     gs_cleanup();
     int status = gs_init(server, config->address, config->port, config->key_dir,
                          0, config->unsupported);
-    if (status == GS_OUT_OF_MEMORY) {
-        printf("Not enough memory\n");
-        return 1;
-    } else if (status == GS_ERROR) {
-        printf("Gamestream error: %s\n", gs_error);
-        return 1;
-    } else if (status == GS_INVALID) {
-        printf("Invalid data received from server: %s\n", gs_error);
-        return 1;
-    } else if (status == GS_UNSUPPORTED_VERSION) {
-        printf("Unsupported version: %s\n", gs_error);
-        return 1;
-    } else if (status != GS_OK) {
-        printf("Can't connect to server %s:%d\n", config->address,
-               config->port);
-        return 1;
+    if (status != GS_OK) {
+        diag_phase_outcome("connect.server_init", "failed", status);
+        return status;
     }
 
-    printf("GPU: %s, GFE: %s (%s, %s)\n", server->gpuType,
-           server->serverInfo.serverInfoGfeVersion, server->gsVersion,
-           server->serverInfo.serverInfoAppVersion);
-    printf("Server codec flags: 0x%x\n",
-           server->serverInfo.serverCodecModeSupport);
-
+    diag_phase_outcome("connect.server_init", "success", status);
+    diag_set_phase("connect.host_state");
     if (server->paired) {
         add_pair_address(config->address, config->port);
     } else {
         remove_pair_address(config->address, config->port);
     }
-    return 0;
+    diag_phase_outcome("connect.host_state", "success", GS_OK);
+    return GS_OK;
+}
+
+struct InitServerCall {
+    CONFIGURATION *config;
+    SERVER_DATA *server;
+    int status;
+};
+
+static void init_server_call(void *opaque) {
+    InitServerCall *call = static_cast<InitServerCall *>(opaque);
+    call->status = init_server(call->config, call->server);
+}
+
+static void print_init_server_error(CONFIGURATION *config, int status) {
+    if (status == GS_OUT_OF_MEMORY) {
+        printf("Not enough memory\n");
+    } else if (status == GS_ERROR) {
+        printf("Gamestream error: %s\n", gs_error);
+    } else if (status == GS_INVALID) {
+        printf("Invalid data received from server: %s\n", gs_error);
+    } else if (status == GS_UNSUPPORTED_VERSION) {
+        printf("Unsupported version: %s\n", gs_error);
+    } else {
+        printf("Can't connect to server %s:%d\n", config->address,
+               config->port);
+    }
 }
 
 static void action_stream(CONFIGURATION *config, SERVER_DATA *server) {
@@ -552,7 +770,18 @@ static void action_stream(CONFIGURATION *config, SERVER_DATA *server) {
     stream(server, config, appId, input_handler);
 }
 
-static void action_pair(CONFIGURATION *config, SERVER_DATA *server) {
+struct PairTaskContext {
+    SERVER_DATA *server;
+    char *pin;
+    int status;
+};
+
+static void pair_task(void *opaque) {
+    PairTaskContext *task = static_cast<PairTaskContext *>(opaque);
+    task->status = gs_pair(task->server, task->pin);
+}
+
+static bool action_pair(CONFIGURATION *config, SERVER_DATA *server) {
     // Extend the timeout to 5 minutes for pairing
     http_set_timeout_s(5 * 60);
 
@@ -566,7 +795,12 @@ static void action_pair(CONFIGURATION *config, SERVER_DATA *server) {
     gfxFlushBuffers();
     gspWaitForVBlank();
 
-    if (gs_pair(server, &pin[0]) != GS_OK) {
+    PairTaskContext task{server, &pin[0], GS_ERROR};
+    run_monitored_call("pair", pair_task, &task);
+    bool cancelled = diag_cancel_requested();
+    if (cancelled) {
+        diag_log("PAIR_CANCELLED", "returning to host list after watchdog cancellation");
+    } else if (task.status != GS_OK) {
         printf("Failed to pair to server: %s\n", gs_error);
     } else {
         printf("Succesfully paired\n");
@@ -579,6 +813,7 @@ static void action_pair(CONFIGURATION *config, SERVER_DATA *server) {
 
     // Revert to default HTTP timeout
     http_set_timeout_s(60);
+    return cancelled;
 }
 
 static void action_unpair(CONFIGURATION *config, SERVER_DATA *server) {
@@ -601,6 +836,7 @@ int main_loop(int argc, char *argv[]) {
 
     CONFIGURATION config;
     config_parse(argc, argv, &config);
+    diag_log("APP_START", "version=%s", DIAG_BUILD_VERSION);
 
     while (aptMainLoop()) {
         auto address_string = prompt_for_address();
@@ -615,12 +851,28 @@ int main_loop(int argc, char *argv[]) {
             config.port = std::stoi(port_string);
         }
         config.address = (char *)address_string.c_str();
+        diag_log("HOST_SELECTION", "host=%s port=%d", config.address,
+                 config.port);
+        printf("Connecting to %s:%d...\n", config.address, config.port);
 
         SERVER_DATA server;
-        if (init_server(&config, &server)) {
+        InitServerCall connect_call{&config, &server, GS_ERROR};
+        run_monitored_call("connect.server_init", init_server_call,
+                           &connect_call);
+        if (diag_cancel_requested()) {
+            diag_log("CONNECT_CANCELLED", "returning to host list");
+            continue;
+        }
+        if (connect_call.status != GS_OK) {
+            print_init_server_error(&config, connect_call.status);
             wait_for_button();
             continue;
         }
+        printf("GPU: %s, GFE: %s (%s, %s)\n", server.gpuType,
+               server.serverInfo.serverInfoGfeVersion, server.gsVersion,
+               server.serverInfo.serverInfoAppVersion);
+        printf("Server codec flags: 0x%x\n",
+               server.serverInfo.serverCodecModeSupport);
 
         while (aptMainLoop()) {
             std::string action = prompt_for_action(&server);
@@ -633,8 +885,10 @@ int main_loop(int argc, char *argv[]) {
                 action_stream(&config, &server);
                 break;
             } else if (strcmp("pair", config.action) == 0) {
-                action_pair(&config, &server);
-                wait_for_button();
+                bool cancelled = action_pair(&config, &server);
+                if (!cancelled) {
+                    wait_for_button();
+                }
                 break;
             } else if (strcmp("stream settings", config.action) == 0) {
                 prompt_for_stream_settings(&config);

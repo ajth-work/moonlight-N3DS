@@ -43,6 +43,7 @@ void N3dsRendererBottom::write_px_to_framebuffer_raw(const uint8_t *source,
     }
     memcpy(gfxbtmadr + offset, source, size);
 
+    n3ds_draw_diag_version_overlay();
     gfxFlushBuffers();
     gfxScreenSwapBuffers(GFX_BOTTOM, false);
 }

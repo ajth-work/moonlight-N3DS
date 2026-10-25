@@ -31,6 +31,8 @@
 #define MOON_CTR_VIDEO_TEX_H_OFFSET 32
 #define CMDLIST_SZ 0x800
 
+void n3ds_draw_diag_version_overlay();
+
 class IN3dsRenderer {
   public:
     virtual ~IN3dsRenderer() = default;

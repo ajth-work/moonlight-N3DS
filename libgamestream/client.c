@@ -23,6 +23,7 @@
 #include "client.h"
 #include "errors.h"
 #include "limits.h"
+#include "diagnostics.h"
 
 #include <Limelight.h>
 
@@ -178,6 +179,9 @@ static int load_serverinfo(PSERVER_DATA server, bool https) {
   char *stateText = NULL;
   char *serverCodecModeSupportText = NULL;
   char *httpsPortText = NULL;
+  const char *phase = https ? "connect.serverinfo.https" : "connect.serverinfo.http";
+
+  diag_set_phase(phase);
 
   uuid_generate_random(uuid);
   uuid_unparse(uuid, uuid_str);
@@ -269,6 +273,8 @@ static int load_serverinfo(PSERVER_DATA server, bool https) {
   if (httpsPortText != NULL)
     free(httpsPortText);
 
+  diag_phase_outcome(phase, ret == GS_OK ? "success" : "failed", ret);
+
   return ret;
 }
 
@@ -276,11 +282,15 @@ static int load_server_status(PSERVER_DATA server) {
   int ret;
   int i;
 
+  diag_set_phase("connect.server_status");
+
   /* Fetch the HTTPS port if we don't have one yet */
   if (!server->httpsPort) {
     ret = load_serverinfo(server, false);
-    if (ret != GS_OK)
+    if (ret != GS_OK) {
+      diag_phase_outcome("connect.server_status", "failed", ret);
       return ret;
+    }
   }
 
   // Modern GFE versions don't allow serverinfo to be fetched over HTTPS if the client
@@ -302,6 +312,7 @@ static int load_server_status(PSERVER_DATA server) {
     }
   }
 
+  diag_phase_outcome("connect.server_status", ret == GS_OK ? "success" : "failed", ret);
   return ret;
 }
 
@@ -412,11 +423,14 @@ static void decrypt(const unsigned char *ciphertext, int ciphertextLen, const un
 int gs_unpair(PSERVER_DATA server) {
   int ret = GS_OK;
   char url[4096];
+  diag_set_phase("pair.unpair_request");
   uuid_t uuid;
   char uuid_str[UUID_STRLEN];
   PHTTP_DATA data = http_create_data();
-  if (data == NULL)
+  if (data == NULL) {
+    diag_phase_outcome("pair.unpair_request", "failed", GS_OUT_OF_MEMORY);
     return GS_OUT_OF_MEMORY;
+  }
 
   uuid_generate_random(uuid);
   uuid_unparse(uuid, uuid_str);
@@ -424,6 +438,7 @@ int gs_unpair(PSERVER_DATA server) {
   ret = http_request(url, data);
 
   http_free_data(data);
+  diag_phase_outcome("pair.unpair_request", ret == GS_OK ? "success" : "failed", ret);
   return ret;
 }
 
@@ -440,12 +455,17 @@ int gs_pair(PSERVER_DATA server, char* pin) {
   char* client_pairing_secret = NULL;
   char* client_pairing_secret_hex = NULL;
   PHTTP_DATA data = NULL;
+  const char *current_phase = "pair.precheck";
+#define SET_PAIR_PHASE(name) do { current_phase = (name); diag_set_phase(current_phase); } while (0)
+
+  SET_PAIR_PHASE("pair.precheck");
 
   if (server->paired) {
     gs_error = "Already paired";
     ret = GS_WRONG_STATE;
     goto cleanup;
   }
+  diag_phase_outcome(current_phase, "success", GS_OK);
 
   unsigned char salt_data[16];
   char salt_hex[SIZEOF_AS_HEX_STR(salt_data)];
@@ -454,13 +474,21 @@ int gs_pair(PSERVER_DATA server, char* pin) {
 
   uuid_generate_random(uuid);
   uuid_unparse(uuid, uuid_str);
+  SET_PAIR_PHASE("pair.request_server_certificate");
   snprintf(url, url_max_len, "http://%s:%u/pair?uniqueid=%s&uuid=%s&devicename=roth&updateState=1&phrase=getservercert&salt=%s&clientcert=%s", server->serverInfo.address, server->httpPort, unique_id, uuid_str, salt_hex, cert_hex);
   data = http_create_data();
-  if (data == NULL)
-    return GS_OUT_OF_MEMORY;
-  else if ((ret = http_request(url, data)) != GS_OK)
+  if (data == NULL) {
+    ret = GS_OUT_OF_MEMORY;
+    diag_phase_outcome(current_phase, "failed", ret);
+    diag_phase_outcome("pair", "failed", ret);
+    free(url);
+    return ret;
+  }
+  if ((ret = http_request(url, data)) != GS_OK)
     goto cleanup;
+  diag_phase_outcome(current_phase, "success", ret);
 
+  SET_PAIR_PHASE("pair.parse_server_certificate");
   if ((ret = xml_status(data->memory, data->size) != GS_OK))
     goto cleanup;
   else if ((ret = xml_search(data->memory, data->size, "paired", &result)) != GS_OK)
@@ -482,7 +510,9 @@ int gs_pair(PSERVER_DATA server, char* pin) {
   plaincert = malloc(plaincertlen + 1);
   hex_to_bytes(result, plaincert, plaincertlen*2);
   plaincert[plaincertlen] = 0;
+  diag_phase_outcome(current_phase, "success", GS_OK);
 
+  SET_PAIR_PHASE("pair.create_client_challenge");
   unsigned char salt_pin[sizeof(salt_data) + 4];
   unsigned char aes_key[32]; // Must fit SHA256
   memcpy(salt_pin, salt_data, sizeof(salt_data));
@@ -503,10 +533,14 @@ int gs_pair(PSERVER_DATA server, char* pin) {
 
   uuid_generate_random(uuid);
   uuid_unparse(uuid, uuid_str);
+  diag_phase_outcome(current_phase, "success", GS_OK);
+  SET_PAIR_PHASE("pair.request_server_challenge");
   snprintf(url, url_max_len, "http://%s:%u/pair?uniqueid=%s&uuid=%s&devicename=roth&updateState=1&clientchallenge=%s", server->serverInfo.address, server->httpPort, unique_id, uuid_str, challenge_hex);
   if ((ret = http_request(url, data)) != GS_OK)
     goto cleanup;
+  diag_phase_outcome(current_phase, "success", ret);
 
+  SET_PAIR_PHASE("pair.parse_server_challenge");
   free(result);
   result = NULL;
   if ((ret = xml_status(data->memory, data->size) != GS_OK))
@@ -538,7 +572,9 @@ int gs_pair(PSERVER_DATA server, char* pin) {
 
   hex_to_bytes(result, challenge_response_data_enc, strlen(result));
   decrypt(challenge_response_data_enc, sizeof(challenge_response_data_enc), aes_key, challenge_response_data);
+  diag_phase_outcome(current_phase, "success", GS_OK);
 
+  SET_PAIR_PHASE("pair.create_client_challenge_response");
   char client_secret_data[16];
   RAND_bytes(client_secret_data, sizeof(client_secret_data));
 
@@ -562,10 +598,14 @@ int gs_pair(PSERVER_DATA server, char* pin) {
 
   uuid_generate_random(uuid);
   uuid_unparse(uuid, uuid_str);
+  diag_phase_outcome(current_phase, "success", GS_OK);
+  SET_PAIR_PHASE("pair.request_pairing_secret");
   snprintf(url, url_max_len, "http://%s:%u/pair?uniqueid=%s&uuid=%s&devicename=roth&updateState=1&serverchallengeresp=%s", server->serverInfo.address, server->httpPort, unique_id, uuid_str, challenge_response_hex);
   if ((ret = http_request(url, data)) != GS_OK)
     goto cleanup;
+  diag_phase_outcome(current_phase, "success", ret);
 
+  SET_PAIR_PHASE("pair.verify_server_pairing_secret");
   free(result);
   result = NULL;
   if ((ret = xml_status(data->memory, data->size) != GS_OK))
@@ -599,7 +639,9 @@ int gs_pair(PSERVER_DATA server, char* pin) {
     ret = GS_FAILED;
     goto cleanup;
   }
+  diag_phase_outcome(current_phase, "success", GS_OK);
 
+  SET_PAIR_PHASE("pair.create_client_pairing_secret");
   unsigned char *signature = NULL;
   size_t s_len;
   if (sign_it(client_secret_data, sizeof(client_secret_data), &signature, &s_len, privateKey) != GS_OK) {
@@ -616,10 +658,14 @@ int gs_pair(PSERVER_DATA server, char* pin) {
 
   uuid_generate_random(uuid);
   uuid_unparse(uuid, uuid_str);
+  diag_phase_outcome(current_phase, "success", GS_OK);
+  SET_PAIR_PHASE("pair.submit_client_pairing_secret");
   snprintf(url, url_max_len, "http://%s:%u/pair?uniqueid=%s&uuid=%s&devicename=roth&updateState=1&clientpairingsecret=%s", server->serverInfo.address, server->httpPort, unique_id, uuid_str, client_pairing_secret_hex);
   if ((ret = http_request(url, data)) != GS_OK)
     goto cleanup;
+  diag_phase_outcome(current_phase, "success", ret);
 
+  SET_PAIR_PHASE("pair.parse_client_pairing_secret_response");
   free(result);
   result = NULL;
   if ((ret = xml_status(data->memory, data->size) != GS_OK))
@@ -633,12 +679,16 @@ int gs_pair(PSERVER_DATA server, char* pin) {
     goto cleanup;
   }
 
+  diag_phase_outcome(current_phase, "success", GS_OK);
   uuid_generate_random(uuid);
   uuid_unparse(uuid, uuid_str);
+  SET_PAIR_PHASE("pair.request_pair_challenge");
   snprintf(url, url_max_len, "https://%s:%u/pair?uniqueid=%s&uuid=%s&devicename=roth&updateState=1&phrase=pairchallenge", server->serverInfo.address, server->httpsPort, unique_id, uuid_str);
   if ((ret = http_request(url, data)) != GS_OK)
     goto cleanup;
+  diag_phase_outcome(current_phase, "success", ret);
 
+  SET_PAIR_PHASE("pair.verify_pair_challenge");
   free(result);
   result = NULL;
   if ((ret = xml_status(data->memory, data->size) != GS_OK))
@@ -652,11 +702,25 @@ int gs_pair(PSERVER_DATA server, char* pin) {
     goto cleanup;
   }
 
+  diag_phase_outcome(current_phase, "success", GS_OK);
+  SET_PAIR_PHASE("pair.complete");
   server->paired = true;
 
   cleanup:
-  if (ret != GS_OK)
-    gs_unpair(server);
+  if (ret != GS_OK && !diag_cancel_requested()) {
+    const char *failed_phase = current_phase;
+    diag_phase_outcome(failed_phase, "failed", ret);
+    diag_set_phase("pair.cleanup_unpair");
+    int cleanup_ret = gs_unpair(server);
+    diag_phase_outcome("pair.cleanup_unpair",
+                       cleanup_ret == GS_OK ? "success" : "failed",
+                       cleanup_ret);
+  } else if (ret != GS_OK) {
+    diag_phase_outcome(current_phase, "cancelled", ret);
+    diag_log("PAIR_CLEANUP", "skipped unpair because watchdog cancellation was requested");
+  } else {
+    diag_phase_outcome(current_phase, "success", ret);
+  }
 
   free(url);
   free(plaincert);
@@ -675,17 +739,23 @@ int gs_pair(PSERVER_DATA server, char* pin) {
     ret = GS_WRONG_STATE;
   }
 
+  diag_phase_outcome("pair", ret == GS_OK ? "success" : "failed", ret);
+#undef SET_PAIR_PHASE
+
   return ret;
 }
 
 int gs_applist(PSERVER_DATA server, PAPP_LIST *list) {
   int ret = GS_OK;
   char url[4096];
+  diag_set_phase("connect.applist");
   uuid_t uuid;
   char uuid_str[UUID_STRLEN];
   PHTTP_DATA data = http_create_data();
-  if (data == NULL)
+  if (data == NULL) {
+    diag_phase_outcome("connect.applist", "failed", GS_OUT_OF_MEMORY);
     return GS_OUT_OF_MEMORY;
+  }
 
   uuid_generate_random(uuid);
   uuid_unparse(uuid, uuid_str);
@@ -698,6 +768,7 @@ int gs_applist(PSERVER_DATA server, PAPP_LIST *list) {
     ret = GS_INVALID;
 
   http_free_data(data);
+  diag_phase_outcome("connect.applist", ret == GS_OK ? "success" : "failed", ret);
   return ret;
 }
 
@@ -706,9 +777,11 @@ int gs_start_app(PSERVER_DATA server, STREAM_CONFIGURATION *config, int appId, b
   uuid_t uuid;
   char* result = NULL;
   char uuid_str[UUID_STRLEN];
+  const char *current_phase = "stream.validate_mode";
 
   PDISPLAY_MODE mode = server->modes;
   bool correct_mode = false;
+  diag_set_phase("stream.validate_mode");
   while (mode != NULL) {
     if (mode->width == config->width && mode->height == config->height) {
       if (mode->refresh == config->fps)
@@ -718,9 +791,13 @@ int gs_start_app(PSERVER_DATA server, STREAM_CONFIGURATION *config, int appId, b
     mode = mode->next;
   }
 
-  if (!correct_mode && !server->unsupported)
+  if (!correct_mode && !server->unsupported) {
+    diag_phase_outcome("stream.validate_mode", "failed", GS_NOT_SUPPORTED_MODE);
     return GS_NOT_SUPPORTED_MODE;
+  }
+  diag_phase_outcome("stream.validate_mode", "success", GS_OK);
 
+  diag_set_phase("stream.start_app");
   RAND_bytes(config->remoteInputAesKey, sizeof(config->remoteInputAesKey));
   memset(config->remoteInputAesIv, 0, sizeof(config->remoteInputAesIv));
 
@@ -733,8 +810,10 @@ int gs_start_app(PSERVER_DATA server, STREAM_CONFIGURATION *config, int appId, b
   bytes_to_hex(config->remoteInputAesKey, rikey_hex, sizeof(config->remoteInputAesKey));
 
   PHTTP_DATA data = http_create_data();
-  if (data == NULL)
+  if (data == NULL) {
+    diag_phase_outcome("stream.start_app", "failed", GS_OUT_OF_MEMORY);
     return GS_OUT_OF_MEMORY;
+  }
 
   // Using an FPS value over 60 causes SOPS to default to 720p60,
   // so force it to 0 to ensure the correct resolution is set. We
@@ -749,11 +828,16 @@ int gs_start_app(PSERVER_DATA server, STREAM_CONFIGURATION *config, int appId, b
            server->serverInfo.address, server->httpsPort, server->currentGame ? "resume" : "launch", unique_id, uuid_str, appId, config->width, config->height, fps, sops, rikey_hex, rikeyid, localaudio, surround_info, gamepad_mask, gamepad_mask,
            (config->supportedVideoFormats & VIDEO_FORMAT_MASK_10BIT) ? "&hdrMode=1&clientHdrCapVersion=0&clientHdrCapSupportedFlagsInUint32=0&clientHdrCapMetaDataId=NV_STATIC_METADATA_TYPE_1&clientHdrCapDisplayData=0x0x0x0x0x0x0x0x0x0x0" : "",
            LiGetLaunchUrlQueryParameters());
+  current_phase = "stream.start_app_request";
+  diag_set_phase(current_phase);
   if ((ret = http_request(url, data)) == GS_OK)
     server->currentGame = appId;
   else
     goto cleanup;
+  diag_phase_outcome("stream.start_app_request", "success", ret);
 
+  current_phase = "stream.parse_start_app_response";
+  diag_set_phase(current_phase);
   if ((ret = xml_status(data->memory, data->size)) != GS_OK)
     goto cleanup;
   else if ((ret = xml_search(data->memory, data->size, "gamesession", &result)) != GS_OK &&
@@ -778,6 +862,7 @@ int gs_start_app(PSERVER_DATA server, STREAM_CONFIGURATION *config, int appId, b
     free(result);
 
   http_free_data(data);
+  diag_phase_outcome(current_phase, ret == GS_OK ? "success" : "failed", ret);
   return ret;
 }
 
@@ -787,9 +872,12 @@ int gs_quit_app(PSERVER_DATA server) {
   uuid_t uuid;
   char uuid_str[UUID_STRLEN];
   char* result = NULL;
+  diag_set_phase("stream.quit_app_request");
   PHTTP_DATA data = http_create_data();
-  if (data == NULL)
+  if (data == NULL) {
+    diag_phase_outcome("stream.quit_app_request", "failed", GS_OUT_OF_MEMORY);
     return GS_OUT_OF_MEMORY;
+  }
 
   uuid_generate_random(uuid);
   uuid_unparse(uuid, uuid_str);
@@ -812,25 +900,43 @@ int gs_quit_app(PSERVER_DATA server) {
     free(result);
 
   http_free_data(data);
+  diag_phase_outcome("stream.quit_app_request",
+                     ret == GS_OK ? "success" : "failed", ret);
   return ret;
 }
 
 int gs_init(PSERVER_DATA server, char *address, unsigned short httpPort, const char *keyDirectory, int log_level, bool unsupported) {
+  int ret;
+  diag_set_phase("connect.gs_init");
+  diag_set_phase("connect.load_identity");
   mkdirtree(keyDirectory);
-  if (load_unique_id(keyDirectory) != GS_OK)
+  if (load_unique_id(keyDirectory) != GS_OK) {
+    diag_phase_outcome("connect.load_identity", "failed", GS_FAILED);
+    diag_phase_outcome("connect.gs_init", "failed", GS_FAILED);
     return GS_FAILED;
+  }
+  diag_phase_outcome("connect.load_identity", "success", GS_OK);
 
-  if (load_cert(keyDirectory))
+  diag_set_phase("connect.load_certificate");
+  if (load_cert(keyDirectory)) {
+    diag_phase_outcome("connect.load_certificate", "failed", GS_FAILED);
+    diag_phase_outcome("connect.gs_init", "failed", GS_FAILED);
     return GS_FAILED;
+  }
+  diag_phase_outcome("connect.load_certificate", "success", GS_OK);
 
-  http_init(keyDirectory, log_level);
+  diag_set_phase("connect.http_init");
+  ret = http_init(keyDirectory, log_level);
+  diag_phase_outcome("connect.http_init", ret == GS_OK ? "success" : "failed", ret);
 
   LiInitializeServerInformation(&server->serverInfo);
   server->serverInfo.address = address;
   server->unsupported = unsupported;
   server->httpPort = httpPort ? httpPort : 47989;
   server->httpsPort = 0; /* Populated by load_server_status() */
-  return load_server_status(server);
+  ret = load_server_status(server);
+  diag_phase_outcome("connect.gs_init", ret == GS_OK ? "success" : "failed", ret);
+  return ret;
 }
 
 void gs_cleanup() {
