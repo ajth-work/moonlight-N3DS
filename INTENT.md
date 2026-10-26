@@ -6,7 +6,7 @@ read this before starting work, along with AGENTS.md.
 
 ## What AJ wants
 
-AJ's fork of zoeyjodon/moonlight-N3DS (GPLv3), to fix the PC to
+AJ's fork of zoeyjodon's moonlight-N3DS (GPLv3), to fix the PC to
 EridianOne (his New 3DS XL) streaming pain he hit on 2026-10-25:
 re-pairing an already-paired host hangs forever — pairing HTTP has
 no timeout — and failures give zero on-screen visibility, so a
@@ -39,20 +39,36 @@ showing where a re-pair hang actually stalls.
 
 ## Later GUI milestone idea
 
-After diagnostics, AJ wants to explore a more modern GUI with
-touchscreen controls:
-- A virtual left analog stick: an outer circle shows its range, and
-  the inner stick moves within it to show direction. Touching/dragging
-  the stick also holds L3; lifting releases it.
-- A virtual right analog stick for camera/right-stick movement, with
-  a nearby toggle to choose between right-stick movement and an R3
-  click. The exact behavior and mapping still need to be worked out.
-- The virtual controls should be easier to see and use than relying
-  on the physical C-stick placement.
+After diagnostics and the on-console test, AJ wants to explore a
+more modern, intentional touchscreen control surface for streamed
+games. The current bottom-screen controls work, but their large
+square regions feel utilitarian; the redesign should make controls
+and their behavior easier to understand and use, rather than only
+adding features.
 
-This is a rough concept only. Diagnostics and AJ's on-console test
-come first; layout, sensitivity, and exact right-stick mode behavior
-are undecided.
+Ideas to explore:
+- Show virtual left and right analog sticks as circular touch zones,
+  with a movable inner knob that communicates direction and amount
+  of movement. The right stick should offer a more comfortable,
+  visible camera/right-stick control than relying on the physical
+  C-stick placement.
+- Make L3 and R3 clicks available without triggering them
+  accidentally during ordinary stick movement. The exact interaction
+  is open: prototype selectable options for separating movement from
+  click (for example, a nearby mode toggle) and test what feels
+  intuitive during play. Do not commit to one interaction model yet.
+- Keep secondary controls in a collapsible tray, opened by a down
+  chevron at the top of the bottom screen. Use compact graphical
+  buttons for tray items (for example, a magnifying-glass icon for
+  magnification) so secondary options take less space when hidden.
+- Include settings or control options that let AJ compare alternative
+  stick/click behaviors during hands-on testing; choose the final
+  interaction based on what feels good in use.
+
+This is a rough direction, not a finished GUI specification.
+Diagnostics and AJ's on-console test come first. Screen layout,
+stick sensitivity, tray contents, and exact L3/R3 interaction remain
+to be worked out and tested.
 
 Other possible later work: pair-status precheck, pairing timeout,
 surfacing server error text, per-host profiles (Home sharp 800x480 /
@@ -75,6 +91,5 @@ Away light 400x240).
 ## Open questions for AJ
 
 - Diagnostics build on-console: does the trace/log capture the hang?
-- For the GUI concept: should the right-stick toggle switch between
-  a virtual R3 press and camera movement, or support both modes in
-  some other way?
+- For the GUI, which stick/click options feel natural in a play test,
+  and what should be included in the collapsible tray?
