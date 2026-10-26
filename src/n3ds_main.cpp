@@ -308,14 +308,23 @@ static std::string prompt_for_action(PSERVER_DATA server) {
 }
 
 static std::string prompt_for_address() {
-    auto address_list = list_paired_addresses();
-    address_list.push_back("new");
+    auto address_list = list_server_addresses();
+    std::vector<std::string> options;
+    for (const auto &entry : address_list) {
+        std::string label = entry.address;
+        if (entry.failed) {
+            label += " (failed; A to retry)";
+        }
+        options.push_back(label);
+    }
+    options.push_back("new");
+
     int idx =
-        console_selection_prompt("Select a server address", address_list, 0);
+        console_selection_prompt("Select a server address", options, 0);
     if (idx < 0) {
         return "";
-    } else if (address_list[idx] != "new") {
-        return address_list[idx];
+    } else if (idx < address_list.size()) {
+        return address_list[idx].address;
     }
 
     // Prompt users for a custom address
@@ -855,6 +864,7 @@ int main_loop(int argc, char *argv[]) {
             config.port = std::stoi(port_string);
         }
         config.address = (char *)address_string.c_str();
+        remember_server_address(address_string, config.port, false);
         diag_log("HOST_SELECTION", "host=%s port=%d", config.address,
                  config.port);
         printf("Connecting to %s:%d...\n", config.address, config.port);
@@ -864,10 +874,12 @@ int main_loop(int argc, char *argv[]) {
         run_monitored_call("connect.server_init", init_server_call,
                            &connect_call);
         if (diag_cancel_requested()) {
+            remember_server_address(address_string, config.port, true);
             diag_log("CONNECT_CANCELLED", "returning to host list");
             continue;
         }
         if (connect_call.status != GS_OK) {
+            remember_server_address(address_string, config.port, true);
             print_init_server_error(&config, connect_call.status);
             wait_for_button();
             continue;
