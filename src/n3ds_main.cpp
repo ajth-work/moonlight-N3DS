@@ -864,7 +864,7 @@ int main_loop(int argc, char *argv[]) {
             config.port = std::stoi(port_string);
         }
         config.address = (char *)address_string.c_str();
-        remember_server_address(address_string, config.port, false);
+        remember_server_address(address_string, config.port, true);
         diag_log("HOST_SELECTION", "host=%s port=%d", config.address,
                  config.port);
         printf("Connecting to %s:%d...\n", config.address, config.port);
@@ -874,16 +874,15 @@ int main_loop(int argc, char *argv[]) {
         run_monitored_call("connect.server_init", init_server_call,
                            &connect_call);
         if (diag_cancel_requested()) {
-            remember_server_address(address_string, config.port, true);
             diag_log("CONNECT_CANCELLED", "returning to host list");
             continue;
         }
         if (connect_call.status != GS_OK) {
-            remember_server_address(address_string, config.port, true);
             print_init_server_error(&config, connect_call.status);
             wait_for_button();
             continue;
         }
+        remember_server_address(address_string, config.port, false);
         printf("GPU: %s, GFE: %s (%s, %s)\n", server.gpuType,
                server.serverInfo.serverInfoGfeVersion, server.gsVersion,
                server.serverInfo.serverInfoAppVersion);
