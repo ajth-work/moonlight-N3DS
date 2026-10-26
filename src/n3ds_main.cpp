@@ -131,8 +131,10 @@ static void diagnostic_monitor_entry(void *context) {
         printf("PAIR %.16s %s\n",
                pair_fingerprint[0] ? pair_fingerprint : "----",
                pair_source[0] ? pair_source : "----");
-        printf("TLS  %.16s %s\n",
-               tls_fingerprint[0] ? tls_fingerprint : "----",
+        printf("TLS  %.32s\n",
+               tls_fingerprint[0] ? tls_fingerprint : "----");
+        printf("     %.32s %s\n",
+               tls_fingerprint[32] ? tls_fingerprint + 32 : "----",
                tls_source[0] ? tls_source : "----");
         n3ds_draw_diag_version_overlay();
         consoleSelect(&DebugTouchHandler::topScreen);

@@ -186,6 +186,39 @@ bool diag_cert_checkpoint(DIAG_CERT_STAGE stage, X509 *certificate,
     return fingerprint_ok;
 }
 
+bool diag_tls_context_checkpoint(const unsigned char *certificate_der,
+                                size_t certificate_der_length,
+                                const char *source) {
+    static const char hex[] = "0123456789abcdef";
+    unsigned char digest[SHA256_DIGEST_LENGTH];
+    char fingerprint[DIAG_CERT_FINGERPRINT_BUFFER_SIZE];
+    unsigned int i;
+
+    if (certificate_der == NULL || certificate_der_length == 0) {
+        diag_log("CERT_TLS", "sha256_der=unavailable source=%s readback=failed",
+                 source != NULL ? source : "unknown");
+        return false;
+    }
+
+    SHA256(certificate_der, certificate_der_length, digest);
+    for (i = 0; i < SHA256_DIGEST_LENGTH; i++) {
+        fingerprint[i * 2] = hex[digest[i] >> 4];
+        fingerprint[i * 2 + 1] = hex[digest[i] & 0x0f];
+    }
+    fingerprint[DIAG_CERT_FINGERPRINT_HEX_LENGTH] = '\0';
+
+    diag_log("CERT_TLS",
+             "sha256_der=%s source=%s readback=mbedtls_ssl_config.key_cert",
+             fingerprint, source != NULL ? source : "unknown");
+    LightLock_Lock(&diag_lock);
+    snprintf(diag_tls_fingerprint, sizeof(diag_tls_fingerprint), "%s",
+             fingerprint);
+    snprintf(diag_tls_source, sizeof(diag_tls_source), "%s",
+             source != NULL ? source : "unknown");
+    LightLock_Unlock(&diag_lock);
+    return true;
+}
+
 void diag_get_cert_panel_state(
     char *pair_fingerprint, unsigned int pair_fingerprint_capacity,
     char *pair_source, unsigned int pair_source_capacity,

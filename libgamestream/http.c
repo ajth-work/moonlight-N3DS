@@ -23,8 +23,12 @@
 
 #include <ctype.h>
 #include <curl/curl.h>
-#include <openssl/pem.h>
-#include <openssl/x509.h>
+#include <errno.h>
+#include <mbedtls/debug.h>
+#include <mbedtls/pk.h>
+#include <mbedtls/ssl.h>
+#include <mbedtls/ssl_internal.h>
+#include <mbedtls/x509_crt.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
@@ -32,12 +36,82 @@
 static CURL *curl;
 static uint32_t connection_timeout_s = 60;
 static int log_level = 0;
-static char tls_identity_path[4096];
-static bool tls_identity_file_created = false;
 static bool tls_trace_attempted = false;
+static bool tls_trace_request_active = false;
 static bool tls_trace_saw_certificate_out = false;
 static bool tls_trace_saw_handshake = false;
 static bool tls_trace_saw_negotiated = false;
+static unsigned char *tls_certificate_pem;
+static size_t tls_certificate_pem_length;
+static unsigned char *tls_private_key_pem;
+static size_t tls_private_key_pem_length;
+static mbedtls_x509_crt tls_mbed_certificate;
+static mbedtls_pk_context tls_mbed_private_key;
+static bool tls_mbed_identity_initialized;
+
+static bool _read_identity_file(const char *path, unsigned char **contents,
+                                size_t *length) {
+    FILE *file = fopen(path, "rb");
+    long file_length;
+    unsigned char *buffer;
+    size_t bytes_read;
+    int close_result;
+    bool success = false;
+
+    if (file == NULL) {
+        return false;
+    }
+    if (fseek(file, 0, SEEK_END) != 0 || (file_length = ftell(file)) <= 0 ||
+        fseek(file, 0, SEEK_SET) != 0) {
+        fclose(file);
+        return false;
+    }
+
+    buffer = (unsigned char *)malloc((size_t)file_length + 1);
+    if (buffer == NULL) {
+        fclose(file);
+        return false;
+    }
+    bytes_read = fread(buffer, 1, (size_t)file_length, file);
+    bool read_ok = bytes_read == (size_t)file_length && !ferror(file);
+    close_result = fclose(file);
+    if (read_ok && close_result == 0) {
+        buffer[bytes_read] = '\0';
+        *contents = buffer;
+        *length = bytes_read;
+        success = true;
+    } else {
+        free(buffer);
+    }
+    return success;
+}
+
+static void _retire_legacy_combined_identity(const char *key_directory) {
+    char path[4096];
+    snprintf(path, sizeof(path), "%s/client-combined.pem", key_directory);
+    if (remove(path) == 0) {
+        diag_log("TLS_IDENTITY_CLEANUP", "legacy_combined_pem=removed");
+    } else if (errno == ENOENT) {
+        diag_log("TLS_IDENTITY_CLEANUP", "legacy_combined_pem=absent");
+    } else {
+        diag_log("TLS_IDENTITY_CLEANUP",
+                 "legacy_combined_pem=remove_failed errno=%d", errno);
+    }
+}
+
+static void _free_tls_identity(void) {
+    if (tls_mbed_identity_initialized) {
+        mbedtls_x509_crt_free(&tls_mbed_certificate);
+        mbedtls_pk_free(&tls_mbed_private_key);
+        tls_mbed_identity_initialized = false;
+    }
+    free(tls_certificate_pem);
+    free(tls_private_key_pem);
+    tls_certificate_pem = NULL;
+    tls_private_key_pem = NULL;
+    tls_certificate_pem_length = 0;
+    tls_private_key_pem_length = 0;
+}
 
 #define CURL_SETOPT_LOG(option, value, setting) do { \
     CURLcode setopt_result = curl_easy_setopt(curl, option, value); \
@@ -46,78 +120,81 @@ static bool tls_trace_saw_negotiated = false;
              curl_easy_strerror(setopt_result)); \
 } while (0)
 
-static bool _append_file(FILE *output, const char *path,
-                         bool ensure_newline) {
-    char buffer[1024];
-    size_t count;
-    size_t total = 0;
-    int last_character = EOF;
-    FILE *input = fopen(path, "rb");
-    bool success = true;
-
-    if (input == NULL) {
-        return false;
-    }
-
-    while ((count = fread(buffer, 1, sizeof(buffer), input)) > 0) {
-        if (fwrite(buffer, 1, count, output) != count) {
-            success = false;
-            break;
-        }
-        total += count;
-        last_character = (unsigned char)buffer[count - 1];
-    }
-    if (ferror(input)) {
-        success = false;
-    }
-    if (fclose(input) != 0) {
-        success = false;
-    }
-    if (total == 0) {
-        success = false;
-    }
-    if (success && ensure_newline && last_character != '\n' &&
-        fputc('\n', output) == EOF) {
-        success = false;
-    }
-    return success;
-}
-
-/* libcurl's 3DS build uses mbedTLS, which reads PEM certs and keys from files.
- * Give it one file containing both objects to avoid separate identity loading. */
-static bool _build_combined_identity(const char *certificate_path,
-                                    const char *key_path,
-                                    const char *combined_path) {
-    FILE *output = fopen(combined_path, "wb");
-    bool success;
-
-    if (output == NULL) {
-        diag_log("TLS_IDENTITY_BUILD", "result=failed stage=open path=%s",
-                 combined_path);
-        return false;
-    }
-
-    success = _append_file(output, certificate_path, true) &&
-              _append_file(output, key_path, false);
-    if (fclose(output) != 0) {
-        success = false;
-    }
-    if (!success) {
-        remove(combined_path);
-        diag_log("TLS_IDENTITY_BUILD",
-                 "result=failed stage=copy certificate_path=%s key_path=%s",
-                 certificate_path, key_path);
-        return false;
-    }
-
-    diag_log("TLS_IDENTITY_BUILD",
-             "result=ok format=combined_pem certificate_path=%s key_path=%s output_path=%s",
-             certificate_path, key_path, combined_path);
-    return true;
-}
-
 static bool _is_https(const char *url) {
     return url != NULL && strncmp(url, "https://", 8) == 0;
+}
+
+static const mbedtls_ssl_key_cert *_find_identity_in_config(
+    const mbedtls_ssl_config *config) {
+    const mbedtls_ssl_key_cert *entry;
+
+    for (entry = config->key_cert; entry != NULL; entry = entry->next) {
+        if (entry->cert != NULL && entry->key != NULL &&
+            entry->cert->raw.len == tls_mbed_certificate.raw.len &&
+            memcmp(entry->cert->raw.p, tls_mbed_certificate.raw.p,
+                   tls_mbed_certificate.raw.len) == 0 &&
+            mbedtls_pk_check_pair(&entry->cert->pk, entry->key) == 0) {
+            return entry;
+        }
+    }
+    return NULL;
+}
+
+static void _mbedtls_debug(void *context, int level, const char *file,
+                           int line, const char *message) {
+    (void)context;
+    if (message != NULL) {
+        diag_log("MBEDTLS_TLS_TRACE", "level=%d file=%s line=%d %s", level,
+                 file != NULL ? file : "?", line, message);
+    }
+}
+
+static CURLcode _curl_ssl_context(CURL *handle, void *ssl_context,
+                                  void *user_data) {
+    mbedtls_ssl_config *config = (mbedtls_ssl_config *)ssl_context;
+    const mbedtls_ssl_key_cert *identity;
+    const char *route;
+    int result;
+
+    (void)handle;
+    (void)user_data;
+    if (config == NULL || !tls_mbed_identity_initialized) {
+        diag_log("TLS_IDENTITY_CTX", "result=failed reason=missing_context_or_identity");
+        return CURLE_SSL_CONNECT_ERROR;
+    }
+
+    identity = _find_identity_in_config(config);
+    if (identity != NULL) {
+        route = "blob";
+    } else {
+        result = mbedtls_ssl_conf_own_cert(config, &tls_mbed_certificate,
+                                           &tls_mbed_private_key);
+        diag_log("TLS_IDENTITY_CTX",
+                 "operation=mbedtls_ssl_conf_own_cert result=%d", result);
+        if (result != 0) {
+            return CURLE_SSL_CERTPROBLEM;
+        }
+        identity = _find_identity_in_config(config);
+        if (identity == NULL) {
+            diag_log("TLS_IDENTITY_CTX",
+                     "result=failed reason=identity_not_readable_after_configuration");
+            return CURLE_SSL_CERTPROBLEM;
+        }
+        route = "ctx";
+    }
+
+    diag_log("TLS_IDENTITY_CTX",
+             "result=ok route=%s readback=mbedtls_ssl_config.key_cert certificate_der_bytes=%lu",
+             route, (unsigned long)identity->cert->raw.len);
+    diag_tls_context_checkpoint(identity->cert->raw.p,
+                                identity->cert->raw.len, route);
+
+    if (tls_trace_request_active) {
+        mbedtls_ssl_conf_dbg(config, _mbedtls_debug, NULL);
+        mbedtls_debug_set_threshold(4);
+        diag_log("MBEDTLS_DEBUG", "request_scope=first_https level=4 line_filter=none");
+    }
+    return CURLE_OK;
 }
 
 static int _curl_debug(CURL *handle, curl_infotype type, char *data,
@@ -126,7 +203,6 @@ static int _curl_debug(CURL *handle, curl_infotype type, char *data,
     char lower[DIAG_LOG_LINE_MAX];
     size_t length = size;
     size_t i;
-    bool interesting;
 
     (void)handle;
     (void)user_data;
@@ -148,16 +224,6 @@ static int _curl_debug(CURL *handle, curl_infotype type, char *data,
     }
     line[length] = '\0';
     lower[length] = '\0';
-
-    interesting = strstr(lower, "ssl") != NULL ||
-                  strstr(lower, "tls") != NULL ||
-                  strstr(lower, "cert") != NULL ||
-                  strstr(lower, "handshake") != NULL ||
-                  strstr(lower, "mbedtls") != NULL ||
-                  strstr(lower, "openssl") != NULL;
-    if (!interesting) {
-        return 0;
-    }
 
     if (strstr(lower, "certificate") != NULL &&
         strstr(lower, "out") != NULL) {
@@ -287,6 +353,10 @@ static size_t _write_curl(void *contents, size_t size, size_t nmemb,
 }
 
 int http_init(const char *keyDirectory, int logLevel) {
+    struct curl_blob certificate_blob;
+    struct curl_blob private_key_blob;
+    CURLcode context_callback_result;
+
     curl = curl_easy_init();
     if (!curl)
         return GS_FAILED;
@@ -305,48 +375,79 @@ int http_init(const char *keyDirectory, int logLevel) {
     char keyFilePath[4096];
     snprintf(keyFilePath, sizeof(keyFilePath), "%s/%s", keyDirectory,
              KEY_FILE_NAME);
-
-    char combinedIdentityPath[4096];
-    snprintf(combinedIdentityPath, sizeof(combinedIdentityPath),
-             "%s/client-combined.pem", keyDirectory);
+    _retire_legacy_combined_identity(keyDirectory);
 
     log_level = logLevel;
     tls_trace_attempted = false;
+    tls_trace_request_active = false;
     tls_trace_saw_certificate_out = false;
     tls_trace_saw_handshake = false;
     tls_trace_saw_negotiated = false;
 
-    CURL_SETOPT_LOG(CURLOPT_SSL_VERIFYHOST, 0L, "0");
-    CURL_SETOPT_LOG(CURLOPT_SSLENGINE_DEFAULT, 1L, "default");
-    if (!_build_combined_identity(certificateFilePath, keyFilePath,
-                                  combinedIdentityPath)) {
+    mbedtls_x509_crt_init(&tls_mbed_certificate);
+    mbedtls_pk_init(&tls_mbed_private_key);
+    tls_mbed_identity_initialized = true;
+    if (!_read_identity_file(certificateFilePath, &tls_certificate_pem,
+                             &tls_certificate_pem_length) ||
+        !_read_identity_file(keyFilePath, &tls_private_key_pem,
+                             &tls_private_key_pem_length)) {
+        diag_log("TLS_IDENTITY_LOAD", "result=failed source=keys_pem_memory");
         curl_easy_cleanup(curl);
         curl = NULL;
+        _free_tls_identity();
         return GS_FAILED;
     }
-    snprintf(tls_identity_path, sizeof(tls_identity_path), "%s",
-             combinedIdentityPath);
-    tls_identity_file_created = true;
+
+    int parse_certificate_result = mbedtls_x509_crt_parse(
+        &tls_mbed_certificate, tls_certificate_pem,
+        tls_certificate_pem_length + 1);
+    int parse_private_key_result = mbedtls_pk_parse_key(
+        &tls_mbed_private_key, tls_private_key_pem,
+        tls_private_key_pem_length + 1, NULL, 0);
+    diag_log("TLS_IDENTITY_LOAD",
+             "source=keys_pem_memory certificate_parse=%d private_key_parse=%d",
+             parse_certificate_result, parse_private_key_result);
+    if (parse_certificate_result != 0 || parse_private_key_result != 0) {
+        curl_easy_cleanup(curl);
+        curl = NULL;
+        _free_tls_identity();
+        return GS_FAILED;
+    }
+
+    CURL_SETOPT_LOG(CURLOPT_SSL_VERIFYHOST, 0L, "0");
+    CURL_SETOPT_LOG(CURLOPT_SSLENGINE_DEFAULT, 1L, "default");
     CURL_SETOPT_LOG(CURLOPT_SSLCERTTYPE, "PEM", "PEM");
-    CURL_SETOPT_LOG(CURLOPT_SSLCERT, combinedIdentityPath,
-                    combinedIdentityPath);
     CURL_SETOPT_LOG(CURLOPT_SSLKEYTYPE, "PEM", "PEM");
-    CURL_SETOPT_LOG(CURLOPT_SSLKEY, combinedIdentityPath,
-                    combinedIdentityPath);
-    FILE *certificate_file = fopen(certificateFilePath, "r");
-    X509 *tls_certificate = certificate_file != NULL
-        ? PEM_read_X509(certificate_file, NULL, NULL, NULL)
-        : NULL;
-    if (certificate_file != NULL) {
-        fclose(certificate_file);
+    certificate_blob.data = tls_certificate_pem;
+    certificate_blob.len = tls_certificate_pem_length;
+    certificate_blob.flags = CURL_BLOB_COPY;
+    private_key_blob.data = tls_private_key_pem;
+    private_key_blob.len = tls_private_key_pem_length;
+    private_key_blob.flags = CURL_BLOB_COPY;
+    CURL_SETOPT_LOG(CURLOPT_SSLCERT_BLOB, &certificate_blob,
+                    "keys/client.pem:PEM");
+    CURL_SETOPT_LOG(CURLOPT_SSLKEY_BLOB, &private_key_blob,
+                    "keys/key.pem:PEM");
+
+    context_callback_result = curl_easy_setopt(
+        curl, CURLOPT_SSL_CTX_FUNCTION, _curl_ssl_context);
+    diag_log("CURL_SETOPT",
+             "option=CURLOPT_SSL_CTX_FUNCTION setting=mbedtls_ssl_config_readback_and_fallback result=%d detail=%s",
+             (int)context_callback_result,
+             curl_easy_strerror(context_callback_result));
+    if (context_callback_result != CURLE_OK) {
+        curl_easy_cleanup(curl);
+        curl = NULL;
+        _free_tls_identity();
+        return GS_FAILED;
     }
-    diag_cert_checkpoint(DIAG_CERT_TLS, tls_certificate, "file",
-                         certificateFilePath, keyFilePath, NULL);
-    diag_log("TLS_IDENTITY", "curl_source=runtime_combined_pem cert=%s key=%s",
-             combinedIdentityPath, combinedIdentityPath);
-    if (tls_certificate != NULL) {
-        X509_free(tls_certificate);
-    }
+    free(tls_certificate_pem);
+    free(tls_private_key_pem);
+    tls_certificate_pem = NULL;
+    tls_private_key_pem = NULL;
+    tls_certificate_pem_length = 0;
+    tls_private_key_pem_length = 0;
+
     CURL_SETOPT_LOG(CURLOPT_SSL_VERIFYPEER, 0L, "0");
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, _write_curl);
     curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
@@ -398,6 +499,7 @@ int http_request(char *url, PHTTP_DATA data) {
     }
     if (capture_tls) {
         tls_trace_attempted = true;
+        tls_trace_request_active = true;
         tls_trace_saw_certificate_out = false;
         tls_trace_saw_handshake = false;
         tls_trace_saw_negotiated = false;
@@ -408,6 +510,9 @@ int http_request(char *url, PHTTP_DATA data) {
         CURL_SETOPT_LOG(CURLOPT_CERTINFO, 1L, "1");
     }
     CURLcode res = curl_easy_perform(curl);
+    if (capture_tls) {
+        tls_trace_request_active = false;
+    }
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &response_code);
     if (capture_tls) {
         _log_certinfo(curl);
@@ -445,16 +550,8 @@ void http_cleanup() {
         curl_easy_cleanup(curl);
         curl = NULL;
     }
-    if (tls_identity_file_created) {
-        if (remove(tls_identity_path) == 0) {
-            diag_log("TLS_IDENTITY_CLEANUP", "combined_pem=removed");
-        } else {
-            diag_log("TLS_IDENTITY_CLEANUP",
-                     "combined_pem=remove_failed path=%s", tls_identity_path);
-        }
-        tls_identity_file_created = false;
-        tls_identity_path[0] = '\0';
-    }
+    _free_tls_identity();
+    diag_log("TLS_IDENTITY_CLEANUP", "source=memory objects=freed");
 }
 
 PHTTP_DATA http_create_data() {
