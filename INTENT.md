@@ -1,6 +1,6 @@
 # Current Intent — moonlight-N3DS
 
-Updated by Rocky, 2026-10-25, at AJ's request. AJ may talk to Codex
+Updated by Rocky, 2026-10-26, at AJ's request. AJ may talk to Codex
 directly in this repo; this file is the shared understanding. Codex:
 read this before starting work, along with AGENTS.md.
 
@@ -37,9 +37,26 @@ Milestone 1 — diagnostics build:
 Done looks like AJ running it on EridianOne and the log / trace
 showing where a re-pair hang actually stalls.
 
-Later milestones (after diagnostics): pair-status precheck,
-pairing timeout, surfacing server error text, per-host profiles
-(Home sharp 800x480 / Away light 400x240).
+## Later GUI milestone idea
+
+After diagnostics, AJ wants to explore a more modern GUI with
+touchscreen controls:
+- A virtual left analog stick: an outer circle shows its range, and
+  the inner stick moves within it to show direction. Touching/dragging
+  the stick also holds L3; lifting releases it.
+- A virtual right analog stick for camera/right-stick movement, with
+  a nearby toggle to choose between right-stick movement and an R3
+  click. The exact behavior and mapping still need to be worked out.
+- The virtual controls should be easier to see and use than relying
+  on the physical C-stick placement.
+
+This is a rough concept only. Diagnostics and AJ's on-console test
+come first; layout, sensitivity, and exact right-stick mode behavior
+are undecided.
+
+Other possible later work: pair-status precheck, pairing timeout,
+surfacing server error text, per-host profiles (Home sharp 800x480 /
+Away light 400x240).
 
 ## Don't touch / standing rules
 
@@ -58,4 +75,6 @@ pairing timeout, surfacing server error text, per-host profiles
 ## Open questions for AJ
 
 - Diagnostics build on-console: does the trace/log capture the hang?
-- After diagnosis, which later milestone comes first?
+- For the GUI concept: should the right-stick toggle switch between
+  a virtual R3 press and camera movement, or support both modes in
+  some other way?
