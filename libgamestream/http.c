@@ -45,6 +45,8 @@ static unsigned char *tls_certificate_pem;
 static size_t tls_certificate_pem_length;
 static unsigned char *tls_private_key_pem;
 static size_t tls_private_key_pem_length;
+static char tls_combined_identity_path[4096];
+static bool tls_combined_identity_created;
 static mbedtls_x509_crt tls_mbed_certificate;
 static mbedtls_pk_context tls_mbed_private_key;
 static bool tls_mbed_identity_initialized;
@@ -86,19 +88,6 @@ static bool _read_identity_file(const char *path, unsigned char **contents,
     return success;
 }
 
-static void _retire_legacy_combined_identity(const char *key_directory) {
-    char path[4096];
-    snprintf(path, sizeof(path), "%s/client-combined.pem", key_directory);
-    if (remove(path) == 0) {
-        diag_log("TLS_IDENTITY_CLEANUP", "legacy_combined_pem=removed");
-    } else if (errno == ENOENT) {
-        diag_log("TLS_IDENTITY_CLEANUP", "legacy_combined_pem=absent");
-    } else {
-        diag_log("TLS_IDENTITY_CLEANUP",
-                 "legacy_combined_pem=remove_failed errno=%d", errno);
-    }
-}
-
 static void _free_tls_identity(void) {
     if (tls_mbed_identity_initialized) {
         mbedtls_x509_crt_free(&tls_mbed_certificate);
@@ -113,6 +102,100 @@ static void _free_tls_identity(void) {
     tls_private_key_pem_length = 0;
 }
 
+static bool _create_combined_identity_file(const char *key_directory) {
+    FILE *file;
+    size_t written;
+    bool success = false;
+    int close_result;
+
+    if (snprintf(tls_combined_identity_path,
+                 sizeof(tls_combined_identity_path),
+                 "%s/client-combined.pem", key_directory) >=
+        (int)sizeof(tls_combined_identity_path)) {
+        diag_log("TLS_IDENTITY_FILE", "result=failed reason=path_too_long");
+        return false;
+    }
+
+    file = fopen(tls_combined_identity_path, "wb");
+    if (file == NULL) {
+        diag_log("TLS_IDENTITY_FILE", "result=failed reason=open errno=%d",
+                 errno);
+        return false;
+    }
+
+    written = fwrite(tls_certificate_pem, 1, tls_certificate_pem_length, file);
+    if (written == tls_certificate_pem_length &&
+        tls_certificate_pem_length > 0 &&
+        tls_certificate_pem[tls_certificate_pem_length - 1] != '\n') {
+        success = fputc('\n', file) != EOF;
+    } else {
+        success = written == tls_certificate_pem_length;
+    }
+    if (success) {
+        written = fwrite(tls_private_key_pem, 1,
+                         tls_private_key_pem_length, file);
+        success = written == tls_private_key_pem_length;
+    }
+    if (success) {
+        success = fflush(file) == 0;
+    }
+    close_result = fclose(file);
+    success = success && close_result == 0;
+    if (!success) {
+        remove(tls_combined_identity_path);
+        tls_combined_identity_path[0] = '\0';
+        diag_log("TLS_IDENTITY_FILE", "result=failed reason=write_or_close");
+        return false;
+    }
+
+    tls_combined_identity_created = true;
+    diag_log("TLS_IDENTITY_FILE",
+             "result=created source=existing_cert_and_key combined_pem_bytes=%lu",
+             (unsigned long)(tls_certificate_pem_length +
+                 tls_private_key_pem_length +
+                 (tls_certificate_pem_length > 0 &&
+                  tls_certificate_pem[tls_certificate_pem_length - 1] != '\n'
+                      ? 1 : 0)));
+    return true;
+}
+
+static void _remove_combined_identity_file(void) {
+    if (!tls_combined_identity_created) {
+        return;
+    }
+    if (remove(tls_combined_identity_path) == 0 || errno == ENOENT) {
+        diag_log("TLS_IDENTITY_CLEANUP", "combined_pem=removed");
+    } else {
+        diag_log("TLS_IDENTITY_CLEANUP",
+                 "combined_pem=remove_failed errno=%d", errno);
+    }
+    tls_combined_identity_created = false;
+    tls_combined_identity_path[0] = '\0';
+}
+
+static void _log_private_key_header(void) {
+    char header[96];
+    size_t start = 0;
+    size_t length = 0;
+    while (start < tls_private_key_pem_length &&
+           (tls_private_key_pem[start] == ' ' ||
+            tls_private_key_pem[start] == '\t' ||
+            tls_private_key_pem[start] == '\r' ||
+            tls_private_key_pem[start] == '\n')) {
+        start++;
+    }
+    while (start + length < tls_private_key_pem_length &&
+           tls_private_key_pem[start + length] != '\r' &&
+           tls_private_key_pem[start + length] != '\n' &&
+           length + 1 < sizeof(header)) {
+        header[length] = (char)tls_private_key_pem[start + length];
+        length++;
+    }
+    header[length] = '\0';
+    diag_log("TLS_IDENTITY_LOAD", "key_pem_header=%s", length > 0
+                 ? header : "unavailable");
+}
+
 #define CURL_SETOPT_LOG(option, value, setting) do { \
     CURLcode setopt_result = curl_easy_setopt(curl, option, value); \
     diag_log("CURL_SETOPT", "option=%s setting=%s result=%d detail=%s", \
@@ -122,6 +205,64 @@ static void _free_tls_identity(void) {
 
 static bool _is_https(const char *url) {
     return url != NULL && strncmp(url, "https://", 8) == 0;
+}
+
+static CURLcode _curl_ssl_context(CURL *handle, void *ssl_context,
+                                 void *user_data);
+
+static bool _is_pair_challenge(const char *url) {
+    return _is_https(url) && strstr(url, "phrase=pairchallenge") != NULL;
+}
+
+static bool _is_retryable_ssl_error(CURLcode result) {
+    return result == CURLE_SSL_CERTPROBLEM ||
+           result == CURLE_SSL_CONNECT_ERROR ||
+           result == CURLE_PEER_FAILED_VERIFICATION ||
+           result == CURLE_SSL_CACERT_BADFILE;
+}
+
+static bool _reset_response(PHTTP_DATA data) {
+    if (data->memory == NULL) {
+        data->memory = (char *)malloc(1);
+        if (data->memory == NULL) {
+            return false;
+        }
+    }
+    data->size = 0;
+    data->memory[0] = '\0';
+    return true;
+}
+
+static bool _set_file_tls_route(void) {
+    CURLcode callback_result = curl_easy_setopt(
+        curl, CURLOPT_SSL_CTX_FUNCTION, (curl_ssl_ctx_callback)NULL);
+    CURLcode data_result = curl_easy_setopt(curl, CURLOPT_SSL_CTX_DATA, NULL);
+    CURLcode certificate_result = curl_easy_setopt(
+        curl, CURLOPT_SSLCERT, tls_combined_identity_path);
+    CURLcode key_result = curl_easy_setopt(
+        curl, CURLOPT_SSLKEY, tls_combined_identity_path);
+
+    diag_log("TLS_ROUTE_CONFIG",
+             "route=file callback=%d callback_data=%d certificate=%d private_key=%d",
+             (int)callback_result, (int)data_result,
+             (int)certificate_result, (int)key_result);
+    return callback_result == CURLE_OK && data_result == CURLE_OK &&
+           certificate_result == CURLE_OK && key_result == CURLE_OK;
+}
+
+static bool _set_ctx_tls_route(void) {
+    CURLcode certificate_result = curl_easy_setopt(curl, CURLOPT_SSLCERT, NULL);
+    CURLcode key_result = curl_easy_setopt(curl, CURLOPT_SSLKEY, NULL);
+    CURLcode callback_result = curl_easy_setopt(
+        curl, CURLOPT_SSL_CTX_FUNCTION, _curl_ssl_context);
+    CURLcode data_result = curl_easy_setopt(curl, CURLOPT_SSL_CTX_DATA, NULL);
+
+    diag_log("TLS_ROUTE_CONFIG",
+             "route=ctx callback=%d callback_data=%d certificate=%d private_key=%d",
+             (int)callback_result, (int)data_result,
+             (int)certificate_result, (int)key_result);
+    return callback_result == CURLE_OK && data_result == CURLE_OK &&
+           certificate_result == CURLE_OK && key_result == CURLE_OK;
 }
 
 static const mbedtls_ssl_key_cert *_find_identity_in_config(
@@ -153,41 +294,45 @@ static CURLcode _curl_ssl_context(CURL *handle, void *ssl_context,
                                   void *user_data) {
     mbedtls_ssl_config *config = (mbedtls_ssl_config *)ssl_context;
     const mbedtls_ssl_key_cert *identity;
-    const char *route;
+    bool config_had_identity;
+    bool config_had_app_identity;
     int result;
 
     (void)handle;
     (void)user_data;
+    diag_log("TLS_IDENTITY_CTX", "callback=fired");
     if (config == NULL || !tls_mbed_identity_initialized) {
         diag_log("TLS_IDENTITY_CTX", "result=failed reason=missing_context_or_identity");
         return CURLE_SSL_CONNECT_ERROR;
     }
 
+    config_had_identity = config->key_cert != NULL;
     identity = _find_identity_in_config(config);
-    if (identity != NULL) {
-        route = "blob";
-    } else {
-        result = mbedtls_ssl_conf_own_cert(config, &tls_mbed_certificate,
-                                           &tls_mbed_private_key);
+    config_had_app_identity = identity != NULL;
+    diag_log("TLS_IDENTITY_CTX",
+             "config_already_carried_identity=%s config_already_carried_app_identity=%s",
+             config_had_identity ? "yes" : "no",
+             config_had_app_identity ? "yes" : "no");
+
+    result = mbedtls_ssl_conf_own_cert(config, &tls_mbed_certificate,
+                                       &tls_mbed_private_key);
+    diag_log("TLS_IDENTITY_CTX",
+             "operation=mbedtls_ssl_conf_own_cert result=%d", result);
+    if (result != 0) {
+        return CURLE_SSL_CERTPROBLEM;
+    }
+    identity = _find_identity_in_config(config);
+    if (identity == NULL) {
         diag_log("TLS_IDENTITY_CTX",
-                 "operation=mbedtls_ssl_conf_own_cert result=%d", result);
-        if (result != 0) {
-            return CURLE_SSL_CERTPROBLEM;
-        }
-        identity = _find_identity_in_config(config);
-        if (identity == NULL) {
-            diag_log("TLS_IDENTITY_CTX",
-                     "result=failed reason=identity_not_readable_after_configuration");
-            return CURLE_SSL_CERTPROBLEM;
-        }
-        route = "ctx";
+                 "result=failed reason=identity_not_readable_after_configuration");
+        return CURLE_SSL_CERTPROBLEM;
     }
 
     diag_log("TLS_IDENTITY_CTX",
-             "result=ok route=%s readback=mbedtls_ssl_config.key_cert certificate_der_bytes=%lu",
-             route, (unsigned long)identity->cert->raw.len);
+             "result=ok route=ctx readback=mbedtls_ssl_config.key_cert certificate_der_bytes=%lu",
+             (unsigned long)identity->cert->raw.len);
     diag_tls_context_checkpoint(identity->cert->raw.p,
-                                identity->cert->raw.len, route);
+                                identity->cert->raw.len, "ctx");
 
     if (tls_trace_request_active) {
         mbedtls_ssl_conf_dbg(config, _mbedtls_debug, NULL);
@@ -239,43 +384,6 @@ static int _curl_debug(CURL *handle, curl_infotype type, char *data,
 
     diag_log("CURL_TLS_TRACE", "%s", line);
     return 0;
-}
-
-static void _log_certinfo(CURL *handle) {
-    struct curl_certinfo *certificate_info = NULL;
-    CURLcode result = curl_easy_getinfo(handle, CURLINFO_CERTINFO,
-                                        &certificate_info);
-    int certificate_count = certificate_info != NULL
-        ? certificate_info->num_of_certs : 0;
-    int i;
-
-    diag_log("CURL_CERTINFO",
-             "result=%d detail=%s available=%s peer_chain_count=%d",
-             (int)result, curl_easy_strerror(result),
-             certificate_count > 0 ? "yes" : "no", certificate_count);
-    if (result != CURLE_OK || certificate_info == NULL ||
-        certificate_info->certinfo == NULL) {
-        return;
-    }
-
-    for (i = 0; i < certificate_count; i++) {
-        const struct curl_slist *field;
-        char subject[256] = "unavailable";
-        char issuer[256] = "unavailable";
-        for (field = certificate_info->certinfo[i]; field != NULL;
-             field = field->next) {
-            if (field->data == NULL) {
-                continue;
-            }
-            if (strncmp(field->data, "Subject:", 8) == 0) {
-                snprintf(subject, sizeof(subject), "%s", field->data + 8);
-            } else if (strncmp(field->data, "Issuer:", 7) == 0) {
-                snprintf(issuer, sizeof(issuer), "%s", field->data + 7);
-            }
-        }
-        diag_log("CURL_CERTINFO", "peer_chain_depth=%d subject=%s issuer=%s",
-                 i, subject, issuer);
-    }
 }
 
 static int _curl_progress(void *clientp, curl_off_t download_total,
@@ -353,13 +461,19 @@ static size_t _write_curl(void *contents, size_t size, size_t nmemb,
 }
 
 int http_init(const char *keyDirectory, int logLevel) {
-    struct curl_blob certificate_blob;
-    struct curl_blob private_key_blob;
-    CURLcode context_callback_result;
+    int parse_certificate_result;
+    int parse_private_key_result;
+    mbedtls_pk_type_t private_key_type_id;
+    const char *private_key_type;
+    char certificateFilePath[4096];
+    char keyFilePath[4096];
 
     curl = curl_easy_init();
     if (!curl)
         return GS_FAILED;
+
+    tls_combined_identity_created = false;
+    tls_combined_identity_path[0] = '\0';
 
     const curl_version_info_data *curl_info =
         curl_version_info(CURLVERSION_NOW);
@@ -368,14 +482,11 @@ int http_init(const char *keyDirectory, int logLevel) {
              curl_info != NULL && curl_info->ssl_version != NULL
                  ? curl_info->ssl_version : "unavailable");
 
-    char certificateFilePath[4096];
     snprintf(certificateFilePath, sizeof(certificateFilePath), "%s/%s",
              keyDirectory, CERTIFICATE_FILE_NAME);
 
-    char keyFilePath[4096];
     snprintf(keyFilePath, sizeof(keyFilePath), "%s/%s", keyDirectory,
              KEY_FILE_NAME);
-    _retire_legacy_combined_identity(keyDirectory);
 
     log_level = logLevel;
     tls_trace_attempted = false;
@@ -391,21 +502,21 @@ int http_init(const char *keyDirectory, int logLevel) {
                              &tls_certificate_pem_length) ||
         !_read_identity_file(keyFilePath, &tls_private_key_pem,
                              &tls_private_key_pem_length)) {
-        diag_log("TLS_IDENTITY_LOAD", "result=failed source=keys_pem_memory");
+        diag_log("TLS_IDENTITY_LOAD", "result=failed source=existing_pem_files");
         curl_easy_cleanup(curl);
         curl = NULL;
         _free_tls_identity();
         return GS_FAILED;
     }
 
-    int parse_certificate_result = mbedtls_x509_crt_parse(
+    parse_certificate_result = mbedtls_x509_crt_parse(
         &tls_mbed_certificate, tls_certificate_pem,
         tls_certificate_pem_length + 1);
-    int parse_private_key_result = mbedtls_pk_parse_key(
+    parse_private_key_result = mbedtls_pk_parse_key(
         &tls_mbed_private_key, tls_private_key_pem,
         tls_private_key_pem_length + 1, NULL, 0);
     diag_log("TLS_IDENTITY_LOAD",
-             "source=keys_pem_memory certificate_parse=%d private_key_parse=%d",
+             "source=existing_pem_files certificate_parse=%d private_key_parse=%d",
              parse_certificate_result, parse_private_key_result);
     if (parse_certificate_result != 0 || parse_private_key_result != 0) {
         curl_easy_cleanup(curl);
@@ -414,30 +525,28 @@ int http_init(const char *keyDirectory, int logLevel) {
         return GS_FAILED;
     }
 
-    CURL_SETOPT_LOG(CURLOPT_SSL_VERIFYHOST, 0L, "0");
-    CURL_SETOPT_LOG(CURLOPT_SSLENGINE_DEFAULT, 1L, "default");
-    CURL_SETOPT_LOG(CURLOPT_SSLCERTTYPE, "PEM", "PEM");
-    CURL_SETOPT_LOG(CURLOPT_SSLKEYTYPE, "PEM", "PEM");
-    certificate_blob.data = tls_certificate_pem;
-    certificate_blob.len = tls_certificate_pem_length;
-    certificate_blob.flags = CURL_BLOB_COPY;
-    private_key_blob.data = tls_private_key_pem;
-    private_key_blob.len = tls_private_key_pem_length;
-    private_key_blob.flags = CURL_BLOB_COPY;
-    CURL_SETOPT_LOG(CURLOPT_SSLCERT_BLOB, &certificate_blob,
-                    "keys/client.pem:PEM");
-    CURL_SETOPT_LOG(CURLOPT_SSLKEY_BLOB, &private_key_blob,
-                    "keys/key.pem:PEM");
-
-    context_callback_result = curl_easy_setopt(
-        curl, CURLOPT_SSL_CTX_FUNCTION, _curl_ssl_context);
-    diag_log("CURL_SETOPT",
-             "option=CURLOPT_SSL_CTX_FUNCTION setting=mbedtls_ssl_config_readback_and_fallback result=%d detail=%s",
-             (int)context_callback_result,
-             curl_easy_strerror(context_callback_result));
-    if (context_callback_result != CURLE_OK) {
+    private_key_type_id = mbedtls_pk_get_type(&tls_mbed_private_key);
+    private_key_type = mbedtls_pk_get_name(&tls_mbed_private_key);
+    diag_log("TLS_IDENTITY_LOAD", "private_key_type=%s mbedtls_pk_type=%d",
+             private_key_type != NULL ? private_key_type : "unknown",
+             (int)private_key_type_id);
+    _log_private_key_header();
+    if (!_create_combined_identity_file(keyDirectory)) {
         curl_easy_cleanup(curl);
         curl = NULL;
+        _free_tls_identity();
+        return GS_FAILED;
+    }
+    diag_tls_identity_checkpoint(tls_mbed_certificate.raw.p,
+                                 tls_mbed_certificate.raw.len, "file");
+
+    CURL_SETOPT_LOG(CURLOPT_SSL_VERIFYHOST, 0L, "0");
+    CURL_SETOPT_LOG(CURLOPT_SSLCERTTYPE, "PEM", "PEM");
+    CURL_SETOPT_LOG(CURLOPT_SSLKEYTYPE, "PEM", "PEM");
+    if (!_set_file_tls_route()) {
+        curl_easy_cleanup(curl);
+        curl = NULL;
+        _remove_combined_identity_file();
         _free_tls_identity();
         return GS_FAILED;
     }
@@ -467,10 +576,42 @@ void http_set_timeout_s(uint32_t connection_timeout_in) {
 
 void http_set_log_level(int log_level_in) { log_level = log_level_in; }
 
+static CURLcode _perform_https_attempt(const char *url, PHTTP_DATA data,
+                                      const char *route, unsigned int attempt,
+                                      long *response_code) {
+    CURLcode result;
+    char response_text[32];
+
+    *response_code = 0;
+    diag_tls_route_attempt(route);
+    curl_easy_setopt(curl, CURLOPT_FRESH_CONNECT, 1L);
+    curl_easy_setopt(curl, CURLOPT_FORBID_REUSE, 1L);
+    result = curl_easy_perform(curl);
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, response_code);
+    if (*response_code > 0) {
+        snprintf(response_text, sizeof(response_text), "%ld", *response_code);
+    } else {
+        snprintf(response_text, sizeof(response_text), "none");
+    }
+    diag_log("TLS_REQUEST_ATTEMPT",
+             "attempt=%u route=%s perform=%d detail=%s response_code=%s",
+             attempt, route, (int)result, curl_easy_strerror(result),
+             response_text);
+    if (_is_pair_challenge(url) && *response_code > 0) {
+        diag_log_sha256("PAIR_CHALLENGE_RESPONSE", "response_body",
+                        (const unsigned char *)data->memory, data->size);
+    }
+    return result;
+}
+
 int http_request(char *url, PHTTP_DATA data) {
     char safe_url[4096];
     long response_code = 0;
-    bool capture_tls = !_is_https(url) ? false : !tls_trace_attempted;
+    bool https = _is_https(url);
+    bool capture_tls = https && !tls_trace_attempted;
+    bool attempted_ctx = false;
+    bool performed_ctx = false;
+    CURLcode result;
     _redact_url(url, safe_url, sizeof(safe_url));
     diag_http_begin("GET", safe_url);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, data);
@@ -484,18 +625,12 @@ int http_request(char *url, PHTTP_DATA data) {
 #endif
 
     if (log_level) {
-        printf("Request %s\n", url);
+        printf("Request %s\n", safe_url);
     }
 
-    if (data->size > 0) {
-        free(data->memory);
-        data->memory = malloc(1);
-        if (data->memory == NULL) {
-            diag_http_end(response_code, GS_OUT_OF_MEMORY);
-            return GS_OUT_OF_MEMORY;
-        }
-
-        data->size = 0;
+    if (!_reset_response(data)) {
+        diag_http_end(response_code, GS_OUT_OF_MEMORY);
+        return GS_OUT_OF_MEMORY;
     }
     if (capture_tls) {
         tls_trace_attempted = true;
@@ -507,41 +642,76 @@ int http_request(char *url, PHTTP_DATA data) {
         CURL_SETOPT_LOG(CURLOPT_DEBUGFUNCTION, _curl_debug,
                         "handshake-trace");
         CURL_SETOPT_LOG(CURLOPT_DEBUGDATA, NULL, "diag-log");
-        CURL_SETOPT_LOG(CURLOPT_CERTINFO, 1L, "1");
     }
-    CURLcode res = curl_easy_perform(curl);
+
+    if (https) {
+        if (!_set_file_tls_route()) {
+            result = CURLE_SSL_CERTPROBLEM;
+            diag_log("TLS_REQUEST_ATTEMPT",
+                     "attempt=1 route=file perform=not_run reason=route_setup_failed response_code=none");
+        } else {
+            result = _perform_https_attempt(url, data, "file", 1,
+                                            &response_code);
+        }
+
+        if (_is_retryable_ssl_error(result)) {
+            attempted_ctx = true;
+            response_code = 0;
+            if (!_reset_response(data)) {
+                result = CURLE_OUT_OF_MEMORY;
+                diag_log("TLS_REQUEST_ATTEMPT",
+                         "attempt=2 route=ctx perform=not_run reason=response_reset_failed response_code=none");
+            } else if (!_set_ctx_tls_route()) {
+                result = CURLE_SSL_CERTPROBLEM;
+                diag_log("TLS_REQUEST_ATTEMPT",
+                         "attempt=2 route=ctx perform=not_run reason=route_setup_failed response_code=none");
+            } else {
+                performed_ctx = true;
+                result = _perform_https_attempt(url, data, "ctx", 2,
+                                                &response_code);
+            }
+        }
+        if (attempted_ctx) {
+            _set_file_tls_route();
+        }
+        curl_easy_setopt(curl, CURLOPT_FRESH_CONNECT, 0L);
+        curl_easy_setopt(curl, CURLOPT_FORBID_REUSE, 0L);
+    } else {
+        result = curl_easy_perform(curl);
+        curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &response_code);
+    }
+
     if (capture_tls) {
         tls_trace_request_active = false;
         mbedtls_debug_set_threshold(0);
         diag_log("MBEDTLS_DEBUG", "request_scope=closed level=0");
-    }
-    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &response_code);
-    if (capture_tls) {
-        _log_certinfo(curl);
         diag_log("CURL_TLS_RESULT",
-                 "perform=%d detail=%s response_code=%ld client_certificate_out_record=%s handshake_detail=%s negotiated_connection=%s",
-                 (int)res, curl_easy_strerror(res), response_code,
+                 "perform=%d detail=%s response_code=%ld route=%s client_certificate_out_record=%s handshake_detail=%s negotiated_connection=%s",
+                 (int)result, curl_easy_strerror(result), response_code,
+                 performed_ctx ? "ctx" : "file",
                  tls_trace_saw_certificate_out ? "observed" : "not_observed",
                  tls_trace_saw_handshake ? "observed" : "not_observed",
                  tls_trace_saw_negotiated ? "observed" : "not_observed");
-        CURL_SETOPT_LOG(CURLOPT_CERTINFO, 0L, "0");
         CURL_SETOPT_LOG(CURLOPT_DEBUGFUNCTION,
                         (curl_debug_callback)NULL, "disabled");
         CURL_SETOPT_LOG(CURLOPT_DEBUGDATA, NULL, "default");
         CURL_SETOPT_LOG(CURLOPT_VERBOSE, log_level > 0 ? 1L : 0L,
                         log_level > 0 ? "1" : "0");
     }
-    diag_http_end(response_code, (int)res);
+    diag_http_end(response_code, (int)result);
 
-    if (res != CURLE_OK) {
-        gs_error = curl_easy_strerror(res);
+    if (result == CURLE_OUT_OF_MEMORY) {
+        return GS_OUT_OF_MEMORY;
+    }
+    if (result != CURLE_OK) {
+        gs_error = curl_easy_strerror(result);
         return GS_FAILED;
     } else if (data->memory == NULL) {
         return GS_OUT_OF_MEMORY;
     }
 
     if (log_level) {
-        printf("Response:\n%s\n\n", data->memory);
+        printf("Response: %lu bytes\n\n", (unsigned long)data->size);
     }
 
     return GS_OK;
@@ -552,6 +722,7 @@ void http_cleanup() {
         curl_easy_cleanup(curl);
         curl = NULL;
     }
+    _remove_combined_identity_file();
     _free_tls_identity();
     diag_log("TLS_IDENTITY_CLEANUP", "source=memory objects=freed");
 }

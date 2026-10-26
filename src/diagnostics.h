@@ -11,7 +11,7 @@ extern "C" {
 #endif
 
 #define DIAG_WATCHDOG_LIMIT_MS 30000ULL
-#define DIAG_BUILD_VERSION "3.0.1-diag4"
+#define DIAG_BUILD_VERSION "3.0.1-diag5"
 #define DIAG_LOG_LINE_MAX 512
 #define DIAG_RECENT_LINE_COUNT 8
 #define DIAG_CERT_FINGERPRINT_HEX_LENGTH 64
@@ -49,6 +49,12 @@ bool diag_cert_checkpoint(DIAG_CERT_STAGE stage, X509 *certificate,
 bool diag_tls_context_checkpoint(const unsigned char *certificate_der,
                                 size_t certificate_der_length,
                                 const char *source);
+bool diag_tls_identity_checkpoint(const unsigned char *certificate_der,
+                                  size_t certificate_der_length,
+                                  const char *source);
+void diag_tls_route_attempt(const char *route);
+void diag_log_sha256(const char *event, const char *field,
+                     const unsigned char *value, size_t value_length);
 void diag_get_cert_panel_state(
     char *pair_fingerprint, unsigned int pair_fingerprint_capacity,
     char *pair_source, unsigned int pair_source_capacity,

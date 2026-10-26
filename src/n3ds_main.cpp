@@ -133,9 +133,10 @@ static void diagnostic_monitor_entry(void *context) {
                pair_source[0] ? pair_source : "----");
         printf("TLS  %.32s\n",
                tls_fingerprint[0] ? tls_fingerprint : "----");
-        printf("     %.32s %s\n",
+        printf("     %.32s route=%s\n",
                tls_fingerprint[32] ? tls_fingerprint + 32 : "----",
-               tls_source[0] ? tls_source : "----");
+               tls_source[0] ? tls_source : "unknown");
+        printf("peer n/a (CERTINFO unavailable)\n");
         n3ds_draw_diag_version_overlay();
         consoleSelect(&DebugTouchHandler::topScreen);
         gfxFlushBuffers();

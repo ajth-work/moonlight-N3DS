@@ -219,6 +219,73 @@ bool diag_tls_context_checkpoint(const unsigned char *certificate_der,
     return true;
 }
 
+bool diag_tls_identity_checkpoint(const unsigned char *certificate_der,
+                                  size_t certificate_der_length,
+                                  const char *source) {
+    static const char hex[] = "0123456789abcdef";
+    unsigned char digest[SHA256_DIGEST_LENGTH];
+    char fingerprint[DIAG_CERT_FINGERPRINT_BUFFER_SIZE];
+    unsigned int i;
+
+    if (certificate_der == NULL || certificate_der_length == 0) {
+        diag_log("TLS_IDENTITY", "sha256_der=unavailable source=%s",
+                 source != NULL ? source : "unknown");
+        return false;
+    }
+
+    SHA256(certificate_der, certificate_der_length, digest);
+    for (i = 0; i < SHA256_DIGEST_LENGTH; i++) {
+        fingerprint[i * 2] = hex[digest[i] >> 4];
+        fingerprint[i * 2 + 1] = hex[digest[i] & 0x0f];
+    }
+    fingerprint[DIAG_CERT_FINGERPRINT_HEX_LENGTH] = '\0';
+
+    diag_log("TLS_IDENTITY", "sha256_der=%s source=%s",
+             fingerprint, source != NULL ? source : "unknown");
+    LightLock_Lock(&diag_lock);
+    snprintf(diag_tls_fingerprint, sizeof(diag_tls_fingerprint), "%s",
+             fingerprint);
+    snprintf(diag_tls_source, sizeof(diag_tls_source), "%s",
+             source != NULL ? source : "unknown");
+    LightLock_Unlock(&diag_lock);
+    return true;
+}
+
+void diag_tls_route_attempt(const char *route) {
+    LightLock_Lock(&diag_lock);
+    snprintf(diag_tls_source, sizeof(diag_tls_source), "%s",
+             route != NULL ? route : "unknown");
+    LightLock_Unlock(&diag_lock);
+}
+
+void diag_log_sha256(const char *event, const char *field,
+                     const unsigned char *value, size_t value_length) {
+    static const char hex[] = "0123456789abcdef";
+    unsigned char digest[SHA256_DIGEST_LENGTH];
+    char digest_hex[DIAG_CERT_FINGERPRINT_BUFFER_SIZE];
+    static const unsigned char empty_value = 0;
+    unsigned int i;
+
+    if (value == NULL && value_length != 0) {
+        diag_log(event, "%s_length=%lu %s_sha256=unavailable",
+                 field != NULL ? field : "value",
+                 (unsigned long)value_length,
+                 field != NULL ? field : "value");
+        return;
+    }
+
+    SHA256(value != NULL ? value : &empty_value, value_length, digest);
+    for (i = 0; i < SHA256_DIGEST_LENGTH; i++) {
+        digest_hex[i * 2] = hex[digest[i] >> 4];
+        digest_hex[i * 2 + 1] = hex[digest[i] & 0x0f];
+    }
+    digest_hex[DIAG_CERT_FINGERPRINT_HEX_LENGTH] = '\0';
+    diag_log(event, "%s_length=%lu %s_sha256=%s",
+             field != NULL ? field : "value",
+             (unsigned long)value_length,
+             field != NULL ? field : "value", digest_hex);
+}
+
 void diag_get_cert_panel_state(
     char *pair_fingerprint, unsigned int pair_fingerprint_capacity,
     char *pair_source, unsigned int pair_source_capacity,

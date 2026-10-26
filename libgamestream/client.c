@@ -710,6 +710,8 @@ int gs_pair(PSERVER_DATA server, char* pin) {
   else if ((ret = xml_search(data->memory, data->size, "paired", &result)) != GS_OK)
     goto cleanup;
 
+  diag_log_sha256("PAIR_CHALLENGE_VERIFY", "client_expected_paired",
+                  (const unsigned char *)"1", 1);
   if (strcmp(result, "1") != 0) {
     gs_error = "Pairing failed";
     ret = GS_FAILED;
