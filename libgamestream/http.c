@@ -512,6 +512,8 @@ int http_request(char *url, PHTTP_DATA data) {
     CURLcode res = curl_easy_perform(curl);
     if (capture_tls) {
         tls_trace_request_active = false;
+        mbedtls_debug_set_threshold(0);
+        diag_log("MBEDTLS_DEBUG", "request_scope=closed level=0");
     }
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &response_code);
     if (capture_tls) {
