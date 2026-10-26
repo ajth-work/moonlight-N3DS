@@ -1,9 +1,9 @@
 # Current Intent — moonlight-N3DS
 
-Updated by Rocky, 2026-10-26 (post-noon, after the Sunshine-side
-investigation), at AJ's request. AJ may talk to Codex directly in
-this repo; this file is the shared understanding. Codex: read this
-before starting work, along with AGENTS.md.
+Updated by Rocky, 2026-10-26 (evening — pairing RESOLVED), at AJ's
+request. AJ may talk to Codex directly in this repo; this file is
+the shared understanding. Codex: read this before starting work,
+along with AGENTS.md.
 
 ## What AJ wants
 
@@ -14,98 +14,108 @@ no timeout — and failures give zero on-screen visibility, so a
 console reboot is required to recover. Direction approved by AJ:
 visibility first, features after diagnosis.
 
-## Where it is now — READ THIS FIRST (2026-10-26 verdict)
+## Where it is now — RESOLVED 2026-10-26 (read this first)
 
-**The pairing blocker is NOT (only) this client. Do not build a
-diag6 or iterate further client TLS routes until AJ says so.**
+**The pairing blocker is FIXED, and it was Sunshine-side all
+along, not this client.** Both clients (Android phone and
+EridianOne) stream again. Full evidence record:
+ajth-work/3ds-homebrew issue #27.
 
-Evidence chain, all hardware-verified by AJ (full record:
-ajth-work/3ds-homebrew issue #27 and
-docs/moonlight-eridianone-config.md):
+### Root cause
 
-- Diag builds 3.0.1-diag1 → diag5 all reproduced the same final
-  failure: pairing completes in Sunshine ("Success" in the web UI),
-  then the final mutual-TLS verify fails — "The client is not
-  authorized. Certificate verification failed." Sunshine's log
-  warning at that step is always `Client certificate identity is
-  not enabled` + `/CN=NVIDIA GameStream Client -- denied`.
-- Diag2/diag3 panel: the cert loaded for pairing == the cert
-  loaded for TLS, fingerprint DER SHA-256 e77dc049…710084,
-  byte-identical to the cert Sunshine stores for this client
-  (stored-PEM SHA-256 prefix 211BB28C1680). File-level identity
-  split is DEAD.
-- Diag3's combined-PEM route completes the TLS handshake but
-  Sunshine still denies. Diag4's in-memory blob route fails
-  locally (mbedTLS -0x3D00 key parse, curl 58) and never reaches
-  Sunshine — dead end, do not revive it.
-- Diag5 (branch `diag/tls-file-ctx-ab`): file route primary, ctx
-  callback as witnessed fallback. On hardware 2026-10-26 it ran
-  the full pairing via stream.textplex.co (11:27) and was denied
-  at verify (11:28:00). Panel: route=file throughout, no ctx
-  fallback fired, peer slot n/a (CERTINFO not compiled in).
-- **The fault then proved server-side.** On 2026-10-26 the
-  known-good Android Moonlight phone (unchanged cert since 2024,
-  DER a7a15745…; paired + streamed fine 2026-10-25 23:21) also
-  completed pairing three times and was denied at verify every
-  time, on LAN and by name.
-- **Sunshine's state file is fully exonerated** (inspected
-  2026-10-26 11:45–12:33, field by field):
-  `C:\Program Files\Sunshine\config\sunshine_state.json` —
-  20 named-device records, ALL enabled=true, only two certs
-  present (15× the 3DS cert 211BB28C1680 / len 1013, incl.
-  today's `3ds diag5 home 1` and `3ds diag5 new new 12`; 4× the
-  phone cert 6295E33DF263 / len 1021, as `pc2` + `phone diag5
-  1–3`), file written at the second of the last denial, and
-  every record's uuid is a distinct per-record random ID
-  (a client can never present it — not the verify key).
-- **Restart does not heal it.** A fresh Sunshine process
-  (v2026.914.233613, started 2026-10-26 12:01:58) still
-  reported the phone NOT_PAIRED (PIN prompt on tap, 12:04) and
-  denied the 3DS's final verify at 12:08:22 (~1.6 s after
-  clientpairingsecret) for a pairing completed seconds earlier
-  in that same process. Conclusion: the fault is inside
-  Sunshine's live verification path, not its stored data and
-  not a stale process.
-- **Uniqueid collision (new, confirmed in the noon log):** both
-  the phone and this client present the default uniqueid
-  `0123456789ABCDEF`, and Sunshine keys pairing sessions by
-  uniqueid. An abandoned pairing session (phone, 12:04:42)
-  blocked the 3DS's next attempt with "A pairing session with
-  this uniqueid already exists" until the 3DS's unpair cleanup
-  cleared it. Standing hazard: always let a pairing finish or
-  unpair before starting one from the other client.
-- What remains genuinely open on the client side: whether this
-  fork's mbedTLS stack presents a client cert in the handshake
-  at all (diag3's trace never observed one —
-  `client_certificate_out_record=not_observed`, and the
-  Oct 25/26 log census fits "presents nothing"). That question
-  is PARKED, not closed: it cannot explain the phone failing,
-  so Sunshine gets fixed or cleared first.
-- Branch state: the diagnostics line (diag2 `diag/cert-fingerprints`
-  → diag3 `fix/tls-client-cert` → diag4 `fix/tls-inmemory-identity`
-  → diag5 `diag/tls-file-ctx-ab`) is unmerged. AJ's separate
-  5-commit remembered-hosts series on `diag/moonlight-logging`
-  is also unmerged and still gated: merge it onto the current
-  diag successor only when AJ approves, after the Sunshine
-  question resolves.
+Sunshine authorizes a client certificate **fail-closed**: a cert
+is enabled only when *exactly one* named-device record matches
+it (confirmed in Sunshine's own source, `is_client_enabled()`).
+Every re-pair silently added another record instead of replacing
+the old one, so `sunshine_state.json` ballooned to 20 records —
+~16× the 3DS cert, 4× the phone cert. With duplicates present,
+the final mutual-TLS verify denied BOTH clients ("The client is
+not authorized. Certificate verification failed." / Sunshine log:
+`Client certificate identity is not enabled`), even though every
+record was enabled, byte-exact, and freshly written. That is why
+diag1–diag5 all failed identically, why the known-good phone
+started failing too, and why restarts never healed it.
+
+Upstream fix: LizardByte **PR #5737** ("fix(pairing): replace
+duplicate client certificates"), shipped in pre-release
+**v2026.1018.5342** — a successful re-pair now deletes stale
+same-cert records before storing the new one. The fail-closed
+check itself is preserved, so **installing the new build alone
+does not heal a duplicated state file**: dedupe (or re-pair once
+per client) is still required.
+
+### The fix, as applied 2026-10-26 evening (all verified live)
+
+1. **Dedupe on the old build:** backed up `sunshine_state.json`,
+   stopped SunshineService, removed all but the first record per
+   cert (survivors: `3DS`, `pc2`) — 20 → 2 records, confirmed by
+   on-disk re-read and by the web UI Clients list (the fresh
+   process's in-memory list). A cur-vs-backup comparison then
+   proved the edit was byte-clean: root keys identical, server
+   uniqueid unchanged, surviving phone cert identical (`-ceq`,
+   same length). Dedupe alone did NOT restore the phone on the
+   old build (still NOT_PAIRED) — hence step 2.
+2. **Installed Sunshine v2026.1018.5342** (Windows MSI, size
+   53,043,200 bytes, SHA-256
+   70a15df6f223c7f01c89f216e6cf51646864419320182c309669309422394a39,
+   verified before install). Read-back after install:
+   sunshine.exe FileVersion/ProductVersion = 2026.1018.5342,
+   service Running, state file preserved at 2 records.
+3. **Phone:** re-paired once on the new build → app list →
+   Desktop stream live (Sunshine "Stream Started" toast,
+   2026-10-26 18:44 EDT, remote from AJ's workplace).
+4. **EridianOne:** needed **no re-pair at all**. Over AJ's phone
+   hotspot, a fresh `stream.textplex.co` host entry went straight
+   to the action menu (with "unpair" — paired state recognized),
+   the app list loaded over the diag5 file route (TLS fingerprint
+   e77dc049…710084, the known 3DS identity), and Desktop streamed
+   live at 400x480 / 30fps / 3000kbps (19:00 EDT). **Test B (3DS
+   over phone hotspot) is PASSED.** The surviving deduped `3DS`
+   record was valid all along; the new build's verification
+   finally honors it.
+
+### Standing warnings (do not relearn these the hard way)
+
+- **Never stack re-pairings.** On builds older than
+  v2026.1018.5342 each pairing adds a duplicate record and
+  re-breaks verification for that cert. If pairing must be
+  redone on an old build, delete the same-cert records first.
+- **Never leave a pairing session abandoned.** Both clients
+  present the default uniqueid `0123456789ABCDEF` and Sunshine
+  keys pairing sessions by uniqueid — an abandoned session from
+  one client blocks the other's next attempt ("A pairing session
+  with this uniqueid already exists") until it is unpaired or
+  times out. Always finish a pairing or back out/unpair cleanly
+  before starting one from the other client.
+- **Never clear Sunshine's paired devices without a backup** of
+  sunshine_state.json and AJ's explicit go.
+
+### Client-side state after the fix
+
+- The parked client question (does this fork present a client
+  cert in the handshake at all?) is **effectively answered**:
+  diag5's file route presents the identity Sunshine now accepts
+  — app list and full stream work end-to-end on it. No diag6 is
+  needed for the pairing bug; it is closed.
+- Branch state (unchanged): the diagnostics line (diag2
+  `diag/cert-fingerprints` → diag3 `fix/tls-client-cert` →
+  diag4 `fix/tls-inmemory-identity` → diag5
+  `diag/tls-file-ctx-ab`) is unmerged, as is AJ's 5-commit
+  remembered-hosts series on `diag/moonlight-logging`. The
+  Sunshine question that gated them is now resolved, so the
+  merge / diag-retirement / clean-production-build discussion is
+  **unblocked — AJ's call, nothing auto-starts**.
 
 ## Next intended step + what done looks like
 
-Sunshine-side, AJ's decision pending between:
+Nothing is pending for pairing. Remaining checks are small and
+non-blocking: quit-and-relaunch persistence on the 3DS (no new
+PIN), and the home-LAN host entry on the new Sunshine build.
 
-1. Unfiltered Sunshine log windows (12:01 startup / state load,
-   and 12:08 around the verify denial) from the log slices
-   already extracted on the PC, or
-2. Clean-slate experiment: back up sunshine_state.json, clear
-   ALL device records in the web UI, restart Sunshine, pair
-   ONLY the phone, try Connect. Phone working solo implicates
-   the accumulated duplicate records; phone still failing
-   convicts the Sunshine install/config wholesale.
-
-Done for this phase = a client (phone first, as the known-good
-reference) connects to the fresh Sunshine process WITHOUT
-re-pairing, or the Sunshine fault is identified and
-fixed/documented. Only then does client-side work resume.
+Next client work, when AJ picks it: decide the diag line's fate
+(retire the diag branches; build a clean non-diag release from
+the diag5 file route), the remembered-hosts merge, and the GUI
+milestone below.
 
 ## Later GUI milestone idea
 
@@ -168,9 +178,8 @@ Away light 400x240).
 
 - Default branch here is `n3ds-main`, not main/master. Diagnostics
   work lives on its diag branches, unmerged until AJ approves.
-- **No diag6 and no further client TLS-route iteration for the
-  pairing bug until AJ approves the next step** — the fault is
-  Sunshine-side as of 2026-10-26 (see above).
+- **The pairing bug is closed — no new diag builds for it.** Any
+  production-build or branch-merge work starts only on AJ's go.
 - Never clear Sunshine's paired devices without a backup of
   sunshine_state.json and AJ's explicit go.
 - Version string on the bottom screen at all times is a requirement,
@@ -185,11 +194,9 @@ Away light 400x240).
 
 ## Open questions for AJ
 
-- Sunshine-side next step: log windows first, or the clean-slate
-  phone-only experiment?
-- After Sunshine clears: does the client-presentation question
-  (diag3's unobserved client cert) still reproduce against the
-  phone as a working reference?
+- Diag line's fate: retire the diag branches and cut a clean
+  non-diag build from diag5's file route, and merge the
+  remembered-hosts series onto it?
 - For the GUI, which stick/click options feel natural in a play test,
   and what should be included in the collapsible tray?
 - Which latency measure is available and most useful to display?
