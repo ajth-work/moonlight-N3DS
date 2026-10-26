@@ -68,6 +68,10 @@ Ideas to explore:
   Steam Deck game bar, including a latency history visualization for
   a recent window (roughly the last minute as a starting point). The
   exact latency measure, refresh rate, and presentation need testing.
+- Explore showing the 3DS battery level while streaming, so users can
+  check it without leaving the game. If reliable battery and power-draw
+  data are available, consider a useful estimate of remaining streaming
+  time. First verify what the hardware and APIs can actually report.
 
 This is a rough direction, not a finished GUI specification.
 Diagnostics and AJ's on-console test come first. Screen layout,
@@ -98,3 +102,4 @@ Away light 400x240).
 - For the GUI, which stick/click options feel natural in a play test,
   and what should be included in the collapsible tray?
 - Which latency measure is available and most useful to display?
+- What battery and power-draw data can the 3DS reliably expose?
