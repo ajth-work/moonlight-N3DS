@@ -55,6 +55,9 @@ static char unique_id[UNIQUEID_CHARS+1];
 static X509 *cert;
 static char cert_hex[8192];
 static EVP_PKEY *privateKey;
+static char client_certificate_path[PATH_MAX];
+static char client_key_path[PATH_MAX];
+static char client_cert_source[DIAG_CERT_SOURCE_MAX] = "unknown";
 
 const char* gs_error;
 
@@ -115,24 +118,26 @@ static int load_unique_id(const char* keyDirectory) {
 }
 
 static int load_cert(const char* keyDirectory) {
-  char certificateFilePath[PATH_MAX];
-  snprintf(certificateFilePath, PATH_MAX, "%s/%s", keyDirectory, CERTIFICATE_FILE_NAME);
+  char p12FilePath[PATH_MAX];
+  bool generated = false;
+  snprintf(client_certificate_path, sizeof(client_certificate_path), "%s/%s",
+           keyDirectory, CERTIFICATE_FILE_NAME);
 
-  char keyFilePath[PATH_MAX];
-  snprintf(&keyFilePath[0], PATH_MAX, "%s/%s", keyDirectory, KEY_FILE_NAME);
+  snprintf(client_key_path, sizeof(client_key_path), "%s/%s", keyDirectory,
+           KEY_FILE_NAME);
 
-  FILE *fd = fopen(certificateFilePath, "r");
+  FILE *fd = fopen(client_certificate_path, "r");
   if (fd == NULL) {
     printf("Generating certificate...");
     CERT_KEY_PAIR cert = mkcert_generate();
     printf("done\n");
 
-    char p12FilePath[PATH_MAX];
     snprintf(p12FilePath, PATH_MAX, "%s/%s", keyDirectory, P12_FILE_NAME);
 
-    mkcert_save(certificateFilePath, p12FilePath, keyFilePath, cert);
+    mkcert_save(client_certificate_path, p12FilePath, client_key_path, cert);
     mkcert_free(cert);
-    fd = fopen(certificateFilePath, "r");
+    generated = true;
+    fd = fopen(client_certificate_path, "r");
   }
 
   if (fd == NULL) {
@@ -157,7 +162,7 @@ static int load_cert(const char* keyDirectory) {
 
   fclose(fd);
 
-  fd = fopen(keyFilePath, "r");
+  fd = fopen(client_key_path, "r");
   if (fd == NULL) {
     gs_error = "Error loading key into memory";
     return GS_FAILED;
@@ -165,6 +170,12 @@ static int load_cert(const char* keyDirectory) {
 
   PEM_read_PrivateKey(fd, &privateKey, NULL, NULL);
   fclose(fd);
+
+  snprintf(client_cert_source, sizeof(client_cert_source), "%s",
+           generated ? "new" : "file");
+  diag_cert_checkpoint(DIAG_CERT_STARTUP, cert, client_cert_source,
+                       client_certificate_path, client_key_path,
+                       generated ? p12FilePath : NULL);
 
   return GS_OK;
 }
@@ -475,6 +486,9 @@ int gs_pair(PSERVER_DATA server, char* pin) {
   uuid_generate_random(uuid);
   uuid_unparse(uuid, uuid_str);
   SET_PAIR_PHASE("pair.request_server_certificate");
+  /* cert_hex is the PEM file bytes hex-encoded for this clientcert payload. */
+  diag_cert_checkpoint(DIAG_CERT_PAIRING, cert, client_cert_source,
+                       client_certificate_path, client_key_path, NULL);
   snprintf(url, url_max_len, "http://%s:%u/pair?uniqueid=%s&uuid=%s&devicename=roth&updateState=1&phrase=getservercert&salt=%s&clientcert=%s", server->serverInfo.address, server->httpPort, unique_id, uuid_str, salt_hex, cert_hex);
   data = http_create_data();
   if (data == NULL) {

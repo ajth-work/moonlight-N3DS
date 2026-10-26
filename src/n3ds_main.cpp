@@ -97,10 +97,18 @@ static void diagnostic_monitor_entry(void *context) {
     while (!task->done.load()) {
         char phase[128];
         char lines[DIAG_RECENT_LINE_COUNT][DIAG_LOG_LINE_MAX];
+        char pair_fingerprint[DIAG_CERT_FINGERPRINT_BUFFER_SIZE];
+        char pair_source[DIAG_CERT_SOURCE_MAX];
+        char tls_fingerprint[DIAG_CERT_FINGERPRINT_BUFFER_SIZE];
+        char tls_source[DIAG_CERT_SOURCE_MAX];
         unsigned int line_count = 0;
         bool watchdog_expired = false;
         diag_get_state(phase, sizeof(phase), lines, &line_count,
                        &watchdog_expired);
+        diag_get_cert_panel_state(pair_fingerprint, sizeof(pair_fingerprint),
+                                  pair_source, sizeof(pair_source),
+                                  tls_fingerprint, sizeof(tls_fingerprint),
+                                  tls_source, sizeof(tls_source));
 
         consoleSelect(&DebugTouchHandler::bottomScreen);
         consoleClear();
@@ -119,6 +127,13 @@ static void diagnostic_monitor_entry(void *context) {
         for (unsigned int i = 0; i < line_count; i++) {
             printf("%.52s\n", lines[i]);
         }
+        printf("----------------------------------------\n");
+        printf("PAIR %.16s %s\n",
+               pair_fingerprint[0] ? pair_fingerprint : "----",
+               pair_source[0] ? pair_source : "----");
+        printf("TLS  %.16s %s\n",
+               tls_fingerprint[0] ? tls_fingerprint : "----",
+               tls_source[0] ? tls_source : "----");
         n3ds_draw_diag_version_overlay();
         consoleSelect(&DebugTouchHandler::topScreen);
         gfxFlushBuffers();

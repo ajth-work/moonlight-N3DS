@@ -3,15 +3,25 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <openssl/x509.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 #define DIAG_WATCHDOG_LIMIT_MS 30000ULL
-#define DIAG_BUILD_VERSION "3.0.1-diag1"
+#define DIAG_BUILD_VERSION "3.0.1-diag2"
 #define DIAG_LOG_LINE_MAX 512
 #define DIAG_RECENT_LINE_COUNT 8
+#define DIAG_CERT_FINGERPRINT_HEX_LENGTH 64
+#define DIAG_CERT_FINGERPRINT_BUFFER_SIZE (DIAG_CERT_FINGERPRINT_HEX_LENGTH + 1)
+#define DIAG_CERT_SOURCE_MAX 16
+
+typedef enum {
+    DIAG_CERT_STARTUP,
+    DIAG_CERT_PAIRING,
+    DIAG_CERT_TLS
+} DIAG_CERT_STAGE;
 
 void diag_init(void);
 void diag_close(void);
@@ -30,6 +40,16 @@ uint64_t diag_phase_elapsed_ms(void);
 void diag_get_state(char *phase_out, unsigned int phase_capacity,
                     char lines_out[DIAG_RECENT_LINE_COUNT][DIAG_LOG_LINE_MAX],
                     unsigned int *line_count, bool *watchdog_expired);
+bool diag_cert_fingerprint(X509 *certificate, char *out,
+                           unsigned int out_capacity);
+bool diag_cert_checkpoint(DIAG_CERT_STAGE stage, X509 *certificate,
+                          const char *source, const char *certificate_path,
+                          const char *key_path, const char *p12_path);
+void diag_get_cert_panel_state(
+    char *pair_fingerprint, unsigned int pair_fingerprint_capacity,
+    char *pair_source, unsigned int pair_source_capacity,
+    char *tls_fingerprint, unsigned int tls_fingerprint_capacity,
+    char *tls_source, unsigned int tls_source_capacity);
 
 #ifdef __cplusplus
 }

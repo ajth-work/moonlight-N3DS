@@ -1,8 +1,12 @@
 #include "diagnostics.h"
 
 #include <3ds.h>
+#include <openssl/bio.h>
+#include <openssl/bn.h>
+#include <openssl/sha.h>
 #include <stdarg.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <time.h>
@@ -21,11 +25,189 @@ static bool diag_http_active = false;
 static char diag_phase[128] = "startup";
 static char diag_http_method[16] = "";
 static char diag_http_call[DIAG_LOG_LINE_MAX] = "";
+static char diag_pair_fingerprint[DIAG_CERT_FINGERPRINT_BUFFER_SIZE] = "";
+static char diag_pair_source[DIAG_CERT_SOURCE_MAX] = "";
+static char diag_tls_fingerprint[DIAG_CERT_FINGERPRINT_BUFFER_SIZE] = "";
+static char diag_tls_source[DIAG_CERT_SOURCE_MAX] = "";
 static char diag_recent[DIAG_RECENT_LINE_COUNT][DIAG_LOG_LINE_MAX];
 static unsigned int diag_recent_count = 0;
 static unsigned int diag_recent_next = 0;
 static u64 diag_start_tick = 0;
 static u64 diag_phase_tick = 0;
+
+bool diag_cert_fingerprint(X509 *certificate, char *out,
+                           unsigned int out_capacity) {
+    static const char hex[] = "0123456789abcdef";
+    unsigned char digest[SHA256_DIGEST_LENGTH];
+    unsigned char *der;
+    unsigned char *der_cursor;
+    int der_length;
+    unsigned int i;
+
+    if (out == NULL || out_capacity < DIAG_CERT_FINGERPRINT_BUFFER_SIZE) {
+        return false;
+    }
+    out[0] = '\0';
+    if (certificate == NULL) {
+        return false;
+    }
+
+    der_length = i2d_X509(certificate, NULL);
+    if (der_length <= 0) {
+        return false;
+    }
+    der = (unsigned char *)malloc((size_t)der_length);
+    if (der == NULL) {
+        return false;
+    }
+    der_cursor = der;
+    if (i2d_X509(certificate, &der_cursor) != der_length) {
+        free(der);
+        return false;
+    }
+
+    SHA256(der, (size_t)der_length, digest);
+    free(der);
+    for (i = 0; i < SHA256_DIGEST_LENGTH; i++) {
+        out[i * 2] = hex[digest[i] >> 4];
+        out[i * 2 + 1] = hex[digest[i] & 0x0f];
+    }
+    out[DIAG_CERT_FINGERPRINT_HEX_LENGTH] = '\0';
+    return true;
+}
+
+static void bio_to_text(BIO *bio, char *out, size_t capacity) {
+    char *data = NULL;
+    long length;
+    size_t copy_length;
+    if (capacity == 0) {
+        return;
+    }
+    out[0] = '\0';
+    if (bio == NULL) {
+        return;
+    }
+    length = BIO_get_mem_data(bio, &data);
+    if (length <= 0 || data == NULL) {
+        return;
+    }
+    copy_length = (size_t)length;
+    if (copy_length >= capacity) {
+        copy_length = capacity - 1;
+    }
+    memcpy(out, data, copy_length);
+    out[copy_length] = '\0';
+}
+
+static const char *cert_stage_event(DIAG_CERT_STAGE stage) {
+    switch (stage) {
+    case DIAG_CERT_STARTUP:
+        return "CERT_STARTUP";
+    case DIAG_CERT_PAIRING:
+        return "CERT_PAIR";
+    case DIAG_CERT_TLS:
+        return "CERT_TLS";
+    default:
+        return "CERT_UNKNOWN";
+    }
+}
+
+bool diag_cert_checkpoint(DIAG_CERT_STAGE stage, X509 *certificate,
+                          const char *source, const char *certificate_path,
+                          const char *key_path, const char *p12_path) {
+    char fingerprint[DIAG_CERT_FINGERPRINT_BUFFER_SIZE] = "";
+    char subject[512] = "unavailable";
+    char serial[128] = "unavailable";
+    char not_before[128] = "unavailable";
+    char not_after[128] = "unavailable";
+    BIGNUM *serial_number;
+    char *serial_hex;
+    BIO *bio;
+    bool fingerprint_ok;
+
+    fingerprint_ok = diag_cert_fingerprint(certificate, fingerprint,
+                                             sizeof(fingerprint));
+    if (certificate != NULL) {
+        if (X509_NAME_oneline(X509_get_subject_name(certificate), subject,
+                              sizeof(subject)) == NULL) {
+            snprintf(subject, sizeof(subject), "unavailable");
+        }
+
+        serial_number = ASN1_INTEGER_to_BN(
+            X509_get_serialNumber(certificate), NULL);
+        if (serial_number != NULL) {
+            serial_hex = BN_bn2hex(serial_number);
+            if (serial_hex != NULL) {
+                snprintf(serial, sizeof(serial), "0x%s", serial_hex);
+                OPENSSL_free(serial_hex);
+            }
+            BN_free(serial_number);
+        }
+        bio = BIO_new(BIO_s_mem());
+        if (bio != NULL) {
+            if (ASN1_TIME_print(bio, X509_get0_notBefore(certificate)) > 0) {
+                bio_to_text(bio, not_before, sizeof(not_before));
+            }
+            BIO_free(bio);
+        }
+        bio = BIO_new(BIO_s_mem());
+        if (bio != NULL) {
+            if (ASN1_TIME_print(bio, X509_get0_notAfter(certificate)) > 0) {
+                bio_to_text(bio, not_after, sizeof(not_after));
+            }
+            BIO_free(bio);
+        }
+    }
+
+    diag_log(cert_stage_event(stage),
+             "sha256_der=%s source=%s certificate_path=%s key_path=%s p12_path=%s subject=%s serial=%s notBefore=%s notAfter=%s",
+             fingerprint_ok ? fingerprint : "unavailable",
+             source != NULL ? source : "unknown",
+             certificate_path != NULL ? certificate_path : "-",
+             key_path != NULL ? key_path : "-",
+             p12_path != NULL ? p12_path : "-", subject, serial,
+             not_before, not_after);
+
+    if (stage == DIAG_CERT_PAIRING || stage == DIAG_CERT_TLS) {
+        LightLock_Lock(&diag_lock);
+        if (stage == DIAG_CERT_PAIRING) {
+            snprintf(diag_pair_fingerprint, sizeof(diag_pair_fingerprint),
+                     "%s", fingerprint_ok ? fingerprint : "");
+            snprintf(diag_pair_source, sizeof(diag_pair_source), "%s",
+                     source != NULL ? source : "unknown");
+        } else {
+            snprintf(diag_tls_fingerprint, sizeof(diag_tls_fingerprint),
+                     "%s", fingerprint_ok ? fingerprint : "");
+            snprintf(diag_tls_source, sizeof(diag_tls_source), "%s",
+                     source != NULL ? source : "unknown");
+        }
+        LightLock_Unlock(&diag_lock);
+    }
+    return fingerprint_ok;
+}
+
+void diag_get_cert_panel_state(
+    char *pair_fingerprint, unsigned int pair_fingerprint_capacity,
+    char *pair_source, unsigned int pair_source_capacity,
+    char *tls_fingerprint, unsigned int tls_fingerprint_capacity,
+    char *tls_source, unsigned int tls_source_capacity) {
+    LightLock_Lock(&diag_lock);
+    if (pair_fingerprint != NULL && pair_fingerprint_capacity > 0) {
+        snprintf(pair_fingerprint, pair_fingerprint_capacity, "%s",
+                 diag_pair_fingerprint);
+    }
+    if (pair_source != NULL && pair_source_capacity > 0) {
+        snprintf(pair_source, pair_source_capacity, "%s", diag_pair_source);
+    }
+    if (tls_fingerprint != NULL && tls_fingerprint_capacity > 0) {
+        snprintf(tls_fingerprint, tls_fingerprint_capacity, "%s",
+                 diag_tls_fingerprint);
+    }
+    if (tls_source != NULL && tls_source_capacity > 0) {
+        snprintf(tls_source, tls_source_capacity, "%s", diag_tls_source);
+    }
+    LightLock_Unlock(&diag_lock);
+}
 
 static uint64_t ticks_to_ms(u64 ticks) {
     return (uint64_t)(ticks * 1000ULL / SYSCLOCK_ARM11);

@@ -22,7 +22,10 @@
 #include "diagnostics.h"
 
 #include <curl/curl.h>
+#include <openssl/pem.h>
+#include <openssl/x509.h>
 #include <stdbool.h>
+#include <stdio.h>
 #include <string.h>
 
 static CURL *curl;
@@ -124,6 +127,18 @@ int http_init(const char *keyDirectory, int logLevel) {
     curl_easy_setopt(curl, CURLOPT_SSLCERT, certificateFilePath);
     curl_easy_setopt(curl, CURLOPT_SSLKEYTYPE, "PEM");
     curl_easy_setopt(curl, CURLOPT_SSLKEY, keyFilePath);
+    FILE *certificate_file = fopen(certificateFilePath, "r");
+    X509 *tls_certificate = certificate_file != NULL
+        ? PEM_read_X509(certificate_file, NULL, NULL, NULL)
+        : NULL;
+    if (certificate_file != NULL) {
+        fclose(certificate_file);
+    }
+    diag_cert_checkpoint(DIAG_CERT_TLS, tls_certificate, "file",
+                         certificateFilePath, keyFilePath, NULL);
+    if (tls_certificate != NULL) {
+        X509_free(tls_certificate);
+    }
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, _write_curl);
     curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
