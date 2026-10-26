@@ -29,4 +29,13 @@ void trim(std::string &s);
 void add_pair_address(std::string address, uint16_t port);
 void remove_pair_address(std::string address, uint16_t port);
 std::vector<std::string> list_paired_addresses();
+
+struct ServerAddressRecord {
+    std::string address;
+    bool failed;
+};
+
+std::vector<ServerAddressRecord> list_server_addresses();
+void remember_server_address(std::string address, uint16_t port,
+                             bool failed);
 #endif
