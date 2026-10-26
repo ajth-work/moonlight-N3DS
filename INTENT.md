@@ -64,6 +64,10 @@ Ideas to explore:
 - Include settings or control options that let AJ compare alternative
   stick/click behaviors during hands-on testing; choose the final
   interaction based on what feels good in use.
+- Explore a compact stream-quality display, similar in spirit to the
+  Steam Deck game bar, including a latency history visualization for
+  a recent window (roughly the last minute as a starting point). The
+  exact latency measure, refresh rate, and presentation need testing.
 
 This is a rough direction, not a finished GUI specification.
 Diagnostics and AJ's on-console test come first. Screen layout,
@@ -93,3 +97,4 @@ Away light 400x240).
 - Diagnostics build on-console: does the trace/log capture the hang?
 - For the GUI, which stick/click options feel natural in a play test,
   and what should be included in the collapsible tray?
+- Which latency measure is available and most useful to display?
