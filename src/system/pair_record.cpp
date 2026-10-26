@@ -114,7 +114,7 @@ std::vector<ServerAddressRecord> list_server_addresses() {
             continue;
         }
 
-        std::size_t separator = line.find('\\t');
+        std::size_t separator = line.find('\t');
         std::string address =
             separator == std::string::npos ? line : line.substr(separator + 1);
         trim(address);
@@ -188,7 +188,7 @@ void remember_server_address(std::string address, uint16_t port, bool failed) {
     }
 
     for (const auto &entry : addresses) {
-        fprintf(fd, "%s\\t%s\\n", entry.failed ? "failed" : "saved",
+        fprintf(fd, "%s\t%s\n", entry.failed ? "failed" : "saved",
                 entry.address.c_str());
     }
     fclose(fd);
