@@ -78,6 +78,16 @@ Diagnostics and AJ's on-console test come first. Screen layout,
 stick sensitivity, tray contents, and exact L3/R3 interaction remain
 to be worked out and tested.
 
+## Later host-selection UX idea
+
+After the diagnostics milestone, make the initial server menu remember
+addresses as soon as they are entered, including addresses whose
+connection attempt fails. Keep those entries beside “new” so AJ can
+select a failed host and retry without retyping it. Show a clear failed
+status on the entry (for example, “stream.textplex.co (failed — try
+again?)”). Keep the navigation hints explicit: Up/Down to select, A to
+confirm or retry, B to go back.
+
 Other possible later work: pair-status precheck, pairing timeout,
 surfacing server error text, per-host profiles (Home sharp 800x480 /
 Away light 400x240).
@@ -103,3 +113,5 @@ Away light 400x240).
   and what should be included in the collapsible tray?
 - Which latency measure is available and most useful to display?
 - What battery and power-draw data can the 3DS reliably expose?
+- What status wording should the remembered-host list use for a
+  failed connection?
