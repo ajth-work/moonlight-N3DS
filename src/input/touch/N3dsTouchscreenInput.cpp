@@ -18,6 +18,7 @@
  */
 
 #include "N3dsTouchscreenInput.hpp"
+#include "../../diagnostics.h"
 #include "../../system/dispatcher.hpp"
 
 N3dsTouchscreenInput::N3dsTouchscreenInput(GAMEPAD_STATE *gamepad_in,
@@ -41,6 +42,20 @@ void N3dsTouchscreenInput::accept(IMessage *msg) {
 
     auto touch_msg = static_cast<TouchStateChangedMsg *>(msg);
     next_touch_type.store(touch_msg->ttype);
+}
+
+bool N3dsTouchscreenInput::handle_home_press() {
+    if (handler != nullptr && handler->handle_home_press()) {
+        return true;
+    }
+
+    if (touch_type == N3dsTouchType::MENU_TOUCH) {
+        return false;
+    }
+
+    home_back_pending = true;
+    next_touch_type.store(N3dsTouchType::MENU_TOUCH);
+    return true;
 }
 
 void N3dsTouchscreenInput::_n3dsinput_set_touch(N3dsTouchType touch_type_in) {
@@ -75,6 +90,10 @@ void N3dsTouchscreenInput::_n3dsinput_set_touch(N3dsTouchType touch_type_in) {
         break;
     }
     touch_type = touch_type_in;
+    if (home_back_pending && touch_type_in == N3dsTouchType::MENU_TOUCH) {
+        home_back_pending = false;
+        diag_log("HOME", "page-back taken route=touch-submenu");
+    }
 }
 
 void N3dsTouchscreenInput::n3dsinput_handle_touch(u32 kDown, u32 kUp) {

@@ -42,6 +42,7 @@ typedef struct _GAMEPAD_STATE {
 class TouchHandlerBase {
   public:
     virtual ~TouchHandlerBase() = default;
+    virtual bool handle_home_press() { return false; }
     void handle_touch_down(touchPosition touch);
     void handle_touch_up(touchPosition touch);
     void handle_touch_hold(touchPosition touch);
@@ -74,6 +75,7 @@ class MenuTouchHandler : public TouchHandlerBase {
   public:
     MenuTouchHandler();
     ~MenuTouchHandler();
+    bool handle_home_press() override;
 
   private:
     enum class ThreeDPanelAction {

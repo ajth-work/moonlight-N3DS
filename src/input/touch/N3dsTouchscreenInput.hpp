@@ -33,6 +33,7 @@ class N3dsTouchscreenInput : public ISubscriber {
     void accept(IMessage *msg) override;
 
     void n3dsinput_handle_touch(u32 kDown, u32 kUp);
+    bool handle_home_press();
 
   private:
     void _n3dsinput_set_touch(N3dsTouchType touch_type_in);
@@ -42,5 +43,6 @@ class N3dsTouchscreenInput : public ISubscriber {
     int image_width, image_height;
     AtomicVar<N3dsTouchType> next_touch_type = N3dsTouchType::DISABLED;
     N3dsTouchType touch_type = N3dsTouchType::DISABLED;
+    bool home_back_pending = false;
     std::unique_ptr<TouchHandlerBase> handler = nullptr;
 };

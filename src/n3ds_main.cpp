@@ -68,6 +68,21 @@
 #define MAX_INPUT_CHAR 60
 
 static u32 *SOC_buffer = NULL;
+static aptHookCookie apt_status_hook_cookie{};
+static bool apt_status_hook_registered = false;
+
+static void n3ds_apt_status_hook(APT_HookType hook, void *) {
+    switch (hook) {
+    case APTHOOK_ONSUSPEND:
+        diag_log("APPLET", "suspend begin");
+        break;
+    case APTHOOK_ONRESTORE:
+        diag_log("APPLET", "resume");
+        break;
+    default:
+        break;
+    }
+}
 
 typedef void (*DiagnosticTaskFunction)(void *);
 
@@ -242,6 +257,10 @@ static inline void wait_for_button(std::string prompt = "") {
 }
 
 static void n3ds_exit_handler(void) {
+    if (apt_status_hook_registered) {
+        aptUnhook(&apt_status_hook_cookie);
+        apt_status_hook_registered = false;
+    }
     diag_log("APP_EXIT", "clean exit handler entered");
     diag_close();
     NDMU_UnlockState();
@@ -835,6 +854,8 @@ static void init_3ds() {
     osSetSpeedupEnable(true);
     aptSetSleepAllowed(false);
     aptInit();
+    aptHook(&apt_status_hook_cookie, n3ds_apt_status_hook, nullptr);
+    apt_status_hook_registered = true;
 
     SOC_buffer = (u32 *)memalign(SOC_ALIGN, SOC_BUFFERSIZE);
     status = socInit(SOC_buffer, SOC_BUFFERSIZE);

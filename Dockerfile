@@ -60,6 +60,7 @@ RUN wget https://github.com/3DSGuy/Project_CTR/releases/download/makerom-v0.18.3
 
 # Install custom third party libraries
 COPY . /moonlight-N3DS
+RUN python3 -c 'from pathlib import Path; root=Path("/moonlight-N3DS"); [(p.write_bytes(data.replace(b"\r\n", b"\n"))) for p in root.rglob("*") if p.is_file() and b"\0" not in (data:=p.read_bytes()) and b"\r\n" in data]'
 
 RUN source /etc/profile.d/devkit-env.sh && /moonlight-N3DS/3ds/build-expat.sh
 RUN source /etc/profile.d/devkit-env.sh && /moonlight-N3DS/3ds/build-openssl.sh

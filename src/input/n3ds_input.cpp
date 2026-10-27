@@ -18,6 +18,7 @@
  */
 
 #include "n3ds_input.hpp"
+#include "../diagnostics.h"
 #include "../system/dispatcher.hpp"
 #include "touch/TouchHandler.hpp"
 
@@ -197,7 +198,12 @@ void N3dsInput::n3dsinput_handle_event() {
     // Use the HOME button to open the menu
     if (aptCheckHomePressRejected()) {
         if (!menu_active) {
-            force_touchscreen_menu();
+            const bool page_back = touch_handler->handle_home_press();
+            diag_log("HOME", "press handled route=%s",
+                     page_back ? "page_back" : "touch_menu");
+            if (!page_back) {
+                force_touchscreen_menu();
+            }
             menu_active = true;
         }
         return;
