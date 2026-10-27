@@ -32,10 +32,10 @@ struct N3ds3DEyePresentation {
 };
 
 N3ds3DSettings n3ds_3d_settings_snapshot();
+void n3ds_3d_reset_settings();
 void n3ds_3d_cycle_mode();
 void n3ds_3d_cycle_aspect();
 void n3ds_3d_adjust_shift(int delta);
-bool n3ds_3d_handle_touch(int x, int y);
 const char *n3ds_3d_mode_name(N3ds3DMode mode);
 const char *n3ds_3d_aspect_name(N3ds3DAspect aspect);
 N3ds3DEyePresentation n3ds_3d_eye_presentation(

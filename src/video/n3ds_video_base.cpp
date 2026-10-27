@@ -21,6 +21,7 @@
 #include "gamepad_bgr.h"
 #include "keyboard_bgr.h"
 #include "menu_bgr.h"
+#include "menu_3d_bgr.h"
 #include "touchpad_bgr.h"
 #include "video.hpp"
 
@@ -44,6 +45,7 @@ VideoDecoderBase::VideoDecoderBase(int width, int height) {
 
     auto pDispatcher = MessageDispatcher::get_instance();
     pDispatcher->subscribe(MessageType::TOUCH_STATE_CHANGED, this);
+    pDispatcher->subscribe(MessageType::TOUCH_PANEL_PAGE_CHANGED, this);
     pDispatcher->subscribe(MessageType::KEYBOARD_STATE_CHANGED, this);
     pDispatcher->subscribe(MessageType::EXIT_STREAM, this);
 }
@@ -51,6 +53,7 @@ VideoDecoderBase::VideoDecoderBase(int width, int height) {
 VideoDecoderBase::~VideoDecoderBase() {
     auto pDispatcher = MessageDispatcher::get_instance();
     pDispatcher->unsubscribe(MessageType::TOUCH_STATE_CHANGED, this);
+    pDispatcher->unsubscribe(MessageType::TOUCH_PANEL_PAGE_CHANGED, this);
     pDispatcher->unsubscribe(MessageType::KEYBOARD_STATE_CHANGED, this);
     pDispatcher->unsubscribe(MessageType::EXIT_STREAM, this);
 }
@@ -60,6 +63,15 @@ void VideoDecoderBase::accept(IMessage *msg) {
     case MessageType::TOUCH_STATE_CHANGED: {
         auto touch_msg = static_cast<TouchStateChangedMsg *>(msg);
         _accept_touch_state_changed(touch_msg->ttype);
+        break;
+    }
+    case MessageType::TOUCH_PANEL_PAGE_CHANGED: {
+        const auto page_msg = static_cast<TouchPanelPageChangedMsg *>(msg);
+        renderer_lock.lock();
+        renderer->set_touch_panel_page(
+            page_msg->is_3d_page ? menu_3d_bgr : menu_bgr,
+            page_msg->is_3d_page, n3ds_3d_settings_snapshot());
+        renderer_lock.unlock();
         break;
     }
     case MessageType::KEYBOARD_STATE_CHANGED:

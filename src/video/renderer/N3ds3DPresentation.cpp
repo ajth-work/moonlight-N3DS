@@ -24,6 +24,12 @@ N3ds3DSettings n3ds_3d_settings_snapshot() {
             current_shift.load()};
 }
 
+void n3ds_3d_reset_settings() {
+    current_mode.store(static_cast<int>(N3ds3DMode::HSBS));
+    current_aspect.store(static_cast<int>(N3ds3DAspect::STRETCH));
+    current_shift.store(0);
+}
+
 void n3ds_3d_cycle_mode() {
     current_mode.store((current_mode.load() + 1) % 6);
 }
@@ -36,30 +42,6 @@ void n3ds_3d_adjust_shift(int delta) {
     current_shift.store(
         std::max(-MAX_HORIZONTAL_SHIFT,
                  std::min(MAX_HORIZONTAL_SHIFT, current_shift.load() + delta)));
-}
-
-bool n3ds_3d_handle_touch(int x, int y) {
-    // The bottom row labeled MODE / ASPECT / SHIFT - / SHIFT + is reserved
-    // for presentation controls while a stream is active.
-    if (x < 0 || x >= 320 || y < 208 || y >= 240) {
-        return false;
-    }
-
-    switch (x / 80) {
-    case 0:
-        n3ds_3d_cycle_mode();
-        break;
-    case 1:
-        n3ds_3d_cycle_aspect();
-        break;
-    case 2:
-        n3ds_3d_adjust_shift(-1);
-        break;
-    case 3:
-        n3ds_3d_adjust_shift(1);
-        break;
-    }
-    return true;
 }
 
 const char *n3ds_3d_mode_name(N3ds3DMode mode) {

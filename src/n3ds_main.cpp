@@ -822,6 +822,7 @@ static void init_3ds() {
     gfxInit(GSP_RGB565_OES, GSP_RGB565_OES, false);
     gfxSetDoubleBuffering(GFX_TOP, false);
     gfxSetDoubleBuffering(GFX_BOTTOM, false);
+    n3ds_restore_mono_display();
 
     consoleInit(GFX_TOP, &DebugTouchHandler::topScreen);
     consoleInit(GFX_BOTTOM, &DebugTouchHandler::bottomScreen);
@@ -953,6 +954,7 @@ static void limelight_start_call(void *opaque) {
 
 static void stream(PSERVER_DATA server, PCONFIGURATION config, int appId,
                    std::shared_ptr<N3dsInput> input_handler) {
+    n3ds_3d_reset_settings();
     int gamepad_mask = 1;
     diag_log("STREAM_START_REQUESTED", "app_id=%d", appId);
     struct StartAppCall {
@@ -1037,6 +1039,7 @@ static void stream(PSERVER_DATA server, PCONFIGURATION config, int appId,
         diag_log("STREAM_STOP", "app_id=%d reason=connection_start_failed status=%d",
                  appId, status);
         n3ds_connection_callbacks.connectionTerminated(status);
+        n3ds_restore_mono_display();
         printf("Connection failed with error: %d\n", status);
         wait_for_button();
         return;
@@ -1050,6 +1053,9 @@ static void stream(PSERVER_DATA server, PCONFIGURATION config, int appId,
     diag_set_phase("stream.stopping");
     diag_log("STREAM_STOP", "app_id=%d reason=connection_loop_ended", appId);
     LiStopConnection();
+    // LiStopConnection runs the decoder cleanup callback. Restore both top
+    // framebuffers to black before the menus resume, then present mono UI.
+    n3ds_restore_mono_display();
     diag_phase_outcome("stream.stopping", "complete", GS_OK);
     N3dsConnectionListener::destroy_instance();
 

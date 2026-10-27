@@ -76,12 +76,24 @@ class MenuTouchHandler : public TouchHandlerBase {
     ~MenuTouchHandler();
 
   private:
+    enum class ThreeDPanelAction {
+        NONE,
+        MODE,
+        ASPECT,
+        SHIFT_MINUS,
+        SHIFT_PLUS,
+        HOME,
+    };
+
     void _handle_touch_down(touchPosition touch) override;
     void _handle_touch_up(touchPosition touch) override;
     void _handle_touch_hold(touchPosition touch) override;
 
   private:
     std::shared_ptr<IMessage> message = nullptr;
+    bool three_d_page = false;
+    bool pending_enter_3d_page = false;
+    ThreeDPanelAction pending_3d_action = ThreeDPanelAction::NONE;
 };
 
 class GamepadTouchHandler : public TouchHandlerBase {

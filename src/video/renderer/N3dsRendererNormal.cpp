@@ -39,6 +39,13 @@ void N3dsRendererNormal::set_bottom_screen(const uint8_t *source, int offset,
     bottom_renderer.write_px_to_framebuffer_raw(source, offset, size);
 }
 
+void N3dsRendererNormal::set_touch_panel_page(
+    const uint8_t *source, bool is_3d_page,
+    const N3ds3DSettings &settings) {
+    bottom_renderer.write_px_to_framebuffer_raw(
+        source, 0, 0, is_3d_page ? &settings : nullptr);
+}
+
 void N3dsRendererNormal::write_px_to_framebuffer(uint8_t *source) {
     top_renderer.write_px_to_framebuffer(source);
 }

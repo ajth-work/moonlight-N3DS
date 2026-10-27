@@ -35,7 +35,8 @@ void N3dsRendererBottom::write_px_to_framebuffer(uint8_t *source) {
 }
 
 void N3dsRendererBottom::write_px_to_framebuffer_raw(const uint8_t *source,
-                                                     int offset, int size) {
+                                                     int offset, int size,
+                                                     const N3ds3DSettings *page_settings) {
     u8 *gfxbtmadr = gfxGetFramebuffer(GFX_BOTTOM, GFX_LEFT, NULL, NULL);
 
     if (size == 0) {
@@ -44,6 +45,9 @@ void N3dsRendererBottom::write_px_to_framebuffer_raw(const uint8_t *source,
     memcpy(gfxbtmadr + offset, source, size);
 
     n3ds_draw_diag_version_overlay();
+    if (page_settings != nullptr) {
+        n3ds_draw_touch_panel_3d_readout(*page_settings);
+    }
     gfxFlushBuffers();
     gfxScreenSwapBuffers(GFX_BOTTOM, false);
 }

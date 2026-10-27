@@ -44,7 +44,6 @@ void N3dsRendererTop::write_px_to_framebuffer(uint8_t *source) {
     // OFF/2D mode writes identical full-frame images to both eyes.
     ensure_3d_enabled();
     write_px_to_framebuffer_gpu(source);
-    n3ds_draw_3d_status_overlay();
 }
 
 void N3dsRendererTop::set_perf_decode_ticks(u64 ticks) {

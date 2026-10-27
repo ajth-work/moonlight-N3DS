@@ -55,9 +55,27 @@ N3dsRendererBase::~N3dsRendererBase() {
     vramFree(vramFb);
     vramFree(vramTex);
 
-    // Clear target screen
-    u8 *framebuf = gfxGetFramebuffer(screen, GFX_LEFT, NULL, NULL);
-    memset(framebuf, 0, surface_width * surface_height * px_size);
+    // Clear the target through GX so framebuffer clears never write into VRAM
+    // from the CPU.
+    u32 *framebuf = (u32 *)gfxGetFramebuffer(screen, GFX_LEFT, NULL, NULL);
+    const u32 framebuffer_words =
+        (surface_width * surface_height * px_size) / sizeof(u32);
+    if (framebuf != NULL) {
+        const Result clear_result = GX_MemoryFill(
+            framebuf, 0, framebuf + framebuffer_words,
+            GX_FILL_TRIGGER | GX_FILL_16BIT_DEPTH, NULL, 0, NULL, 0);
+        if (clear_result == 0) {
+            gspWaitForEvent(GSPGPU_EVENT_PPF, 0);
+        } else {
+            diag_log("RENDER",
+                     "framebuffer_clear screen=%s side=LEFT result=%ld",
+                     screen == GFX_TOP ? "TOP" : "BOTTOM",
+                     (long)clear_result);
+        }
+    } else {
+        diag_log("RENDER", "framebuffer_clear screen=%s side=LEFT result=null",
+                 screen == GFX_TOP ? "TOP" : "BOTTOM");
+    }
     gfxScreenSwapBuffers(screen, true);
 
     // Return to the default display width before exiting
@@ -467,10 +485,6 @@ void N3dsRendererBase::write_px_to_framebuffer_gpu(uint8_t *__restrict source) {
         draw_perf_counters();
     }
 
-    if (screen == GFX_BOTTOM) {
-        n3ds_draw_3d_status_overlay();
-    }
-
     gfxScreenSwapBuffers(screen, true);
 
     renderer_frames_completed++;
@@ -495,8 +509,7 @@ void n3ds_draw_diag_version_overlay() {
     consoleSelect(previous_console);
 }
 
-void n3ds_draw_3d_status_overlay() {
-    const N3ds3DSettings settings = n3ds_3d_settings_snapshot();
+void n3ds_draw_touch_panel_3d_readout(const N3ds3DSettings &settings) {
     char status[41];
     std::snprintf(status, sizeof(status), "3D: %s | %s | SHIFT %+d",
                   n3ds_3d_mode_name(settings.mode),
@@ -506,11 +519,49 @@ void n3ds_draw_3d_status_overlay() {
         consoleSelect(&DebugTouchHandler::bottomScreen);
     DebugTouchHandler::bottomScreen.frameBuffer =
         (u16 *)gfxGetFramebuffer(GFX_BOTTOM, GFX_LEFT, NULL, NULL);
-    printf("\x1b[25;1H%-40.40s", status);
-    printf("\x1b[26;1H%-40s", "Moonlight " DIAG_BUILD_VERSION);
-    printf("\x1b[27;1HMODE      ASPECT    SHIFT -   SHIFT +");
-    printf("\x1b[30;1HMoonlight " DIAG_BUILD_VERSION);
+    char line[21];
+    std::snprintf(line, sizeof(line), "MODE: %.14s",
+                  n3ds_3d_mode_name(settings.mode));
+    printf("\x1b[20;21H%-20.20s", line);
+    std::snprintf(line, sizeof(line), "ASPECT: %.12s",
+                  n3ds_3d_aspect_name(settings.aspect));
+    printf("\x1b[21;21H%-20.20s", line);
+    std::snprintf(line, sizeof(line), "SHIFT: %+d", settings.shift);
+    printf("\x1b[22;21H%-20.20s", line);
+    printf("\x1b[26;1H%-40.40s", status);
     consoleSelect(previous_console);
-    gfxFlushBuffers();
-    gfxScreenSwapBuffers(GFX_BOTTOM, false);
+}
+
+void n3ds_restore_mono_display() {
+    gfxSetWide(false);
+    if (!gfxIs3D()) {
+        // Enable stereo briefly so GX can address and clear both eye buffers.
+        gfxSet3D(true);
+    }
+
+    u32 *left = (u32 *)gfxGetFramebuffer(GFX_TOP, GFX_LEFT, NULL, NULL);
+    u32 *right = (u32 *)gfxGetFramebuffer(GFX_TOP, GFX_RIGHT, NULL, NULL);
+    const u32 framebuffer_words =
+        (GSP_SCREEN_HEIGHT_TOP * GSP_SCREEN_WIDTH * 2) / sizeof(u32);
+    if (left == NULL || right == NULL) {
+        diag_log("RENDER", "stereo_framebuffer_clear result=null");
+        gfxSet3D(false);
+        gfxSetWide(false);
+        return;
+    }
+    const Result clear_result = GX_MemoryFill(
+        left, 0, left + framebuffer_words,
+        GX_FILL_TRIGGER | GX_FILL_16BIT_DEPTH, right, 0,
+        right + framebuffer_words, GX_FILL_16BIT_DEPTH);
+    if (clear_result == 0) {
+        gspWaitForEvent(GSPGPU_EVENT_PPF, 0);
+    } else {
+        diag_log("RENDER", "stereo_framebuffer_clear result=%ld",
+                 (long)clear_result);
+    }
+
+    gfxSet3D(false);
+    gfxSetWide(false);
+    gfxScreenSwapBuffers(GFX_TOP, true);
+    diag_log("RENDER", "stereo_presentation=mono outside_stream=1");
 }

@@ -7,6 +7,7 @@ enum MessageType {
     ENABLE_ACCEL,
     ENABLE_GYRO,
     TOUCH_STATE_CHANGED,
+    TOUCH_PANEL_PAGE_CHANGED,
     KEYBOARD_STATE_CHANGED,
     EXIT_STREAM,
     MESSAGE_TYPE_COUNT
@@ -51,6 +52,17 @@ class TouchStateChangedMsg : public IMessage {
         return MessageType::TOUCH_STATE_CHANGED;
     };
     N3dsTouchType ttype;
+};
+
+class TouchPanelPageChangedMsg : public IMessage {
+  public:
+    TouchPanelPageChangedMsg(bool is_3d_page_in)
+        : is_3d_page(is_3d_page_in){};
+    ~TouchPanelPageChangedMsg() = default;
+    MessageType getMessageType() override {
+        return MessageType::TOUCH_PANEL_PAGE_CHANGED;
+    };
+    bool is_3d_page;
 };
 
 class KeyboardStateChangedMsg : public IMessage {

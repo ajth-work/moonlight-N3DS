@@ -20,6 +20,7 @@
 
 #include "../../system/AtomicVar.hpp"
 #include "../../system/subscriber.hpp"
+#include "N3ds3DPresentation.hpp"
 #include <3ds.h>
 #include <Limelight.h>
 #include <memory>
@@ -32,13 +33,16 @@
 #define CMDLIST_SZ 0x800
 
 void n3ds_draw_diag_version_overlay();
-void n3ds_draw_3d_status_overlay();
+void n3ds_draw_touch_panel_3d_readout(const N3ds3DSettings &settings);
+void n3ds_restore_mono_display();
 
 class IN3dsRenderer {
   public:
     virtual ~IN3dsRenderer() = default;
     virtual void write_px_to_framebuffer(uint8_t *source) = 0;
     virtual void set_perf_decode_ticks(u64 ticks) = 0;
+    virtual void set_touch_panel_page(const uint8_t *source, bool is_3d_page,
+                                      const N3ds3DSettings &settings) {}
 };
 
 class N3dsRendererBase {
@@ -95,7 +99,8 @@ class N3dsRendererBottom : public N3dsRendererBase {
     ~N3dsRendererBottom() = default;
     void write_px_to_framebuffer(uint8_t *source);
     void write_px_to_framebuffer_raw(const uint8_t *source, int offset = 0,
-                                     int size = 0);
+                                     int size = 0,
+                                     const N3ds3DSettings *page_settings = nullptr);
 };
 
 class N3dsRendererMock : public IN3dsRenderer {
@@ -114,6 +119,8 @@ class N3dsRendererNormal : public IN3dsRenderer {
     void write_px_to_framebuffer(uint8_t *source) override;
     void set_perf_decode_ticks(u64 ticks) override;
     void set_bottom_screen(const uint8_t *source, int offset = 0, int size = 0);
+    void set_touch_panel_page(const uint8_t *source, bool is_3d_page,
+                              const N3ds3DSettings &settings) override;
 
   private:
     N3dsRendererTop top_renderer;
