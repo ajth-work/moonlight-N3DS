@@ -1050,14 +1050,20 @@ static void stream(PSERVER_DATA server, PCONFIGURATION config, int appId,
 
     diag_set_phase("stream.stopping");
     diag_log("STREAM_STOP", "app_id=%d reason=connection_loop_ended", appId);
+    diag_log("TEARDOWN", "begin");
+    diag_log("TEARDOWN", "LiStopConnection phase=before");
     LiStopConnection();
+    diag_log("TEARDOWN", "LiStopConnection phase=after");
     // LiStopConnection runs the decoder cleanup callback. Restore both top
     // framebuffers to black before the menus resume, then present mono UI.
+    diag_log("TEARDOWN", "n3ds_restore_mono_display phase=before");
     diag_log("DISPLAY_RESTORE", "teardown restore begin");
     n3ds_restore_mono_display();
     diag_log("DISPLAY_RESTORE", "teardown restore end");
+    diag_log("TEARDOWN", "n3ds_restore_mono_display phase=after");
     diag_phase_outcome("stream.stopping", "complete", GS_OK);
     N3dsConnectionListener::destroy_instance();
+    diag_log("TEARDOWN", "end");
 
     if (config->quitappafter) {
         printf("Sending app quit request ...\n");

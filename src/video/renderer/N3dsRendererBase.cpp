@@ -45,6 +45,8 @@ N3dsRendererBase::N3dsRendererBase(gfxScreen_t screen_in, int surface_width_in,
 }
 
 N3dsRendererBase::~N3dsRendererBase() {
+    diag_log("TEARDOWN", "renderer_destroy screen=%s phase=before",
+             screen == GFX_TOP ? "TOP" : "BOTTOM");
     diag_log("RENDER",
              "renderer_destroy screen=%s frames_entered=%llu frames_completed=%llu",
              screen == GFX_TOP ? "TOP" : "BOTTOM",
@@ -61,27 +63,44 @@ N3dsRendererBase::~N3dsRendererBase() {
     const u32 framebuffer_words =
         (surface_width * surface_height * px_size) / sizeof(u32);
     if (framebuf != NULL) {
+        diag_log("TEARDOWN", "renderer_clear screen=%s phase=begin",
+                 screen == GFX_TOP ? "TOP" : "BOTTOM");
         const Result clear_result = GX_MemoryFill(
             framebuf, 0, framebuf + framebuffer_words,
             GX_FILL_TRIGGER | GX_FILL_16BIT_DEPTH, NULL, 0, NULL, 0);
         if (clear_result == 0) {
-            gspWaitForEvent(GSPGPU_EVENT_PPF, 0);
+            diag_log("TEARDOWN",
+                     "renderer_clear_wait screen=%s event=PSC0 phase=begin",
+                     screen == GFX_TOP ? "TOP" : "BOTTOM");
+            gspWaitForEvent(GSPGPU_EVENT_PSC0, 0);
+            diag_log("TEARDOWN",
+                     "renderer_clear_wait screen=%s event=PSC0 phase=end",
+                     screen == GFX_TOP ? "TOP" : "BOTTOM");
         } else {
             diag_log("RENDER",
                      "framebuffer_clear screen=%s side=LEFT result=%ld",
                      screen == GFX_TOP ? "TOP" : "BOTTOM",
                      (long)clear_result);
         }
+        diag_log("TEARDOWN", "renderer_clear screen=%s phase=end result=%ld",
+                 screen == GFX_TOP ? "TOP" : "BOTTOM",
+                 (long)clear_result);
     } else {
         diag_log("RENDER", "framebuffer_clear screen=%s side=LEFT result=null",
                  screen == GFX_TOP ? "TOP" : "BOTTOM");
     }
+    diag_log("TEARDOWN", "renderer_swap screen=%s phase=begin",
+             screen == GFX_TOP ? "TOP" : "BOTTOM");
     gfxScreenSwapBuffers(screen, true);
+    diag_log("TEARDOWN", "renderer_swap screen=%s phase=end",
+             screen == GFX_TOP ? "TOP" : "BOTTOM");
 
     // Return to the default display width before exiting
     if (surface_width == GSP_SCREEN_HEIGHT_TOP_2X) {
         gfxSetWide(false);
     }
+    diag_log("TEARDOWN", "renderer_destroy screen=%s phase=after",
+             screen == GFX_TOP ? "TOP" : "BOTTOM");
 }
 
 void N3dsRendererBase::ensure_3d_enabled() {
@@ -549,19 +568,26 @@ void n3ds_restore_mono_display() {
         gfxSetWide(false);
         return;
     }
+    diag_log("TEARDOWN", "mono_display_clear phase=begin");
     const Result clear_result = GX_MemoryFill(
         left, 0, left + framebuffer_words,
         GX_FILL_TRIGGER | GX_FILL_16BIT_DEPTH, right, 0,
         right + framebuffer_words, GX_FILL_16BIT_DEPTH);
     if (clear_result == 0) {
-        gspWaitForEvent(GSPGPU_EVENT_PPF, 0);
+        diag_log("TEARDOWN", "mono_display_clear_wait event=PSC0 phase=begin");
+        gspWaitForEvent(GSPGPU_EVENT_PSC0, 0);
+        diag_log("TEARDOWN", "mono_display_clear_wait event=PSC0 phase=end");
     } else {
         diag_log("RENDER", "stereo_framebuffer_clear result=%ld",
                  (long)clear_result);
     }
+    diag_log("TEARDOWN", "mono_display_clear phase=end result=%ld",
+             (long)clear_result);
 
     gfxSet3D(false);
     gfxSetWide(false);
+    diag_log("TEARDOWN", "mono_display_swap phase=begin");
     gfxScreenSwapBuffers(GFX_TOP, true);
+    diag_log("TEARDOWN", "mono_display_swap phase=end");
     diag_log("RENDER", "stereo_presentation=mono outside_stream=1");
 }
