@@ -62,22 +62,23 @@ GFXBUILD	:=	$(BUILD)
 
 
 # 3dsx
-APP_TITLE	:=	Moonlight
-APP_DESCRIPTION	:=	Moonlight Streaming Client
+APP_TITLE	:=	Moonlight 3D
+APP_DESCRIPTION	:=	Moonlight 3D Streaming Client
 APP_AUTHOR	:=	zoeyjodon
-ICON		:=	3ds/res/ic_moonlight.png
+ICON		:=	3ds/res/ic_moonlight_3d.png
 
 # CIA
 BANNER_AUDIO	:=	3ds/res/banner.wav
 BANNER_IMAGE	:=	3ds/res/banner.png
 RSF_PATH		:=	3ds/res/app.rsf
-UNIQUE_ID		:=	0x3600
-PRODUCT_CODE	:=	CTR-P-MOONLIGHT
+# makerom shifts UniqueId into Title ID bits 8..31; 0x3D produces ...3D00.
+UNIQUE_ID		:=	0x3D
+PRODUCT_CODE	:=	CTR-P-ML3D
 ICON_FLAGS		:=	nosavebackups,visible
 
 # Version
 VERSION_MAJOR	:=	3
-VERSION_MINOR	:=	0
+VERSION_MINOR	:=	2
 VERSION_MICRO	:=	0
 
 #---------------------------------------------------------------------------------

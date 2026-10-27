@@ -20,6 +20,7 @@
 #include "n3ds_input.hpp"
 #include "../system/dispatcher.hpp"
 #include "touch/TouchHandler.hpp"
+#include "../video/renderer/N3ds3DPresentation.hpp"
 
 #include <3ds.h>
 #include <Limelight.h>
@@ -181,7 +182,21 @@ void N3dsInput::n3dsinput_handle_event() {
     u32 kUp = hidKeysUp();
     previous_state = gamepad_state;
 
-    touch_handler->n3dsinput_handle_touch(kDown, kUp);
+    bool consume_three_d_touch = three_d_touch_active;
+    if (kDown & KEY_TOUCH) {
+        touchPosition touch;
+        hidTouchRead(&touch);
+        if (n3ds_3d_handle_touch(touch.px, touch.py)) {
+            three_d_touch_active = true;
+            consume_three_d_touch = true;
+        }
+    }
+    if (three_d_touch_active && (kUp & KEY_TOUCH)) {
+        three_d_touch_active = false;
+    }
+    if (!consume_three_d_touch) {
+        touch_handler->n3dsinput_handle_touch(kDown, kUp);
+    }
 
     if (kDown & ~KEY_TOUCH) {
         gamepad_state.buttons |= _n3ds_to_li_buttons(kDown);

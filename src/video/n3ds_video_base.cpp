@@ -29,8 +29,9 @@
 
 VideoDecoderBase::VideoDecoderBase(int width, int height) {
     surface_height = GSP_SCREEN_WIDTH;
-    surface_width = width > GSP_SCREEN_HEIGHT_TOP ? GSP_SCREEN_HEIGHT_TOP_2X
-                                                  : GSP_SCREEN_HEIGHT_TOP;
+    // Render each eye at the native 400x240 top-screen size. The renderer
+    // selects a source rectangle independently for the left and right eyes.
+    surface_width = GSP_SCREEN_HEIGHT_TOP;
     // Clamp output image to max dimensions supported by the renderer
     image_width = width > MOON_CTR_VIDEO_TEX_W ? MOON_CTR_VIDEO_TEX_W : width;
     image_height =

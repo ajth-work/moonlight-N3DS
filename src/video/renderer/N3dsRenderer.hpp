@@ -32,6 +32,7 @@
 #define CMDLIST_SZ 0x800
 
 void n3ds_draw_diag_version_overlay();
+void n3ds_draw_3d_status_overlay();
 
 class IN3dsRenderer {
   public:
