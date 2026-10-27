@@ -69,6 +69,8 @@ class N3dsRendererBase {
     int image_height;
     int px_size;
     bool debug;
+    u64 renderer_frames_entered = 0;
+    u64 renderer_frames_completed = 0;
     u32 *cmdlist = NULL;
     void *vramFb = NULL;
     void *vramTex = NULL;
@@ -81,6 +83,9 @@ class N3dsRendererTop : public N3dsRendererBase {
     ~N3dsRendererTop() = default;
     void write_px_to_framebuffer(uint8_t *source);
     void set_perf_decode_ticks(u64 ticks);
+
+  private:
+    bool first_frame_marker_logged = false;
 };
 
 class N3dsRendererBottom : public N3dsRendererBase {

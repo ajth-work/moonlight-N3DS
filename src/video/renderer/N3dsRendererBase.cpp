@@ -45,6 +45,12 @@ N3dsRendererBase::N3dsRendererBase(gfxScreen_t screen_in, int surface_width_in,
 }
 
 N3dsRendererBase::~N3dsRendererBase() {
+    diag_log("RENDER",
+             "renderer_destroy screen=%s frames_entered=%llu frames_completed=%llu",
+             screen == GFX_TOP ? "TOP" : "BOTTOM",
+             (unsigned long long)renderer_frames_entered,
+             (unsigned long long)renderer_frames_completed);
+
     linearFree(cmdlist);
     vramFree(vramFb);
     vramFree(vramTex);
@@ -115,6 +121,21 @@ inline void N3dsRendererBase::draw_perf_counters() {
 }
 
 void N3dsRendererBase::write_px_to_framebuffer_gpu(uint8_t *__restrict source) {
+    const u64 frame_start_ticks = svcGetSystemTick();
+    const u64 frame_number = ++renderer_frames_entered;
+    const bool log_frame = frame_number <= 10;
+    if (log_frame) {
+        const N3ds3DSettings entry_settings = n3ds_3d_settings_snapshot();
+        diag_log("RENDER",
+                 "frame=%llu phase=entry screen=%s surface=%dx%d image=%dx%d mode=%s aspect=%s shift=%d gfx3d=%.2f",
+                 (unsigned long long)frame_number,
+                 screen == GFX_TOP ? "TOP" : "BOTTOM", surface_width,
+                 surface_height, image_width, image_height,
+                 n3ds_3d_mode_name(entry_settings.mode),
+                 n3ds_3d_aspect_name(entry_settings.aspect),
+                 entry_settings.shift, (double)gfxIs3D());
+    }
+
     // Do nothing when GPU right is lost, otherwise we hang when going to
     // the home menu.
     if (!gspHasGpuRight()) {
@@ -132,6 +153,11 @@ void N3dsRendererBase::write_px_to_framebuffer_gpu(uint8_t *__restrict source) {
     // significantly faster than the decoder.
 
     // Tile the source image into the scratch buffer.
+    if (log_frame) {
+        diag_log("RENDER",
+                 "frame=%llu eye=SHARED stage=texture_display_transfer phase=begin",
+                 (unsigned long long)frame_number);
+    }
     GX_DisplayTransfer(
         (u32 *)source,
         GX_BUFFER_DIM(MOON_CTR_VIDEO_TEX_W, MOON_CTR_VIDEO_TEX_H),
@@ -140,6 +166,11 @@ void N3dsRendererBase::write_px_to_framebuffer_gpu(uint8_t *__restrict source) {
         GX_TRANSFER_FLIP_VERT(1) | GX_TRANSFER_OUT_TILED(1) |
             GX_TRANSFER_IN_FORMAT(GX_TRANSFER_FMT_RGB565) |
             GX_TRANSFER_OUT_FORMAT(GX_TRANSFER_FMT_RGB565));
+    if (log_frame) {
+        diag_log("RENDER",
+                 "frame=%llu eye=SHARED stage=texture_display_transfer phase=end result=returned",
+                 (unsigned long long)frame_number);
+    }
 
     // Compose one independent eye image at a time in the existing GPU frame
     // presentation path. Updating these rectangles is safe mid-stream because
@@ -147,6 +178,9 @@ void N3dsRendererBase::write_px_to_framebuffer_gpu(uint8_t *__restrict source) {
     const N3ds3DSettings settings = n3ds_3d_settings_snapshot();
     const int eye_pass_count = screen == GFX_TOP ? 2 : 1;
     for (int eye = 0; eye < eye_pass_count; eye++) {
+        const char *eye_name = screen == GFX_TOP
+                                   ? (eye == 0 ? "LEFT" : "RIGHT")
+                                   : "MONO";
         const N3ds3DEyePresentation eye_presentation =
             screen == GFX_TOP
                 ? n3ds_3d_eye_presentation(settings, image_width,
@@ -333,7 +367,17 @@ void N3dsRendererBase::write_px_to_framebuffer_gpu(uint8_t *__restrict source) {
 
     #undef C
 
+        if (log_frame) {
+            diag_log("RENDER",
+                     "frame=%llu eye=%s stage=pre_process_ppf_wait phase=begin",
+                     (unsigned long long)frame_number, eye_name);
+        }
         gspWaitForEvent(GSPGPU_EVENT_PPF, 0);
+        if (log_frame) {
+            diag_log("RENDER",
+                     "frame=%llu eye=%s stage=pre_process_ppf_wait phase=end result=returned",
+                     (unsigned long long)frame_number, eye_name);
+        }
 
         u32 *unused;
         u32 cmdlist_len;
@@ -345,12 +389,39 @@ void N3dsRendererBase::write_px_to_framebuffer_gpu(uint8_t *__restrict source) {
         GX_FlushCacheRegions(cmdlist, cmdlist_len * 4, (u32 *)__ctru_linear_heap,
                              __ctru_linear_heap_size, NULL, 0);
 
+        if (log_frame) {
+            diag_log("RENDER",
+                     "frame=%llu eye=%s stage=command_list_process phase=begin",
+                     (unsigned long long)frame_number, eye_name);
+        }
         GX_ProcessCommandList(cmdlist, cmdlist_len * 4, 2);
+        if (log_frame) {
+            diag_log("RENDER",
+                     "frame=%llu eye=%s stage=command_list_process phase=end result=returned",
+                     (unsigned long long)frame_number, eye_name);
+        }
 
+        if (log_frame) {
+            diag_log("RENDER",
+                     "frame=%llu eye=%s stage=p3d_wait phase=begin",
+                     (unsigned long long)frame_number, eye_name);
+        }
         gspWaitForEvent(GSPGPU_EVENT_P3D, 0);
+        if (log_frame) {
+            diag_log("RENDER",
+                     "frame=%llu eye=%s stage=p3d_wait phase=end result=returned",
+                     (unsigned long long)frame_number, eye_name);
+        }
 
         // Copy the complete rendered eye into its matching hardware framebuffer.
         const bool use_right_eye = screen == GFX_TOP && eye == 1;
+        const char *framebuffer_side = use_right_eye ? "RIGHT" : "LEFT";
+        if (log_frame) {
+            diag_log("RENDER",
+                     "frame=%llu eye=%s framebuffer_side=%s stage=eye_display_transfer phase=begin",
+                     (unsigned long long)frame_number, eye_name,
+                     framebuffer_side);
+        }
         u32 *dest = (u32 *)gfxGetFramebuffer(
             screen, use_right_eye ? GFX_RIGHT : GFX_LEFT, NULL, NULL);
         GX_DisplayTransfer((u32 *)vramFb,
@@ -360,7 +431,29 @@ void N3dsRendererBase::write_px_to_framebuffer_gpu(uint8_t *__restrict source) {
                                GX_TRANSFER_IN_FORMAT(GX_TRANSFER_FMT_RGB565) |
                                GX_TRANSFER_OUT_FORMAT(GX_TRANSFER_FMT_RGB565) |
                                GX_TRANSFER_SCALING(GX_TRANSFER_SCALE_NO));
+        if (log_frame) {
+            diag_log("RENDER",
+                     "frame=%llu eye=%s framebuffer_side=%s stage=eye_display_transfer phase=end result=returned",
+                     (unsigned long long)frame_number, eye_name,
+                     framebuffer_side);
+        }
+        if (log_frame) {
+            diag_log("RENDER",
+                     "frame=%llu eye=%s stage=post_transfer_ppf_wait phase=begin",
+                     (unsigned long long)frame_number, eye_name);
+        }
         gspWaitForEvent(GSPGPU_EVENT_PPF, 0);
+        if (log_frame) {
+            diag_log("RENDER",
+                     "frame=%llu eye=%s stage=post_transfer_ppf_wait phase=end result=returned",
+                     (unsigned long long)frame_number, eye_name);
+            diag_log("RENDER",
+                     "frame=%llu eye=%s stage=pass_complete phase=begin",
+                     (unsigned long long)frame_number, eye_name);
+            diag_log("RENDER",
+                     "frame=%llu eye=%s stage=pass_complete phase=end",
+                     (unsigned long long)frame_number, eye_name);
+        }
     }
 
     perf_fbcopy_ticks = svcGetSystemTick() - start_ticks;
@@ -373,6 +466,18 @@ void N3dsRendererBase::write_px_to_framebuffer_gpu(uint8_t *__restrict source) {
     }
 
     gfxScreenSwapBuffers(screen, true);
+
+    renderer_frames_completed++;
+    if (log_frame) {
+        diag_log("RENDER",
+                 "frame=%llu phase=exit frames_completed=%llu elapsed_ticks=%llu",
+                 (unsigned long long)frame_number,
+                 (unsigned long long)renderer_frames_completed,
+                 (unsigned long long)(svcGetSystemTick() - frame_start_ticks));
+    } else if (renderer_frames_completed % 300 == 0) {
+        diag_log("RENDER", "heartbeat frames_completed=%llu",
+                 (unsigned long long)renderer_frames_completed);
+    }
 }
 
 void n3ds_draw_diag_version_overlay() {

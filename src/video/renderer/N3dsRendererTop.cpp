@@ -18,6 +18,7 @@
  */
 
 #include "N3dsRenderer.hpp"
+#include "../../diagnostics.h"
 
 #include <3ds.h>
 #include <cstdlib>
@@ -32,6 +33,13 @@ N3dsRendererTop::N3dsRendererTop(int dest_width, int dest_height, int src_width,
                        px_size, debug_in) {}
 
 void N3dsRendererTop::write_px_to_framebuffer(uint8_t *source) {
+    if (!first_frame_marker_logged) {
+        first_frame_marker_logged = true;
+        diag_log("RENDER",
+                 "top_renderer_first_frame=1 surface=%dx%d image=%dx%d",
+                 surface_width, surface_height, image_width, image_height);
+    }
+
     // Keep both eye framebuffers available for all presentation modes. The
     // OFF/2D mode writes identical full-frame images to both eyes.
     ensure_3d_enabled();
