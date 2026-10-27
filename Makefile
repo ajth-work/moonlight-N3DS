@@ -63,17 +63,17 @@ GFXBUILD	:=	$(BUILD)
 
 
 # 3dsx
-APP_TITLE	:=	Moonlight
+APP_TITLE	:=	Moonlight UI
 APP_DESCRIPTION	:=	Moonlight Streaming Client
 APP_AUTHOR	:=	zoeyjodon
-ICON		:=	3ds/res/ic_moonlight.png
+ICON		:=	3ds/res/ic_moonlight_ui.png
 
 # CIA
 BANNER_AUDIO	:=	3ds/res/banner.wav
 BANNER_IMAGE	:=	3ds/res/banner.png
 RSF_PATH		:=	3ds/res/app.rsf
-UNIQUE_ID		:=	0x3600
-PRODUCT_CODE	:=	CTR-P-MOONLIGHT
+UNIQUE_ID		:=	0x5549
+PRODUCT_CODE	:=	CTR-P-MLUI
 ICON_FLAGS		:=	nosavebackups,visible
 
 # Version
