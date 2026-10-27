@@ -55,7 +55,40 @@ Deliverable of Phase 0: the toolkit module (proposed `src/ui/`) with the
 picker rebuilt on top of it as the proof screen — same look, same
 behavior, no per-screen embedded plates for the picker pages.
 
-## Phase 1 — Pre-connect screens
+## Phase 1 — Connection test (moved ahead of the pre-connect screens, AJ 2026-10-27)
+
+A Steam Link-style connection test, Moonlight-shaped: it measures with
+**short real test streams**, not packet probes — this project's two
+streaming failures were a path that choked at high bitrate (hotspot,
+~1 s latency at 12000 kbps) and a decoder that stalled at 800x480@60 on a
+perfect LAN, and only a real stream sees both.
+
+- **Entry:** a "Test connection" action on the host's menu (console
+  menu until Phase 2 gives it the graphical action tiles).
+- **Bracket first:** the user picks their visual-quality bracket —
+  Low 400x240 / Medium 800x480 / High 1200x720 — reusing the picker's
+  Step 1, which is already graphical. The test probes **that bracket
+  only**, at stepping bitrates for both 30 and 60 fps, ~8–10 s per
+  rung, with adaptive pruning (fail a rung, skip the rungs above it on
+  that axis). B cancels at any point.
+- **Measured** from the renderer's existing perf counters: decoded fps
+  vs target, frame drops, decode time; a video stall fails the rung
+  instantly.
+- **Two recommendations come back:** the best **30 fps** setting and
+  the best **60 fps** setting for this bracket on this connection —
+  or "60 not viable here," with the cause split out: stalls at every
+  bitrate point at the decoder, drops growing with bitrate point at
+  the path. Test content is calmer than game motion, so a borderline
+  rung is recommended one step down.
+- **Saving** (A on the results page) writes both as the host's tested
+  tiers for that bracket in `stream_profiles.conf`; the picker's rate
+  page then shows measured values instead of seeded guesses.
+- Why it can run ahead of Phase 2: it needs only the Phase 0 toolkit
+  (progress + results pages) and the already-graphical bracket pick.
+  It also de-risks every later phase — the picker's tiers stop being
+  hand-measured one-offs and become per-connection data.
+
+## Phase 2 — Pre-connect screens
 
 - **Host select:** graphical list of paired hosts (name/address, paired
   status marker, last-used profile summary per host) + a "New host" tile.
@@ -69,7 +102,7 @@ behavior, no per-screen embedded plates for the picker pages.
   stays dead). Numpad entry remains only for fields where a wrong value
   is harmless (e.g. packet size).
 
-## Phase 2 — Connecting, pairing, app list, errors
+## Phase 3 — Connecting, pairing, app list, errors
 
 - **Pairing screen:** big readable PIN, a phase checklist that ticks
   live, and a **working B cancel** — this phase owns the one below-the-UI
@@ -79,14 +112,14 @@ behavior, no per-screen embedded plates for the picker pages.
   cleaned up by the cancel path, as the diagnostics builds proved.
 - **Connecting progress:** host-state / app-list / stream-start phases
   as graphical steps, replacing the raw trace scroll (the trace itself
-  keeps logging to `moonlight.log`; a Diagnostics screen, Phase 2 or 3,
+  keeps logging to `moonlight.log`; a Diagnostics screen, Phase 3 or 4,
   frames it graphically — the log file remains the source of truth).
 - **App list:** graphical list/tiles with real app names from the host.
 - **Error pages:** graphical, plain-language, always with a working way
   back (B) — no dead-end text screens. Certificate/verify errors name
   the next step, not just the failure.
 
-## Phase 3 — In-stream and disconnect
+## Phase 4 — In-stream and disconnect
 
 - **In-stream bottom plates** regenerated in the ui2 theme
   (gamepad / menu / keyboard / touchpad), same touch zones and behavior.
@@ -105,7 +138,7 @@ behavior, no per-screen embedded plates for the picker pages.
   `stream_profiles.conf` keep their formats and meanings; per-host
   profiles keep working exactly as ui1/ui2 shipped them.
 - Protocol, TLS and pairing logic are untouched **except** the
-  Phase 2 pairing-wait input polling, which is scoped to making cancel
+  Phase 3 pairing-wait input polling, which is scoped to making cancel
   work and must not change pairing outcomes.
 - Top-screen video path (renderers, decoders) is untouched except the
   bottom-screen work named above.
@@ -117,7 +150,7 @@ behavior, no per-screen embedded plates for the picker pages.
 
 ## Sequencing
 
-Phase 0 (toolkit + picker rebuilt on it) → Phase 1 → Phase 2 → Phase 3.
+Phase 0 (toolkit + picker rebuilt on it) → Phase 1 (connection test) → Phase 2 (pre-connect) → Phase 3 (connecting) → Phase 4 (in-stream + disconnect).
 Branch per phase off the GUI line, pushed unmerged, merged only on AJ's
 word after the hardware test. The 3D line (`feature/moonlight-3d`) is
 separate and untouched by this program; whichever line merges second
