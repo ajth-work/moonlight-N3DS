@@ -367,15 +367,21 @@ void N3dsRendererBase::write_px_to_framebuffer_gpu(uint8_t *__restrict source) {
 
     #undef C
 
-        if (log_frame) {
+        if (eye == 0) {
+            if (log_frame) {
+                diag_log("RENDER",
+                         "frame=%llu eye=%s stage=pre_process_ppf_wait phase=begin",
+                         (unsigned long long)frame_number, eye_name);
+            }
+            gspWaitForEvent(GSPGPU_EVENT_PPF, 0);
+            if (log_frame) {
+                diag_log("RENDER",
+                         "frame=%llu eye=%s stage=pre_process_ppf_wait phase=end result=returned",
+                         (unsigned long long)frame_number, eye_name);
+            }
+        } else if (log_frame) {
             diag_log("RENDER",
-                     "frame=%llu eye=%s stage=pre_process_ppf_wait phase=begin",
-                     (unsigned long long)frame_number, eye_name);
-        }
-        gspWaitForEvent(GSPGPU_EVENT_PPF, 0);
-        if (log_frame) {
-            diag_log("RENDER",
-                     "frame=%llu eye=%s stage=pre_process_ppf_wait phase=end result=returned",
+                     "frame=%llu eye=%s stage=pre_process_ppf_wait phase=skipped",
                      (unsigned long long)frame_number, eye_name);
         }
 
