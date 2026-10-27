@@ -36,6 +36,7 @@ include $(DEVKITARM)/3ds_rules
 TARGET		:=	moonlight
 BUILD		:=	build
 SOURCES		:=	src \
+				src/ui/\
 				src/system/ \
 				src/audio/ \
 				src/input/ \
@@ -77,7 +78,7 @@ ICON_FLAGS		:=	nosavebackups,visible
 
 # Version
 VERSION_MAJOR	:=	3
-VERSION_MINOR	:=	0
+VERSION_MINOR	:=	3
 VERSION_MICRO	:=	0
 
 #---------------------------------------------------------------------------------

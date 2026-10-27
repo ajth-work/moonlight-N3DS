@@ -1,0 +1,91 @@
+#pragma once
+
+#include <3ds.h>
+
+#include <cstdint>
+#include <string>
+
+namespace MoonlightUi {
+
+struct Rect {
+    int left;
+    int top;
+    int right;
+    int bottom;
+};
+
+struct Color {
+    uint8_t red;
+    uint8_t green;
+    uint8_t blue;
+};
+
+enum class TextStyle {
+    Small,
+    Header,
+    Tile,
+};
+
+enum class Direction {
+    Up,
+    Down,
+    Left,
+    Right,
+};
+
+struct InputEvent {
+    enum class Type {
+        Direction,
+        Confirm,
+        Back,
+        Touch,
+    } type;
+    Direction direction;
+    touchPosition touch;
+};
+
+class Screen {
+  public:
+    Screen();
+    ~Screen();
+
+    Screen(const Screen &) = delete;
+    Screen &operator=(const Screen &) = delete;
+
+    void drawBackground();
+    void drawFilledTile(const Rect &rect, int number);
+    void drawListRow(const Rect &rect, int number, const std::string &label,
+                     bool selected);
+    void drawHeader(const std::string &title, const std::string &context);
+    void drawFooter(const std::string &version, const std::string &hint);
+    void drawHighlight(const Rect &rect);
+    void drawLiveText(int x, int y, const std::string &text, TextStyle style,
+                      Color color);
+    void drawAutoRateText(int x, int y, const std::string &text,
+                          int max_width, Color color);
+    int measureLiveText(const std::string &text, TextStyle style) const;
+    void present();
+
+  private:
+    uint16_t *framebuffer_;
+
+    void setPixel(int x, int y, uint16_t color);
+    void blendPixel(int x, int y, Color color, unsigned int coverage);
+    void fillRoundedRect(const Rect &rect, int radius, uint16_t color);
+    void drawTextStyle(int x, int y, const std::string &text, int font_id,
+                       Color color);
+};
+
+class ScreenModel {
+  public:
+    virtual ~ScreenModel() = default;
+    virtual void draw(Screen &screen) = 0;
+    // Return false to leave the screen. Set redraw when visible state changed.
+    virtual bool handleInput(const InputEvent &event, bool *redraw) = 0;
+};
+
+// Owns input polling and full-frame redraws for toolkit screens. Returns false
+// only when the application loop ends before the screen is dismissed.
+bool runScreen(ScreenModel &model);
+
+} // namespace MoonlightUi

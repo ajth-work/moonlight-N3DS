@@ -26,11 +26,8 @@
 #include "system/dispatcher.hpp"
 #include "system/n3ds_connection.hpp"
 #include "system/pair_record.hpp"
+#include "ui/ui.hpp"
 #include "video/video.hpp"
-#include "stream_profile_rate_1200_bgr.h"
-#include "stream_profile_rate_400_bgr.h"
-#include "stream_profile_rate_800_bgr.h"
-#include "stream_profile_resolution_bgr.h"
 
 #include <3ds.h>
 #include <Limelight.h>
@@ -498,12 +495,7 @@ struct StreamProfilePick {
     int rate_index;
 };
 
-struct StreamProfileTile {
-    int left;
-    int top;
-    int right;
-    int bottom;
-};
+using StreamProfileTile = MoonlightUi::Rect;
 
 static const int STREAM_PROFILE_WIDTHS[] = {400, 800, 1200};
 static const int STREAM_PROFILE_HEIGHTS[] = {240, 480, 720};
@@ -511,6 +503,12 @@ static const StreamProfileRate STREAM_PROFILE_RATES[3][2] = {
     {{30, 3000}, {30, 5000}},
     {{60, 12000}, {30, 8000}},
     {{30, 3000}, {30, 6000}},
+};
+
+static const char *const STREAM_PROFILE_RATE_LABELS[3][2] = {
+    {"Away — 30 fps · 3000 kbps", "Home light — 30 fps · 5000 kbps"},
+    {"Home sharp — 60 fps · 12000 kbps", "Balanced — 30 fps · 8000 kbps"},
+    {"Browse — 30 fps · 3000 kbps", "Play — 30 fps · 6000 kbps"},
 };
 
 static const StreamProfileTile STREAM_PROFILE_RESOLUTION_TILES[] = {
@@ -616,87 +614,14 @@ static int stream_profile_rate_for_config(PCONFIGURATION config,
     return best_rate;
 }
 
-static const uint8_t *stream_profile_page_image(int page,
-                                                int resolution_index) {
-    if (page == 0) {
-        return stream_profile_resolution_bgr;
-    }
-    switch (resolution_index) {
-    case 0:
-        return stream_profile_rate_400_bgr;
-    case 1:
-        return stream_profile_rate_800_bgr;
-    default:
-        return stream_profile_rate_1200_bgr;
-    }
-}
-
-static void stream_profile_draw_pixel(u16 *framebuffer, int x, int y,
-                                      u16 color) {
-    // The PNG-to-BGR rule applies ffmpeg transpose=1: (x, y) becomes
-    // (GSP_SCREEN_WIDTH - 1 - y, x) in the row-major 240x320 framebuffer.
-    framebuffer[x * GSP_SCREEN_WIDTH + (GSP_SCREEN_WIDTH - 1 - y)] = color;
-}
-
-static void stream_profile_draw_outline(u16 *framebuffer,
-                                        const StreamProfileTile &tile) {
-    const u16 color = ((72 >> 3) << 11) | ((235 >> 2) << 5) | (197 >> 3);
-    for (int thickness = 0; thickness < 3; thickness++) {
-        int left = tile.left + thickness;
-        int right = tile.right - thickness;
-        int top = tile.top + thickness;
-        int bottom = tile.bottom - thickness;
-        for (int x = left; x <= right; x++) {
-            stream_profile_draw_pixel(framebuffer, x, top, color);
-            stream_profile_draw_pixel(framebuffer, x, bottom, color);
-        }
-        for (int y = top; y <= bottom; y++) {
-            stream_profile_draw_pixel(framebuffer, left, y, color);
-            stream_profile_draw_pixel(framebuffer, right, y, color);
-        }
-    }
-}
-
-static void draw_stream_profile_picker(int page, int resolution_index,
-                                       int selected_index) {
+static void restore_bottom_console() {
     PrintConsole *previous_console =
         consoleSelect(&DebugTouchHandler::bottomScreen);
-    consoleClear();
-
-    u16 *framebuffer = (u16 *)gfxGetFramebuffer(GFX_BOTTOM, GFX_LEFT, NULL,
-                                                NULL);
-    memcpy(framebuffer, stream_profile_page_image(page, resolution_index),
-           GSP_SCREEN_WIDTH * GSP_SCREEN_HEIGHT_BOTTOM * sizeof(u16));
-
-    const StreamProfileTile &tile =
-        page == 0 ? STREAM_PROFILE_RESOLUTION_TILES[selected_index]
-                  : STREAM_PROFILE_RATE_TILES[selected_index];
-    stream_profile_draw_outline(framebuffer, tile);
-    consoleSelect(previous_console);
-
-    gfxSwapBuffers();
-    gfxFlushBuffers();
-    gspWaitForVBlank();
-}
-
-static void clear_stream_profile_picker() {
-    PrintConsole *previous_console =
-        consoleSelect(&DebugTouchHandler::bottomScreen);
+    DebugTouchHandler::bottomScreen.frameBuffer =
+        (u16 *)gfxGetFramebuffer(GFX_BOTTOM, GFX_LEFT, NULL, NULL);
     consoleClear();
     consoleSelect(previous_console);
-}
-
-static int stream_profile_tile_at(int page, const touchPosition &touch) {
-    const StreamProfileTile *tiles = page == 0 ? STREAM_PROFILE_RESOLUTION_TILES
-                                               : STREAM_PROFILE_RATE_TILES;
-    const int tile_count = page == 0 ? 4 : 2;
-    for (int i = 0; i < tile_count; i++) {
-        if (touch.px >= tiles[i].left && touch.px <= tiles[i].right &&
-            touch.py >= tiles[i].top && touch.py <= tiles[i].bottom) {
-            return i;
-        }
-    }
-    return -1;
+    n3ds_draw_diag_version_overlay();
 }
 
 static void apply_stream_profile(PCONFIGURATION config,
@@ -727,93 +652,211 @@ static void apply_stream_profile(PCONFIGURATION config,
     config_save(config_file_path, config);
 }
 
-static void prompt_for_stream_profile(PCONFIGURATION config,
-                                      const std::string &host_key) {
-    StreamProfilePick saved_pick{};
-    const bool has_saved_pick = load_host_stream_profile(host_key, &saved_pick);
-    int page = 0;
-    int resolution_index = has_saved_pick
-                               ? saved_pick.resolution_index
-                               : stream_profile_resolution_for_config(config);
-    int rate_index_by_resolution[3] = {
-        stream_profile_rate_for_config(config, 0),
-        stream_profile_rate_for_config(config, 1),
-        stream_profile_rate_for_config(config, 2),
+class StreamProfilePickerScreen : public MoonlightUi::ScreenModel {
+  public:
+    enum class Result {
+        Cancelled,
+        Custom,
+        Picked,
     };
-    if (has_saved_pick) {
-        rate_index_by_resolution[saved_pick.resolution_index] =
-            saved_pick.rate_index;
+
+    StreamProfilePickerScreen(PCONFIGURATION config,
+                              const std::string &host_key)
+        : host_key_(host_key) {
+        StreamProfilePick saved_pick{};
+        const bool has_saved_pick =
+            load_host_stream_profile(host_key_, &saved_pick);
+        resolution_index_ =
+            has_saved_pick ? saved_pick.resolution_index
+                           : stream_profile_resolution_for_config(config);
+        for (int resolution = 0; resolution < 3; ++resolution) {
+            rate_index_by_resolution_[resolution] =
+                stream_profile_rate_for_config(config, resolution);
+        }
+        if (has_saved_pick) {
+            rate_index_by_resolution_[saved_pick.resolution_index] =
+                saved_pick.rate_index;
+        }
+        selected_index_ = resolution_index_;
     }
-    int selected_index = resolution_index;
-    int last_page = -1;
-    int last_selected_index = -1;
 
-    while (aptMainLoop()) {
-        if (page != last_page || selected_index != last_selected_index) {
-            draw_stream_profile_picker(page, resolution_index, selected_index);
-            last_page = page;
-            last_selected_index = selected_index;
+    void draw(MoonlightUi::Screen &screen) override {
+        if (page_ == 0) {
+            screen.drawHeader("STREAM PROFILE",
+                              "STEP 1 OF 2  /  RESOLUTION");
+            for (int index = 0; index < 4; ++index) {
+                const auto &tile = STREAM_PROFILE_RESOLUTION_TILES[index];
+                screen.drawFilledTile(tile, index + 1);
+                if (index < 3) {
+                    const std::string resolution =
+                        std::to_string(STREAM_PROFILE_WIDTHS[index]) + "x" +
+                        std::to_string(STREAM_PROFILE_HEIGHTS[index]);
+                    screen.drawLiveText(tile.left + 20, tile.top + 30,
+                                        resolution,
+                                        MoonlightUi::TextStyle::Tile,
+                                        {242, 247, 250});
+                } else {
+                    screen.drawLiveText(tile.left + 22, tile.top + 27,
+                                        "Custom",
+                                        MoonlightUi::TextStyle::Tile,
+                                        {242, 247, 250});
+                    screen.drawLiveText(tile.left + 23, tile.top + 50,
+                                        "MANUAL",
+                                        MoonlightUi::TextStyle::Small,
+                                        {113, 240, 207});
+                }
+            }
+            screen.drawHighlight(STREAM_PROFILE_RESOLUTION_TILES[selected_index_]);
+        } else {
+            const std::string resolution =
+                std::to_string(STREAM_PROFILE_WIDTHS[resolution_index_]) +
+                "x" +
+                std::to_string(STREAM_PROFILE_HEIGHTS[resolution_index_]);
+            screen.drawHeader("STREAM PROFILE",
+                              "STEP 2 OF 2  /  RATE  ·  " + resolution);
+            for (int index = 0; index < 2; ++index) {
+                const auto &tile = STREAM_PROFILE_RATE_TILES[index];
+                screen.drawFilledTile(tile, index + 1);
+                screen.drawAutoRateText(
+                    tile.left + 27, tile.top + 25,
+                    STREAM_PROFILE_RATE_LABELS[resolution_index_][index],
+                    tile.right - tile.left - 54, {242, 247, 250});
+            }
+            screen.drawHighlight(STREAM_PROFILE_RATE_TILES[selected_index_]);
         }
+        screen.drawFooter(DIAG_BUILD_VERSION, "MENU TAP PICK");
+    }
 
-        hidScanInput();
-        const u32 keys_down = hidKeysDown();
-        int touched_index = -1;
-        if (keys_down & KEY_TOUCH) {
-            touchPosition touch;
-            hidTouchRead(&touch);
-            touched_index = stream_profile_tile_at(page, touch);
+    bool handleInput(const MoonlightUi::InputEvent &event,
+                     bool *redraw) override {
+        *redraw = false;
+        if (event.type == MoonlightUi::InputEvent::Type::Back) {
+            if (page_ == 1) {
+                page_ = 0;
+                selected_index_ = resolution_index_;
+                *redraw = true;
+                return true;
+            }
+            result_ = Result::Cancelled;
+            return false;
         }
+        if (event.type == MoonlightUi::InputEvent::Type::Confirm) {
+            return activate_selection(redraw);
+        }
+        if (event.type == MoonlightUi::InputEvent::Type::Touch) {
+            const int touched = tile_at(event.touch);
+            if (touched < 0) {
+                return true;
+            }
+            selected_index_ = touched;
+            return activate_selection(redraw);
+        }
+        if (event.type == MoonlightUi::InputEvent::Type::Direction) {
+            move_selection(event.direction, redraw);
+        }
+        return true;
+    }
 
-        if (keys_down & KEY_B) {
-            if (page == 1) {
-                page = 0;
-                selected_index = resolution_index;
-            } else {
-                clear_stream_profile_picker();
-                return;
+    Result result() const { return result_; }
+    const StreamProfilePick &pick() const { return pick_; }
+
+  private:
+    std::string host_key_;
+    int page_ = 0;
+    int resolution_index_ = 0;
+    int rate_index_by_resolution_[3] = {0, 0, 0};
+    int selected_index_ = 0;
+    Result result_ = Result::Cancelled;
+    StreamProfilePick pick_{};
+
+    int tile_at(const touchPosition &touch) const {
+        const StreamProfileTile *tiles =
+            page_ == 0 ? STREAM_PROFILE_RESOLUTION_TILES
+                       : STREAM_PROFILE_RATE_TILES;
+        const int tile_count = page_ == 0 ? 4 : 2;
+        for (int index = 0; index < tile_count; ++index) {
+            if (touch.px >= tiles[index].left &&
+                touch.px <= tiles[index].right &&
+                touch.py >= tiles[index].top &&
+                touch.py <= tiles[index].bottom) {
+                return index;
             }
-        } else if (page == 0 &&
-                   ((keys_down & KEY_A) || touched_index >= 0)) {
-            if (touched_index >= 0) {
-                selected_index = touched_index;
+        }
+        return -1;
+    }
+
+    bool activate_selection(bool *redraw) {
+        if (page_ == 0) {
+            if (selected_index_ == 3) {
+                result_ = Result::Custom;
+                return false;
             }
-            if (selected_index == 3) {
-                clear_stream_profile_picker();
-                prompt_for_stream_settings(config);
-                return;
-            }
-            resolution_index = selected_index;
-            page = 1;
-            selected_index = rate_index_by_resolution[resolution_index];
-        } else if (page == 1 &&
-                   ((keys_down & KEY_A) || touched_index >= 0)) {
-            if (touched_index >= 0) {
-                selected_index = touched_index;
-            }
-            StreamProfilePick pick{resolution_index, selected_index};
-            apply_stream_profile(config, host_key, pick);
-            clear_stream_profile_picker();
-            return;
-        } else if (page == 0) {
-            if ((keys_down & KEY_LEFT) && selected_index % 2 == 1) {
-                selected_index--;
-            } else if ((keys_down & KEY_RIGHT) && selected_index % 2 == 0) {
-                selected_index++;
-            } else if ((keys_down & KEY_UP) && selected_index >= 2) {
-                selected_index -= 2;
-            } else if ((keys_down & KEY_DOWN) && selected_index < 2) {
-                selected_index += 2;
+            resolution_index_ = selected_index_;
+            page_ = 1;
+            selected_index_ = rate_index_by_resolution_[resolution_index_];
+            *redraw = true;
+            return true;
+        }
+        pick_ = {resolution_index_, selected_index_};
+        result_ = Result::Picked;
+        return false;
+    }
+
+    void move_selection(MoonlightUi::Direction direction, bool *redraw) {
+        const int old_selection = selected_index_;
+        if (page_ == 0) {
+            switch (direction) {
+            case MoonlightUi::Direction::Left:
+                if (selected_index_ % 2 == 1) {
+                    --selected_index_;
+                }
+                break;
+            case MoonlightUi::Direction::Right:
+                if (selected_index_ % 2 == 0) {
+                    ++selected_index_;
+                }
+                break;
+            case MoonlightUi::Direction::Up:
+                if (selected_index_ >= 2) {
+                    selected_index_ -= 2;
+                }
+                break;
+            case MoonlightUi::Direction::Down:
+                if (selected_index_ < 2) {
+                    selected_index_ += 2;
+                }
+                break;
             }
         } else {
-            if ((keys_down & (KEY_UP | KEY_LEFT)) && selected_index == 1) {
-                selected_index = 0;
-            } else if ((keys_down & (KEY_DOWN | KEY_RIGHT)) &&
-                       selected_index == 0) {
-                selected_index = 1;
+            if ((direction == MoonlightUi::Direction::Up ||
+                 direction == MoonlightUi::Direction::Left) &&
+                selected_index_ == 1) {
+                selected_index_ = 0;
+            } else if ((direction == MoonlightUi::Direction::Down ||
+                        direction == MoonlightUi::Direction::Right) &&
+                       selected_index_ == 0) {
+                selected_index_ = 1;
             }
         }
+        *redraw = selected_index_ != old_selection;
     }
-    exit(0);
+};
+
+static void prompt_for_stream_profile(PCONFIGURATION config,
+                                      const std::string &host_key) {
+    StreamProfilePickerScreen screen(config, host_key);
+    if (!MoonlightUi::runScreen(screen)) {
+        exit(0);
+    }
+    if (screen.result() == StreamProfilePickerScreen::Result::Custom) {
+        restore_bottom_console();
+        prompt_for_stream_settings(config);
+        return;
+    }
+    if (screen.result() == StreamProfilePickerScreen::Result::Picked) {
+        apply_stream_profile(config, host_key, screen.pick());
+    }
+    restore_bottom_console();
 }
 
 static void init_3ds() {
