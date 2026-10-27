@@ -27,6 +27,10 @@
 #include "system/n3ds_connection.hpp"
 #include "system/pair_record.hpp"
 #include "video/video.hpp"
+#include "stream_profile_rate_1200_bgr.h"
+#include "stream_profile_rate_400_bgr.h"
+#include "stream_profile_rate_800_bgr.h"
+#include "stream_profile_resolution_bgr.h"
 
 #include <3ds.h>
 #include <Limelight.h>
@@ -36,7 +40,10 @@
 #include <http.h>
 
 #include <arpa/inet.h>
+#include <cstdlib>
 #include <exception>
+#include <fstream>
+#include <iomanip>
 #include <malloc.h>
 #include <netdb.h>
 #include <netinet/in.h>
@@ -45,10 +52,13 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sstream>
 #include <string>
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <unistd.h>
+#include <utility>
+#include <vector>
 
 #define SOC_ALIGN 0x1000
 // 0x40000 for each enet host (2 hosts total)
@@ -307,6 +317,7 @@ static std::string prompt_for_action(PSERVER_DATA server) {
     if (server->paired) {
         std::vector<std::string> actions = {
             "stream",
+            "stream profile",
             "quit stream",
             "stream settings",
             "unpair",
@@ -475,6 +486,335 @@ static void prompt_for_stream_settings(PCONFIGURATION config) {
     // Update the config file
     char *config_file_path = (char *)MOONLIGHT_3DS_PATH "/moonlight.conf";
     config_save(config_file_path, config);
+}
+
+struct StreamProfileRate {
+    int fps;
+    int bitrate;
+};
+
+struct StreamProfilePick {
+    int resolution_index;
+    int rate_index;
+};
+
+struct StreamProfileTile {
+    int left;
+    int top;
+    int right;
+    int bottom;
+};
+
+static const int STREAM_PROFILE_WIDTHS[] = {400, 800, 1200};
+static const int STREAM_PROFILE_HEIGHTS[] = {240, 480, 720};
+static const StreamProfileRate STREAM_PROFILE_RATES[3][2] = {
+    {{30, 3000}, {30, 5000}},
+    {{60, 12000}, {30, 8000}},
+    {{30, 3000}, {30, 6000}},
+};
+
+static const StreamProfileTile STREAM_PROFILE_RESOLUTION_TILES[] = {
+    {14, 75, 154, 142},
+    {166, 75, 306, 142},
+    {14, 151, 154, 218},
+    {166, 151, 306, 218},
+};
+
+static const StreamProfileTile STREAM_PROFILE_RATE_TILES[] = {
+    {14, 83, 306, 142},
+    {14, 153, 306, 212},
+};
+
+static std::string stream_profile_store_path() {
+    return std::string(MOONLIGHT_3DS_PATH) + "/stream_profiles.conf";
+}
+
+static bool valid_stream_profile_pick(const StreamProfilePick &pick) {
+    return pick.resolution_index >= 0 && pick.resolution_index < 3 &&
+           pick.rate_index >= 0 && pick.rate_index < 2;
+}
+
+static bool load_host_stream_profile(const std::string &host_key,
+                                     StreamProfilePick *pick) {
+    std::ifstream file(stream_profile_store_path());
+    std::string line;
+    while (std::getline(file, line)) {
+        std::istringstream record(line);
+        std::string stored_host;
+        StreamProfilePick stored_pick{};
+        if (record >> std::quoted(stored_host) >> stored_pick.resolution_index >>
+                stored_pick.rate_index &&
+            stored_host == host_key && valid_stream_profile_pick(stored_pick)) {
+            *pick = stored_pick;
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool save_host_stream_profile(const std::string &host_key,
+                                     const StreamProfilePick &pick) {
+    const std::string path = stream_profile_store_path();
+    std::vector<std::pair<std::string, StreamProfilePick>> profiles;
+    std::ifstream existing_file(path);
+    std::string line;
+    while (std::getline(existing_file, line)) {
+        std::istringstream record(line);
+        std::string stored_host;
+        StreamProfilePick stored_pick{};
+        if (!(record >> std::quoted(stored_host) >>
+              stored_pick.resolution_index >> stored_pick.rate_index) ||
+            !valid_stream_profile_pick(stored_pick)) {
+            continue;
+        }
+        if (stored_host != host_key) {
+            profiles.push_back({stored_host, stored_pick});
+        }
+    }
+    profiles.push_back({host_key, pick});
+
+    std::ofstream profile_file(path, std::ios::trunc);
+    if (!profile_file) {
+        return false;
+    }
+    for (const auto &profile : profiles) {
+        profile_file << std::quoted(profile.first) << ' '
+                     << profile.second.resolution_index << ' '
+                     << profile.second.rate_index << '\n';
+    }
+    profile_file.close();
+    if (!profile_file) {
+        return false;
+    }
+    return true;
+}
+
+static int stream_profile_resolution_for_config(PCONFIGURATION config) {
+    for (int i = 0; i < 3; i++) {
+        if (config->stream.width == STREAM_PROFILE_WIDTHS[i] &&
+            config->stream.height == STREAM_PROFILE_HEIGHTS[i]) {
+            return i;
+        }
+    }
+    return 3;
+}
+
+static int stream_profile_rate_for_config(PCONFIGURATION config,
+                                         int resolution_index) {
+    long best_score = 0x7fffffff;
+    int best_rate = 0;
+    for (int i = 0; i < 2; i++) {
+        const StreamProfileRate &rate =
+            STREAM_PROFILE_RATES[resolution_index][i];
+        long score = std::abs(config->stream.fps - rate.fps) * 100000L +
+                     std::abs(config->stream.bitrate - rate.bitrate);
+        if (score < best_score) {
+            best_score = score;
+            best_rate = i;
+        }
+    }
+    return best_rate;
+}
+
+static const uint8_t *stream_profile_page_image(int page,
+                                                int resolution_index) {
+    if (page == 0) {
+        return stream_profile_resolution_bgr;
+    }
+    switch (resolution_index) {
+    case 0:
+        return stream_profile_rate_400_bgr;
+    case 1:
+        return stream_profile_rate_800_bgr;
+    default:
+        return stream_profile_rate_1200_bgr;
+    }
+}
+
+static void stream_profile_draw_pixel(u16 *framebuffer, int x, int y,
+                                      u16 color) {
+    // The PNG-to-BGR build rule rotates the image to match the 3DS framebuffer.
+    framebuffer[(GSP_SCREEN_WIDTH - 1 - x) * GSP_SCREEN_HEIGHT_BOTTOM + y] =
+        color;
+}
+
+static void stream_profile_draw_outline(u16 *framebuffer,
+                                        const StreamProfileTile &tile) {
+    const u16 color = ((72 >> 3) << 11) | ((235 >> 2) << 5) | (197 >> 3);
+    for (int thickness = 0; thickness < 3; thickness++) {
+        int left = tile.left + thickness;
+        int right = tile.right - thickness;
+        int top = tile.top + thickness;
+        int bottom = tile.bottom - thickness;
+        for (int x = left; x <= right; x++) {
+            stream_profile_draw_pixel(framebuffer, x, top, color);
+            stream_profile_draw_pixel(framebuffer, x, bottom, color);
+        }
+        for (int y = top; y <= bottom; y++) {
+            stream_profile_draw_pixel(framebuffer, left, y, color);
+            stream_profile_draw_pixel(framebuffer, right, y, color);
+        }
+    }
+}
+
+static void draw_stream_profile_picker(int page, int resolution_index,
+                                       int selected_index) {
+    PrintConsole *previous_console =
+        consoleSelect(&DebugTouchHandler::bottomScreen);
+    consoleClear();
+
+    u16 *framebuffer = (u16 *)gfxGetFramebuffer(GFX_BOTTOM, GFX_LEFT, NULL,
+                                                NULL);
+    memcpy(framebuffer, stream_profile_page_image(page, resolution_index),
+           GSP_SCREEN_WIDTH * GSP_SCREEN_HEIGHT_BOTTOM * sizeof(u16));
+
+    const StreamProfileTile &tile =
+        page == 0 ? STREAM_PROFILE_RESOLUTION_TILES[selected_index]
+                  : STREAM_PROFILE_RATE_TILES[selected_index];
+    stream_profile_draw_outline(framebuffer, tile);
+    n3ds_draw_diag_version_overlay();
+    consoleSelect(previous_console);
+
+    gfxSwapBuffers();
+    gfxFlushBuffers();
+    gspWaitForVBlank();
+}
+
+static void clear_stream_profile_picker() {
+    PrintConsole *previous_console =
+        consoleSelect(&DebugTouchHandler::bottomScreen);
+    consoleClear();
+    consoleSelect(previous_console);
+}
+
+static int stream_profile_tile_at(int page, const touchPosition &touch) {
+    const StreamProfileTile *tiles = page == 0 ? STREAM_PROFILE_RESOLUTION_TILES
+                                               : STREAM_PROFILE_RATE_TILES;
+    const int tile_count = page == 0 ? 4 : 2;
+    for (int i = 0; i < tile_count; i++) {
+        if (touch.px >= tiles[i].left && touch.px <= tiles[i].right &&
+            touch.py >= tiles[i].top && touch.py <= tiles[i].bottom) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+static void apply_stream_profile(PCONFIGURATION config,
+                                 const std::string &host_key,
+                                 const StreamProfilePick &pick) {
+    if (!save_host_stream_profile(host_key, pick)) {
+        PrintConsole *previous_console =
+            consoleSelect(&DebugTouchHandler::bottomScreen);
+        consoleClear();
+        printf("Unable to save the profile for this host.\n");
+        printf("Check available storage, then press a button.\n");
+        n3ds_draw_diag_version_overlay();
+        consoleSelect(previous_console);
+        wait_for_button();
+        return;
+    }
+
+    const StreamProfileRate &rate =
+        STREAM_PROFILE_RATES[pick.resolution_index][pick.rate_index];
+    const int width = STREAM_PROFILE_WIDTHS[pick.resolution_index];
+    const int height = STREAM_PROFILE_HEIGHTS[pick.resolution_index];
+    config->stream.width = width;
+    config->stream.height = height;
+    config->stream.fps = rate.fps;
+    config->stream.bitrate = rate.bitrate;
+
+    char *config_file_path = (char *)MOONLIGHT_3DS_PATH "/moonlight.conf";
+    config_save(config_file_path, config);
+}
+
+static void prompt_for_stream_profile(PCONFIGURATION config,
+                                      const std::string &host_key) {
+    StreamProfilePick saved_pick{};
+    const bool has_saved_pick = load_host_stream_profile(host_key, &saved_pick);
+    int page = 0;
+    int resolution_index = has_saved_pick
+                               ? saved_pick.resolution_index
+                               : stream_profile_resolution_for_config(config);
+    int rate_index_by_resolution[3] = {
+        stream_profile_rate_for_config(config, 0),
+        stream_profile_rate_for_config(config, 1),
+        stream_profile_rate_for_config(config, 2),
+    };
+    if (has_saved_pick) {
+        rate_index_by_resolution[saved_pick.resolution_index] =
+            saved_pick.rate_index;
+    }
+    int selected_index = resolution_index;
+    int last_page = -1;
+    int last_selected_index = -1;
+
+    while (aptMainLoop()) {
+        if (page != last_page || selected_index != last_selected_index) {
+            draw_stream_profile_picker(page, resolution_index, selected_index);
+            last_page = page;
+            last_selected_index = selected_index;
+        }
+
+        hidScanInput();
+        const u32 keys_down = hidKeysDown();
+        int touched_index = -1;
+        if (keys_down & KEY_TOUCH) {
+            touchPosition touch;
+            hidTouchRead(&touch);
+            touched_index = stream_profile_tile_at(page, touch);
+        }
+
+        if (keys_down & KEY_B) {
+            if (page == 1) {
+                page = 0;
+                selected_index = resolution_index;
+            } else {
+                clear_stream_profile_picker();
+                return;
+            }
+        } else if (page == 0 &&
+                   ((keys_down & KEY_A) || touched_index >= 0)) {
+            if (touched_index >= 0) {
+                selected_index = touched_index;
+            }
+            if (selected_index == 3) {
+                clear_stream_profile_picker();
+                prompt_for_stream_settings(config);
+                return;
+            }
+            resolution_index = selected_index;
+            page = 1;
+            selected_index = rate_index_by_resolution[resolution_index];
+        } else if (page == 1 &&
+                   ((keys_down & KEY_A) || touched_index >= 0)) {
+            if (touched_index >= 0) {
+                selected_index = touched_index;
+            }
+            StreamProfilePick pick{resolution_index, selected_index};
+            apply_stream_profile(config, host_key, pick);
+            clear_stream_profile_picker();
+            return;
+        } else if (page == 0) {
+            if ((keys_down & KEY_LEFT) && selected_index % 2 == 1) {
+                selected_index--;
+            } else if ((keys_down & KEY_RIGHT) && selected_index % 2 == 0) {
+                selected_index++;
+            } else if ((keys_down & KEY_UP) && selected_index >= 2) {
+                selected_index -= 2;
+            } else if ((keys_down & KEY_DOWN) && selected_index < 2) {
+                selected_index += 2;
+            }
+        } else {
+            if ((keys_down & (KEY_UP | KEY_LEFT)) && selected_index == 1) {
+                selected_index = 0;
+            } else if ((keys_down & (KEY_DOWN | KEY_RIGHT)) &&
+                       selected_index == 0) {
+                selected_index = 1;
+            }
+        }
+    }
+    exit(0);
 }
 
 static void init_3ds() {
@@ -873,6 +1213,8 @@ int main_loop(int argc, char *argv[]) {
             config.port = std::stoi(port_string);
         }
         config.address = (char *)address_string.c_str();
+        const std::string profile_host_key =
+            std::string(config.address) + ":" + std::to_string(config.port);
         diag_log("HOST_SELECTION", "host=%s port=%d", config.address,
                  config.port);
         printf("Connecting to %s:%d...\n", config.address, config.port);
@@ -914,6 +1256,8 @@ int main_loop(int argc, char *argv[]) {
                 break;
             } else if (strcmp("stream settings", config.action) == 0) {
                 prompt_for_stream_settings(&config);
+            } else if (strcmp("stream profile", config.action) == 0) {
+                prompt_for_stream_profile(&config, profile_host_key);
             } else if (strcmp("unpair", config.action) == 0) {
                 action_unpair(&config, &server);
                 wait_for_button();
