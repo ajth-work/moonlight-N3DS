@@ -154,17 +154,6 @@ void N3dsRendererBase::write_px_to_framebuffer_gpu(uint8_t *__restrict source) {
                 : N3ds3DEyePresentation{
                       0.0f, image_width / 1024.0f, 0.0f,
                       image_height / 512.0f, 1.0f, 1.0f, 0.0f};
-        // VRAM is not CPU-writable on 3DS. Clear it with the GPU memory-fill
-        // unit so fit-mode letterbox areas stay black without reading the
-        // uninitialized color buffer during the render pass.
-        u8 *vram_fb_bytes = static_cast<u8 *>(vramFb);
-        GX_MemoryFill(
-            reinterpret_cast<u32 *>(vram_fb_bytes), 0,
-            reinterpret_cast<u32 *>(vram_fb_bytes +
-                                    surface_width * surface_height * px_size),
-            GX_FILL_TRIGGER | GX_FILL_16BIT_DEPTH, NULL, 0, NULL, 0);
-        gspWaitForEvent(GSPGPU_EVENT_PSC0, false);
-
         // While the transfer is running, create a temporary command list to
         // rotate the framebuffer into source.
         GPUCMD_SetBuffer(cmdlist, CMDLIST_SZ, 0);
