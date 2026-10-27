@@ -28,7 +28,7 @@ FONT_SMALL_BOLD = font("segoeuib.ttf", 10)
 FONT_TITLE = font("segoeuib.ttf", 17)
 FONT_RESOLUTION = font("segoeuib.ttf", 20)
 FONT_RATE = font("segoeuib.ttf", 15)
-VERSION = "3.2.0-3d6"
+VERSION = "3.2.0-3d7"
 
 
 def background():

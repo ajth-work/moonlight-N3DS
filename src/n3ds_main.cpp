@@ -822,8 +822,6 @@ static void init_3ds() {
     gfxInit(GSP_RGB565_OES, GSP_RGB565_OES, false);
     gfxSetDoubleBuffering(GFX_TOP, false);
     gfxSetDoubleBuffering(GFX_BOTTOM, false);
-    n3ds_restore_mono_display();
-
     consoleInit(GFX_TOP, &DebugTouchHandler::topScreen);
     consoleInit(GFX_BOTTOM, &DebugTouchHandler::bottomScreen);
     consoleSelect(&DebugTouchHandler::bottomScreen);
@@ -831,6 +829,7 @@ static void init_3ds() {
     n3ds_draw_diag_version_overlay();
     consoleSelect(&DebugTouchHandler::topScreen);
     diag_init();
+    diag_log("DISPLAY_INIT", "display init complete");
     atexit(n3ds_exit_handler);
 
     osSetSpeedupEnable(true);
@@ -1039,7 +1038,6 @@ static void stream(PSERVER_DATA server, PCONFIGURATION config, int appId,
         diag_log("STREAM_STOP", "app_id=%d reason=connection_start_failed status=%d",
                  appId, status);
         n3ds_connection_callbacks.connectionTerminated(status);
-        n3ds_restore_mono_display();
         printf("Connection failed with error: %d\n", status);
         wait_for_button();
         return;
@@ -1055,7 +1053,9 @@ static void stream(PSERVER_DATA server, PCONFIGURATION config, int appId,
     LiStopConnection();
     // LiStopConnection runs the decoder cleanup callback. Restore both top
     // framebuffers to black before the menus resume, then present mono UI.
+    diag_log("DISPLAY_RESTORE", "teardown restore begin");
     n3ds_restore_mono_display();
+    diag_log("DISPLAY_RESTORE", "teardown restore end");
     diag_phase_outcome("stream.stopping", "complete", GS_OK);
     N3dsConnectionListener::destroy_instance();
 
