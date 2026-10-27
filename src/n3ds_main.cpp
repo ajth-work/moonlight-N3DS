@@ -633,9 +633,9 @@ static const uint8_t *stream_profile_page_image(int page,
 
 static void stream_profile_draw_pixel(u16 *framebuffer, int x, int y,
                                       u16 color) {
-    // The PNG-to-BGR build rule rotates the image to match the 3DS framebuffer.
-    framebuffer[(GSP_SCREEN_WIDTH - 1 - x) * GSP_SCREEN_HEIGHT_BOTTOM + y] =
-        color;
+    // The PNG-to-BGR rule applies ffmpeg transpose=1: (x, y) becomes
+    // (GSP_SCREEN_WIDTH - 1 - y, x) in the row-major 240x320 framebuffer.
+    framebuffer[x * GSP_SCREEN_WIDTH + (GSP_SCREEN_WIDTH - 1 - y)] = color;
 }
 
 static void stream_profile_draw_outline(u16 *framebuffer,
@@ -672,7 +672,6 @@ static void draw_stream_profile_picker(int page, int resolution_index,
         page == 0 ? STREAM_PROFILE_RESOLUTION_TILES[selected_index]
                   : STREAM_PROFILE_RATE_TILES[selected_index];
     stream_profile_draw_outline(framebuffer, tile);
-    n3ds_draw_diag_version_overlay();
     consoleSelect(previous_console);
 
     gfxSwapBuffers();

@@ -28,6 +28,7 @@ FONT_SMALL_BOLD = font("segoeuib.ttf", 10)
 FONT_TITLE = font("segoeuib.ttf", 17)
 FONT_RESOLUTION = font("segoeuib.ttf", 20)
 FONT_RATE = font("segoeuib.ttf", 15)
+VERSION = "3.1.0-ui2"
 
 
 def background():
@@ -74,10 +75,10 @@ def card(draw, bounds, number):
     )
 
 
-def footer(image, back_text):
+def footer(image):
     draw = ImageDraw.Draw(image)
-    hint = f"D-PAD MOVE   A SELECT   B {back_text}   TAP PICK"
-    draw.text((14, 226), hint, font=FONT_SMALL_BOLD, fill="#91A5B8")
+    line = f"Moonlight {VERSION}  \u00b7  MENU TAP PICK"
+    draw.text((14, 226), line, font=FONT_SMALL_BOLD, fill="#91A5B8")
 
 
 def draw_resolution_page():
@@ -113,7 +114,7 @@ def draw_resolution_page():
                 font=FONT_RESOLUTION,
                 fill="#F2F7FA",
             )
-    footer(image, "MENU")
+    footer(image)
     image.save(OUT / "stream_profile_resolution.png")
 
 
@@ -139,7 +140,7 @@ def draw_rate_page(resolution, options, filename):
             font=label_font,
             fill="#F2F7FA",
         )
-    footer(image, "RESOLUTION")
+    footer(image)
     image.save(OUT / filename)
 
 
