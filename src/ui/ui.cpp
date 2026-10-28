@@ -9,8 +9,9 @@
 namespace MoonlightUi {
 namespace {
 
-constexpr int SCREEN_WIDTH = 320;
-constexpr int SCREEN_HEIGHT = 240;
+constexpr int BOTTOM_SCREEN_WIDTH = GSP_SCREEN_HEIGHT_BOTTOM;
+constexpr int TOP_SCREEN_WIDTH = GSP_SCREEN_HEIGHT_TOP;
+constexpr int SCREEN_HEIGHT = GSP_SCREEN_WIDTH;
 constexpr Color COLOR_ACCENT_RGB = {72, 229, 190};
 constexpr Color COLOR_SELECTED_RGB = {72, 235, 197};
 constexpr Color COLOR_WHITE = {242, 247, 250};
@@ -271,30 +272,36 @@ bool poll_input(InputEvent *event) {
 
 } // namespace
 
-Screen::Screen() : framebuffer_(nullptr) {
-    // Bottom UI screens render into a hidden back buffer and commit it at VBlank.
-    // Stream renderers remain single-buffered after this session ends.
-    gfxSetDoubleBuffering(GFX_BOTTOM, true);
+Screen::Screen(gfxScreen_t display)
+    : display_(display),
+      width_(display == GFX_TOP ? TOP_SCREEN_WIDTH : BOTTOM_SCREEN_WIDTH),
+      height_(SCREEN_HEIGHT), framebuffer_(nullptr) {
+    // UI screens render into a hidden back buffer and commit it at VBlank.
+    // Stream renderers remain single-buffered after the UI session ends.
+    gfxSetDoubleBuffering(display_, true);
 }
 
 Screen::~Screen() {
     gspWaitForVBlank();
-    gfxSetDoubleBuffering(GFX_BOTTOM, false);
+    gfxSetDoubleBuffering(display_, false);
 }
 
+int Screen::width() const { return width_; }
+
+int Screen::height() const { return height_; }
+
 void Screen::setPixel(int x, int y, uint16_t color) {
-    if (x < 0 || x >= SCREEN_WIDTH || y < 0 || y >= SCREEN_HEIGHT ||
+    if (x < 0 || x >= width_ || y < 0 || y >= height_ ||
         framebuffer_ == nullptr) {
         return;
     }
-    // Keep the ui2 framebuffer mapping: logical (x,y) maps to
-    // framebuffer[x * 240 + (239 - y)].
+    // Logical (x,y) maps to the 3DS framebuffer's rotated 240-pixel stride.
     framebuffer_[x * GSP_SCREEN_WIDTH + (GSP_SCREEN_WIDTH - 1 - y)] = color;
 }
 
 void Screen::blendPixel(int x, int y, Color color, unsigned int coverage) {
-    if (coverage == 0 || x < 0 || x >= SCREEN_WIDTH || y < 0 ||
-        y >= SCREEN_HEIGHT || framebuffer_ == nullptr) {
+    if (coverage == 0 || x < 0 || x >= width_ || y < 0 ||
+        y >= height_ || framebuffer_ == nullptr) {
         return;
     }
     coverage = std::min(coverage, 15U);
@@ -316,8 +323,8 @@ void Screen::blendPixel(int x, int y, Color color, unsigned int coverage) {
 void Screen::fillRoundedRect(const Rect &rect, int radius, uint16_t color) {
     const int left = std::max(0, rect.left);
     const int top = std::max(0, rect.top);
-    const int right = std::min(SCREEN_WIDTH - 1, rect.right);
-    const int bottom = std::min(SCREEN_HEIGHT - 1, rect.bottom);
+    const int right = std::min(width_ - 1, rect.right);
+    const int bottom = std::min(height_ - 1, rect.bottom);
     for (int y = top; y <= bottom; ++y) {
         for (int x = left; x <= right; ++x) {
             if (inside_rounded_rect(rect, radius, x, y)) {
@@ -329,27 +336,27 @@ void Screen::fillRoundedRect(const Rect &rect, int radius, uint16_t color) {
 
 void Screen::drawBackground() {
     framebuffer_ = reinterpret_cast<uint16_t *>(
-        gfxGetFramebuffer(GFX_BOTTOM, GFX_LEFT, nullptr, nullptr));
+        gfxGetFramebuffer(display_, GFX_LEFT, nullptr, nullptr));
     if (framebuffer_ == nullptr) {
         return;
     }
 
-    for (int y = 0; y < SCREEN_HEIGHT; ++y) {
+    for (int y = 0; y < height_; ++y) {
         const Color row = {
             static_cast<uint8_t>(8 + (6 * y + 119) / 239),
             static_cast<uint8_t>(17 + (10 * y + 119) / 239),
             static_cast<uint8_t>(30 + (13 * y + 119) / 239),
         };
         const uint16_t color = rgb565(row);
-        for (int x = 0; x < SCREEN_WIDTH; ++x) {
+        for (int x = 0; x < width_; ++x) {
             setPixel(x, y, color);
         }
     }
 
     // The two translucent corner ellipses from the ui2 shared background.
     for (int y = 0; y <= 76; ++y) {
-        for (int x = 236; x < SCREEN_WIDTH; ++x) {
-            const int dx = x - 313;
+        for (int x = std::max(0, width_ - 84); x < width_; ++x) {
+            const int dx = x - (width_ - 7);
             const int dy = y + 1;
             if (dx * dx + dy * dy <= 77 * 77) {
                 const int base_red = 8 + (6 * y + 119) / 239;
@@ -364,7 +371,7 @@ void Screen::drawBackground() {
             }
         }
     }
-    for (int y = 176; y < SCREEN_HEIGHT; ++y) {
+    for (int y = 176; y < height_; ++y) {
         for (int x = 0; x <= 94; ++x) {
             const int dx = x + 5;
             const int dy = y - 275;
@@ -382,11 +389,11 @@ void Screen::drawBackground() {
         }
     }
 
-    for (int x = 0; x < SCREEN_WIDTH; ++x) {
+    for (int x = 0; x < width_; ++x) {
         int header_red = 8 + (6 * 60 + 119) / 239;
         int header_green = 17 + (10 * 60 + 119) / 239;
         int header_blue = 30 + (13 * 60 + 119) / 239;
-        const int header_dx = x - 313;
+        const int header_dx = x - (width_ - 7);
         const int header_dy = 61;
         if (header_dx * header_dx + header_dy * header_dy <= 77 * 77) {
             header_red = blend_channel(header_red, 47, 20, 255);
@@ -421,7 +428,6 @@ void Screen::drawBackground() {
         setPixel(x, y, rgb565(footer_line));
     }
 }
-
 void Screen::drawTextStyle(int x, int y, const std::string &text, int font_id,
                            Color color) {
     if (framebuffer_ == nullptr || FONT_DATA[0] != 'M' || FONT_DATA[1] != 'L' ||
@@ -575,10 +581,12 @@ void Screen::drawAutoRateText(int x, int y, const std::string &text,
     drawTextStyle(x, y, text, font_id, color);
 }
 
-void Screen::present() {
+void Screen::present(bool wait_for_vblank) {
     gfxFlushBuffers();
-    gfxScreenSwapBuffers(GFX_BOTTOM, false);
-    gspWaitForVBlank();
+    gfxScreenSwapBuffers(display_, false);
+    if (wait_for_vblank) {
+        gspWaitForVBlank();
+    }
 }
 
 bool runScreen(ScreenModel &model) {
@@ -604,4 +612,30 @@ bool runScreen(ScreenModel &model) {
     return false;
 }
 
+bool runDualScreen(DualScreenModel &model) {
+    Screen top(GFX_TOP);
+    Screen bottom(GFX_BOTTOM);
+    bool redraw = true;
+    while (aptMainLoop()) {
+        if (redraw) {
+            top.drawBackground();
+            bottom.drawBackground();
+            model.draw(top, bottom);
+            top.present(false);
+            bottom.present(false);
+            gspWaitForVBlank();
+            redraw = false;
+        }
+
+        InputEvent event{};
+        if (!poll_input(&event)) {
+            gspWaitForVBlank();
+            continue;
+        }
+        if (!model.handleInput(event, &redraw)) {
+            return true;
+        }
+    }
+    return false;
+}
 } // namespace MoonlightUi

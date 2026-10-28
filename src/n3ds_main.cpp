@@ -37,6 +37,7 @@
 #include <http.h>
 
 #include <arpa/inet.h>
+#include <algorithm>
 #include <cstdlib>
 #include <exception>
 #include <fstream>
@@ -333,15 +334,193 @@ static std::string prompt_for_action(PSERVER_DATA server) {
     return actions[idx];
 }
 
+class HostPickerScreen : public MoonlightUi::DualScreenModel {
+  public:
+    enum class Result {
+        Back,
+        AddHost,
+        SelectedHost,
+    };
+
+    explicit HostPickerScreen(std::vector<std::string> addresses)
+        : addresses_(std::move(addresses)),
+          selected_index_(addresses_.empty()
+                              ? static_cast<int>(addresses_.size())
+                              : 0) {}
+
+    void draw(MoonlightUi::Screen &top,
+              MoonlightUi::Screen &bottom) override {
+        top.drawHeader("MOONLIGHT", "SELECT A HOST");
+        const int total_items = static_cast<int>(addresses_.size()) + 1;
+        const int first_item = first_visible_item(total_items);
+        const int visible_items =
+            std::min(HOST_VISIBLE_ROWS, total_items - first_item);
+        for (int row = 0; row < visible_items; ++row) {
+            const int item_index = first_item + row;
+            const int y = HOST_LIST_TOP + row * HOST_LIST_ROW_STEP;
+            const MoonlightUi::Rect tile = {16, y, top.width() - 16,
+                                             y + HOST_LIST_ROW_HEIGHT};
+            top.drawFilledTile(tile, item_index + 1);
+            const std::string label =
+                item_index == static_cast<int>(addresses_.size())
+                    ? "Add a new host address"
+                    : addresses_[item_index];
+            top.drawAutoRateText(
+                tile.left + 28, tile.top + 6, label,
+                tile.right - tile.left - 40, {242, 247, 250});
+            if (item_index == selected_index_) {
+                top.drawHighlight(tile);
+            }
+        }
+        top.drawFooter(
+            DIAG_BUILD_VERSION,
+            selected_index_ == static_cast<int>(addresses_.size())
+                ? "UP/DOWN  A ADD HOST"
+                : "UP/DOWN  A CONNECT");
+
+        bottom.drawHeader("CONNECTION", "SELECTED HOST");
+        bottom.drawLiveText(18, 67, "HOST", MoonlightUi::TextStyle::Small,
+                            {113, 240, 207});
+        const std::string selected_label =
+            selected_index_ == static_cast<int>(addresses_.size())
+                ? "Add a new host address"
+                : addresses_[selected_index_];
+        bottom.drawAutoRateText(18, 82, selected_label, bottom.width() - 36,
+                                {242, 247, 250});
+
+        bottom.drawFilledTile(CONNECT_TILE, 1);
+        const bool add_host_selected =
+            selected_index_ == static_cast<int>(addresses_.size());
+        const std::string connect_label =
+            addresses_.empty() ? "NO SAVED HOSTS"
+                               : (add_host_selected ? "SELECT A HOST"
+                                                    : "CONNECT");
+        const MoonlightUi::Color connect_color =
+            addresses_.empty() ? MoonlightUi::Color{119, 144, 167}
+                               : MoonlightUi::Color{242, 247, 250};
+        const int connect_label_width = bottom.measureLiveText(
+            connect_label, MoonlightUi::TextStyle::Tile);
+        bottom.drawLiveText((bottom.width() - connect_label_width) / 2, 134,
+                            connect_label, MoonlightUi::TextStyle::Tile,
+                            connect_color);
+        bottom.drawFilledTile(ADD_HOST_TILE, 2);
+        bottom.drawLiveText(94, 185, "ADD NEW HOST",
+                            MoonlightUi::TextStyle::Tile,
+                            {242, 247, 250});
+        bottom.drawFooter(
+            DIAG_BUILD_VERSION,
+            add_host_selected ? "A ADD HOST  B BACK  TOUCH"
+                              : "A CONNECT  B BACK  TOUCH");
+    }
+
+    bool handleInput(const MoonlightUi::InputEvent &event,
+                     bool *redraw) override {
+        *redraw = false;
+        if (event.type == MoonlightUi::InputEvent::Type::Back) {
+            result_ = Result::Back;
+            return false;
+        }
+        if (event.type == MoonlightUi::InputEvent::Type::Confirm) {
+            activate_selected();
+            return false;
+        }
+        if (event.type == MoonlightUi::InputEvent::Type::Touch) {
+            if (touch_in_rect(event.touch, CONNECT_TILE)) {
+                if (!addresses_.empty() &&
+                    selected_index_ < static_cast<int>(addresses_.size())) {
+                    result_ = Result::SelectedHost;
+                    return false;
+                }
+            } else if (touch_in_rect(event.touch, ADD_HOST_TILE)) {
+                result_ = Result::AddHost;
+                return false;
+            }
+            return true;
+        }
+        if (event.type != MoonlightUi::InputEvent::Type::Direction) {
+            return true;
+        }
+
+        const int last_item = static_cast<int>(addresses_.size());
+        const int previous = selected_index_;
+        if (event.direction == MoonlightUi::Direction::Up) {
+            selected_index_ = selected_index_ == 0 ? last_item
+                                                   : selected_index_ - 1;
+        } else if (event.direction == MoonlightUi::Direction::Down) {
+            selected_index_ =
+                selected_index_ == last_item ? 0 : selected_index_ + 1;
+        }
+        *redraw = selected_index_ != previous;
+        return true;
+    }
+
+    Result result() const { return result_; }
+
+    const std::string &selected_address() const {
+        return addresses_[selected_index_];
+    }
+
+  private:
+    static constexpr int HOST_VISIBLE_ROWS = 5;
+    static constexpr int HOST_LIST_TOP = 66;
+    static constexpr int HOST_LIST_ROW_HEIGHT = 27;
+    static constexpr int HOST_LIST_ROW_STEP = 31;
+    static constexpr MoonlightUi::Rect CONNECT_TILE = {14, 119, 306, 165};
+    static constexpr MoonlightUi::Rect ADD_HOST_TILE = {14, 173, 306, 218};
+
+    std::vector<std::string> addresses_;
+    int selected_index_;
+    Result result_ = Result::Back;
+
+    int first_visible_item(int total_items) const {
+        int first = selected_index_ - HOST_VISIBLE_ROWS + 1;
+        if (first < 0) {
+            first = 0;
+        }
+        const int last_first = std::max(0, total_items - HOST_VISIBLE_ROWS);
+        return std::min(first, last_first);
+    }
+
+    static bool touch_in_rect(const touchPosition &touch,
+                              const MoonlightUi::Rect &rect) {
+        return touch.px >= rect.left && touch.px <= rect.right &&
+               touch.py >= rect.top && touch.py <= rect.bottom;
+    }
+
+    void activate_selected() {
+        result_ = selected_index_ == static_cast<int>(addresses_.size())
+                      ? Result::AddHost
+                      : Result::SelectedHost;
+    }
+};
+
+static void restore_consoles_after_dual_screen_ui() {
+    consoleSelect(&DebugTouchHandler::topScreen);
+    DebugTouchHandler::topScreen.frameBuffer =
+        (u16 *)gfxGetFramebuffer(GFX_TOP, GFX_LEFT, NULL, NULL);
+    consoleClear();
+
+    consoleSelect(&DebugTouchHandler::bottomScreen);
+    DebugTouchHandler::bottomScreen.frameBuffer =
+        (u16 *)gfxGetFramebuffer(GFX_BOTTOM, GFX_LEFT, NULL, NULL);
+    consoleClear();
+
+    consoleSelect(&DebugTouchHandler::topScreen);
+    n3ds_draw_diag_version_overlay();
+}
+
 static std::string prompt_for_address() {
-    auto address_list = list_paired_addresses();
-    address_list.push_back("new");
-    int idx =
-        console_selection_prompt("Select a server address", address_list, 0);
-    if (idx < 0) {
+    HostPickerScreen screen(list_paired_addresses());
+    if (!MoonlightUi::runDualScreen(screen)) {
+        exit(0);
+    }
+    restore_consoles_after_dual_screen_ui();
+
+    if (screen.result() == HostPickerScreen::Result::Back) {
         return "";
-    } else if (address_list[idx] != "new") {
-        return address_list[idx];
+    }
+    if (screen.result() == HostPickerScreen::Result::SelectedHost) {
+        return screen.selected_address();
     }
 
     // Prompt users for a custom address
@@ -355,7 +534,6 @@ static std::string prompt_for_address() {
     trim(addr_string);
     return addr_string;
 }
-
 static VIDEO_DECODER_TYPE
 prompt_for_video_decoder(VIDEO_DECODER_TYPE default_val) {
     std::vector<std::string> decoders = {

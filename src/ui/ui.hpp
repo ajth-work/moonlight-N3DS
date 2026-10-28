@@ -46,12 +46,14 @@ struct InputEvent {
 
 class Screen {
   public:
-    Screen();
+    explicit Screen(gfxScreen_t display = GFX_BOTTOM);
     ~Screen();
 
     Screen(const Screen &) = delete;
     Screen &operator=(const Screen &) = delete;
 
+    int width() const;
+    int height() const;
     void drawBackground();
     void drawFilledTile(const Rect &rect, int number);
     void drawListRow(const Rect &rect, int number, const std::string &label,
@@ -64,9 +66,12 @@ class Screen {
     void drawAutoRateText(int x, int y, const std::string &text,
                           int max_width, Color color);
     int measureLiveText(const std::string &text, TextStyle style) const;
-    void present();
+    void present(bool wait_for_vblank = true);
 
   private:
+    gfxScreen_t display_;
+    int width_;
+    int height_;
     uint16_t *framebuffer_;
 
     void setPixel(int x, int y, uint16_t color);
@@ -87,5 +92,16 @@ class ScreenModel {
 // Owns input polling and full-frame redraws for toolkit screens. Returns false
 // only when the application loop ends before the screen is dismissed.
 bool runScreen(ScreenModel &model);
+
+class DualScreenModel {
+  public:
+    virtual ~DualScreenModel() = default;
+    virtual void draw(Screen &top, Screen &bottom) = 0;
+    // Return false to leave the screen. Set redraw when visible state changed.
+    virtual bool handleInput(const InputEvent &event, bool *redraw) = 0;
+};
+
+// Draws a coordinated top/bottom screen UI while sharing one input model.
+bool runDualScreen(DualScreenModel &model);
 
 } // namespace MoonlightUi
