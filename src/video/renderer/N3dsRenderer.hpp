@@ -33,10 +33,11 @@
 #define CMDLIST_SZ 0x800
 
 void n3ds_draw_diag_version_overlay();
+bool n3ds_wait_for_vblank_bounded(unsigned int timeout_ms);
 void n3ds_draw_stream_quit_status(unsigned int elapsed_ms);
 void n3ds_draw_touch_panel_3d_readout(const N3ds3DSettings &settings);
 bool n3ds_clear_stream_screens();
-void n3ds_restore_mono_display();
+bool n3ds_restore_mono_display();
 
 class IN3dsRenderer {
   public:

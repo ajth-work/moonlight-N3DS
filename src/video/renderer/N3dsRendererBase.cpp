@@ -34,6 +34,38 @@
 
 static constexpr u64 GPU_CLEAR_WAIT_TIMEOUT_NS = 250000000ULL;
 static AtomicVar<bool> psc0_wait_worker_active = false;
+static AtomicVar<bool> vblank_wait_worker_active = false;
+
+static void vblank_wait_worker(void *) {
+    gspWaitForVBlank();
+    vblank_wait_worker_active.store(false);
+}
+
+bool n3ds_wait_for_vblank_bounded(unsigned int timeout_ms) {
+    if (vblank_wait_worker_active.load()) {
+        return false;
+    }
+
+    vblank_wait_worker_active.store(true);
+    s32 priority = 0x30;
+    svcGetThreadPriority(&priority, CUR_THREAD_HANDLE);
+    Thread waiter = threadCreate(vblank_wait_worker, NULL, 0x2000, priority, -1,
+                                 false);
+    if (waiter == NULL) {
+        vblank_wait_worker_active.store(false);
+        return false;
+    }
+
+    const Result join_result =
+        threadJoin(waiter, static_cast<u64>(timeout_ms) * 1000000ULL);
+    if (R_SUCCEEDED(join_result)) {
+        threadFree(waiter);
+        return true;
+    }
+
+    threadDetach(waiter);
+    return false;
+}
 
 static void psc0_wait_worker(void *) {
     gspWaitForEvent(GSPGPU_EVENT_PSC0, false);
@@ -79,7 +111,8 @@ N3dsRendererBase::N3dsRendererBase(gfxScreen_t screen_in, int surface_width_in,
 }
 
 N3dsRendererBase::~N3dsRendererBase() {
-    diag_log("TEARDOWN", "renderer_destroy screen=%s phase=before",
+    const u64 destroy_start_ticks = svcGetSystemTick();
+    diag_log("TEARDOWN", "renderer_destroy screen=%s phase=before elapsed_ms=0",
              screen == GFX_TOP ? "TOP" : "BOTTOM");
     diag_log("RENDER",
              "renderer_destroy screen=%s frames_entered=%llu frames_completed=%llu",
@@ -93,8 +126,12 @@ N3dsRendererBase::~N3dsRendererBase() {
 
     // Screen clears happen once, on the teardown coordinator, after all
     // renderers and Limelight callbacks have stopped.
-    diag_log("TEARDOWN", "renderer_destroy screen=%s phase=after",
-             screen == GFX_TOP ? "TOP" : "BOTTOM");
+    diag_log("TEARDOWN",
+             "renderer_destroy screen=%s phase=after elapsed_ms=%llu",
+             screen == GFX_TOP ? "TOP" : "BOTTOM",
+             static_cast<unsigned long long>(
+                 ((svcGetSystemTick() - destroy_start_ticks) * 1000ULL) /
+                 SYSCLOCK_ARM11));
 }
 
 void N3dsRendererBase::ensure_3d_enabled() {
@@ -534,18 +571,17 @@ void n3ds_draw_stream_quit_status(unsigned int elapsed_ms) {
     DebugTouchHandler::bottomScreen.frameBuffer =
         (u16 *)gfxGetFramebuffer(GFX_BOTTOM, GFX_LEFT, NULL, NULL);
 
-    printf("\x1b[28;1H%-40.40s",
-           "HOLD L+R+START+SELECT 5s: QUIT TO MENU");
+    printf("\x1b[28;1H%-40.40s", "HOLD L+R+START 2s: QUIT TO MENU");
     if (elapsed_ms == 0) {
         printf("\x1b[29;1H%-40.40s", " ");
     } else {
-        if (elapsed_ms > 5000) {
-            elapsed_ms = 5000;
+        if (elapsed_ms > 2000) {
+            elapsed_ms = 2000;
         }
         char status[41];
         std::snprintf(status, sizeof(status), "Held %1.1fs - menu in %1.1fs",
                       elapsed_ms / 1000.0,
-                      (5000 - elapsed_ms) / 1000.0);
+                      (2000 - elapsed_ms) / 1000.0);
         printf("\x1b[29;1H%-40.40s", status);
     }
     consoleSelect(previous_console);
@@ -553,9 +589,14 @@ void n3ds_draw_stream_quit_status(unsigned int elapsed_ms) {
 
 static bool fill_and_wait(u32 *first, u32 first_words, u32 *second,
                           u32 second_words, const char *screen_name) {
+    const u64 clear_start_ticks = svcGetSystemTick();
     if (first == NULL) {
-        diag_log("TEARDOWN", "step=Clearing the screens screen=%s result=null",
-                 screen_name);
+        diag_log("TEARDOWN",
+                 "step=Clearing the screens screen=%s result=null elapsed_ms=%llu",
+                 screen_name,
+                 static_cast<unsigned long long>(
+                     ((svcGetSystemTick() - clear_start_ticks) * 1000ULL) /
+                     SYSCLOCK_ARM11));
         return false;
     }
     const Result result = GX_MemoryFill(
@@ -565,23 +606,36 @@ static bool fill_and_wait(u32 *first, u32 first_words, u32 *second,
         second ? GX_FILL_16BIT_DEPTH : 0);
     if (R_FAILED(result)) {
         diag_log("TEARDOWN",
-                 "step=Clearing the screens screen=%s result=%ld",
-                 screen_name, (long)result);
+                 "step=Clearing the screens screen=%s result=%ld elapsed_ms=%llu",
+                 screen_name, (long)result,
+                 static_cast<unsigned long long>(
+                     ((svcGetSystemTick() - clear_start_ticks) * 1000ULL) /
+                     SYSCLOCK_ARM11));
         return false;
     }
 
     diag_log("TEARDOWN",
-             "step=Clearing the screens screen=%s event=PSC0 timeout_ms=250 phase=begin",
+             "step=Clearing the screens screen=%s event=PSC0 timeout_ms=250 phase=begin elapsed_ms=0",
              screen_name);
+    const u64 wait_start_ticks = svcGetSystemTick();
     if (!wait_for_psc0_bounded(GPU_CLEAR_WAIT_TIMEOUT_NS)) {
         diag_log("TEARDOWN",
-                 "step=Clearing the screens screen=%s event=PSC0 TIMED_OUT",
-                 screen_name);
+                 "step=Clearing the screens screen=%s event=PSC0 TIMED_OUT elapsed_ms=%llu",
+                 screen_name,
+                 static_cast<unsigned long long>(
+                     ((svcGetSystemTick() - wait_start_ticks) * 1000ULL) /
+                     SYSCLOCK_ARM11));
         return false;
     }
     diag_log("TEARDOWN",
-             "step=Clearing the screens screen=%s event=PSC0 phase=end",
-             screen_name);
+             "step=Clearing the screens screen=%s event=PSC0 phase=end elapsed_ms=%llu total_elapsed_ms=%llu",
+             screen_name,
+             static_cast<unsigned long long>(
+                 ((svcGetSystemTick() - wait_start_ticks) * 1000ULL) /
+                 SYSCLOCK_ARM11),
+             static_cast<unsigned long long>(
+                 ((svcGetSystemTick() - clear_start_ticks) * 1000ULL) /
+                 SYSCLOCK_ARM11));
     return true;
 }
 
@@ -600,7 +654,7 @@ bool n3ds_clear_stream_screens() {
     clear_ok = bottom_ok && clear_ok;
     n3ds_draw_diag_version_overlay();
     gfxFlushBuffers();
-    gfxScreenSwapBuffers(GFX_BOTTOM, true);
+    gfxScreenSwapBuffers(GFX_BOTTOM, false);
 
     u32 *left = (u32 *)gfxGetFramebuffer(GFX_TOP, GFX_LEFT, NULL, NULL);
     u32 *right = (u32 *)gfxGetFramebuffer(GFX_TOP, GFX_RIGHT, NULL, NULL);
@@ -608,7 +662,7 @@ bool n3ds_clear_stream_screens() {
         (GSP_SCREEN_HEIGHT_TOP * GSP_SCREEN_WIDTH * 2) / sizeof(u32);
     const bool top_ok = fill_and_wait(left, top_words, right, top_words, "TOP");
     clear_ok = top_ok && clear_ok;
-    gfxScreenSwapBuffers(GFX_TOP, true);
+    gfxScreenSwapBuffers(GFX_TOP, false);
     return clear_ok;
 }
 
@@ -635,7 +689,8 @@ void n3ds_draw_touch_panel_3d_readout(const N3ds3DSettings &settings) {
     consoleSelect(previous_console);
 }
 
-void n3ds_restore_mono_display() {
+bool n3ds_restore_mono_display() {
+    const u64 restore_start_ticks = svcGetSystemTick();
     gfxSetWide(false);
     if (!gfxIs3D()) {
         // The screen-clear phase already cleared both eye buffers.
@@ -643,8 +698,15 @@ void n3ds_restore_mono_display() {
     }
     gfxSet3D(false);
     gfxSetWide(false);
-    diag_log("TEARDOWN", "mono_display_swap phase=begin");
-    gfxScreenSwapBuffers(GFX_TOP, true);
-    diag_log("TEARDOWN", "mono_display_swap phase=end");
+    diag_log("TEARDOWN", "mono_display_swap phase=begin elapsed_ms=0 timeout_ms=250");
+    gfxScreenSwapBuffers(GFX_TOP, false);
+    const bool swapped = n3ds_wait_for_vblank_bounded(250);
+    diag_log("TEARDOWN",
+             "mono_display_swap phase=end result=%s elapsed_ms=%llu",
+             swapped ? "complete" : "TIMED_OUT",
+             static_cast<unsigned long long>(
+                 ((svcGetSystemTick() - restore_start_ticks) * 1000ULL) /
+                 SYSCLOCK_ARM11));
     diag_log("RENDER", "stereo_presentation=mono outside_stream=1");
+    return swapped;
 }

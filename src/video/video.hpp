@@ -109,6 +109,8 @@ extern DECODER_RENDERER_CALLBACKS decoder_callbacks_mock;
 
 void n3ds_video_begin_teardown();
 void n3ds_video_cleanup_after_stop();
+bool n3ds_video_cleanup_after_stop_bounded(unsigned int timeout_ms);
+bool n3ds_video_cleanup_pending();
 void n3ds_video_soft_finish_cleanup();
 void n3ds_video_mvd_finish_cleanup();
 void n3ds_video_mock_finish_cleanup();

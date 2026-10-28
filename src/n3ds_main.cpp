@@ -71,15 +71,23 @@ static u32 *SOC_buffer = NULL;
 static aptHookCookie apt_status_hook_cookie{};
 static bool apt_status_hook_registered = false;
 static bool connection_menu_return_pending = false;
+static bool connection_menu_return_degraded = false;
 static u64 connection_menu_return_start_ticks = 0;
+static u64 connection_menu_return_step_start_ticks = 0;
+
+static u64 elapsed_ms_since(u64 start_ticks) {
+    return ((svcGetSystemTick() - start_ticks) * 1000ULL) / SYSCLOCK_ARM11;
+}
 
 static void n3ds_apt_status_hook(APT_HookType hook, void *) {
     switch (hook) {
     case APTHOOK_ONSUSPEND:
-        diag_log("APPLET", "suspend begin");
+        diag_log("APPLET", "suspend begin home_allowed=%u",
+                 n3ds_home_allowed() ? 1 : 0);
         break;
     case APTHOOK_ONRESTORE:
-        diag_log("APPLET", "resume");
+        diag_log("APPLET", "resume home_allowed=%u",
+                 n3ds_home_allowed() ? 1 : 0);
         break;
     default:
         break;
@@ -282,8 +290,60 @@ static void n3ds_exit_handler(void) {
 static int console_selection_prompt(std::string prompt,
                                     std::vector<std::string> options,
                                     int default_idx) {
+    static constexpr unsigned int MENU_PRESENT_TIMEOUT_MS = 250;
     int option_idx = default_idx;
     int last_option_idx = -1;
+    bool hold_menu_for_video_cleanup = false;
+
+    if (connection_menu_return_pending) {
+        n3ds_set_home_allowed(false, "teardown_step6_force_menu_present");
+        hold_menu_for_video_cleanup = n3ds_video_cleanup_pending();
+
+        consoleClear();
+        if (!prompt.empty()) {
+            printf("%s\n", prompt.c_str());
+        }
+        printf("Press up/down to select\n");
+        printf("Press A to confirm\n");
+        printf("Press B to go back\n\n");
+        for (int i = 0; i < options.size(); i++) {
+            printf("%c%s\n", i == option_idx ? '>' : ' ', options[i].c_str());
+        }
+        n3ds_draw_diag_version_overlay();
+        gfxSwapBuffers();
+        gfxFlushBuffers();
+
+        const bool menu_presented =
+            n3ds_wait_for_vblank_bounded(MENU_PRESENT_TIMEOUT_MS);
+        if (!menu_presented) {
+            connection_menu_return_degraded = true;
+        }
+        const u64 step_elapsed_ms =
+            elapsed_ms_since(connection_menu_return_step_start_ticks);
+        const u64 total_elapsed_ms =
+            elapsed_ms_since(connection_menu_return_start_ticks);
+        diag_log("TEARDOWN",
+                 "step=6/6 label=Returning to the connection menu phase=end result=%s elapsed_ms=%llu timeout_ms=%u",
+                 menu_presented ? "presented" : "TIMED_OUT",
+                 static_cast<unsigned long long>(step_elapsed_ms),
+                 MENU_PRESENT_TIMEOUT_MS);
+        diag_log("TEARDOWN",
+                 "end total_ms=%llu destination=menu result=%s",
+                 static_cast<unsigned long long>(total_elapsed_ms),
+                 connection_menu_return_degraded ? "degraded_timeout"
+                                                 : "complete");
+        connection_menu_return_pending = false;
+        last_option_idx = option_idx;
+        if (!hold_menu_for_video_cleanup) {
+            n3ds_set_home_allowed(true, "connection_menu_presented");
+        }
+    } else if (!n3ds_video_cleanup_pending()) {
+        n3ds_set_home_allowed(true, "connection_menu_ready");
+    } else {
+        hold_menu_for_video_cleanup = true;
+        n3ds_set_home_allowed(false, "video_cleanup_pending");
+    }
+
     while (aptMainLoop()) {
         if (option_idx != last_option_idx) {
             consoleClear();
@@ -309,20 +369,17 @@ static int console_selection_prompt(std::string prompt,
         gfxFlushBuffers();
         gspWaitForVBlank();
 
-        if (connection_menu_return_pending) {
-            const u64 total_ms =
-                ((svcGetSystemTick() - connection_menu_return_start_ticks) *
-                 1000ULL) /
-                SYSCLOCK_ARM11;
-            diag_log("TEARDOWN",
-                     "step=6/6 label=Returning to the connection menu phase=complete");
-            diag_log("TEARDOWN", "end total_ms=%llu destination=menu",
-                     static_cast<unsigned long long>(total_ms));
-            connection_menu_return_pending = false;
+        if (hold_menu_for_video_cleanup && !n3ds_video_cleanup_pending()) {
+            hold_menu_for_video_cleanup = false;
+            n3ds_set_home_allowed(true, "video_cleanup_complete_menu_ready");
         }
 
         hidScanInput();
         u32 kDown = hidKeysDown();
+
+        if (n3ds_video_cleanup_pending()) {
+            continue;
+        }
 
         if (kDown & KEY_A) {
             consoleClear();
@@ -987,7 +1044,7 @@ stream_loop(PCONFIGURATION config,
         if (!combo_quit_logged && input_handler != nullptr &&
             input_handler->quit_to_menu_requested()) {
             combo_quit_logged = true;
-            diag_log("QUIT_TO_MENU", "trigger=hold_combo duration_ms=5000");
+            diag_log("QUIT_TO_MENU", "trigger=hold_combo duration_ms=2000");
             connection_listener->connection_terminated(
                 ML_ERROR_GRACEFUL_TERMINATION);
         }
@@ -995,7 +1052,7 @@ stream_loop(PCONFIGURATION config,
             n3ds_viewonly_quit_hold_requested()) {
             combo_quit_logged = true;
             diag_log("QUIT_TO_MENU",
-                     "trigger=hold_combo duration_ms=5000 mode=view_only");
+                     "trigger=hold_combo duration_ms=2000 mode=view_only");
             connection_listener->connection_terminated(
                 ML_ERROR_GRACEFUL_TERMINATION);
         }
@@ -1067,23 +1124,28 @@ static bool join_stream_worker(Thread &thread, const char *name,
         return true;
     }
 
-    diag_log("TEARDOWN", "thread_join name=%s phase=begin timeout_ms=%u",
+    diag_log("TEARDOWN",
+             "thread_join name=%s phase=begin timeout_ms=%u elapsed_ms=0",
              name, timeout_ms);
+    const u64 start_ticks = svcGetSystemTick();
     const Result join_result =
         threadJoin(thread, static_cast<u64>(timeout_ms) * 1000000ULL);
     if (R_SUCCEEDED(join_result)) {
         threadFree(thread);
         thread = NULL;
-        diag_log("TEARDOWN", "thread_join name=%s phase=end result=joined",
-                 name);
+        diag_log("TEARDOWN",
+                 "thread_join name=%s phase=end result=joined elapsed_ms=%llu",
+                 name, static_cast<unsigned long long>(
+                           elapsed_ms_since(start_ticks)));
         return true;
     }
 
     threadDetach(thread);
     thread = NULL;
     diag_log("TEARDOWN",
-             "thread_join name=%s result=TIMED_OUT result_code=%ld",
-             name, (long)join_result);
+             "thread_join name=%s result=TIMED_OUT elapsed_ms=%llu result_code=%ld",
+             name, static_cast<unsigned long long>(elapsed_ms_since(start_ticks)),
+             (long)join_result);
     return false;
 }
 
@@ -1097,9 +1159,11 @@ static void stream_teardown(StreamWorkerThreads &workers,
         states[i] = TeardownStepState::WAITING;
     }
     const u64 teardown_start_ticks = svcGetSystemTick();
+    u64 step_start_ticks = svcGetSystemTick();
+    connection_menu_return_degraded = false;
 
     states[0] = TeardownStepState::RUNNING;
-    diag_log("TEARDOWN", "step=1/6 label=%s phase=begin",
+    diag_log("TEARDOWN", "step=1/6 label=%s phase=begin elapsed_ms=0",
              teardown_step_label(0, destination));
     n3ds_video_begin_teardown();
     if (!connection_listener->is_connection_closed()) {
@@ -1107,11 +1171,14 @@ static void stream_teardown(StreamWorkerThreads &workers,
             ML_ERROR_GRACEFUL_TERMINATION);
     }
     states[0] = TeardownStepState::DONE;
-    diag_log("TEARDOWN", "step=1/6 label=%s phase=complete",
-             teardown_step_label(0, destination));
+    diag_log("TEARDOWN",
+             "step=1/6 label=%s phase=complete elapsed_ms=%llu",
+             teardown_step_label(0, destination),
+             static_cast<unsigned long long>(elapsed_ms_since(step_start_ticks)));
 
+    step_start_ticks = svcGetSystemTick();
     states[1] = TeardownStepState::RUNNING;
-    diag_log("TEARDOWN", "step=2/6 label=%s phase=begin",
+    diag_log("TEARDOWN", "step=2/6 label=%s phase=begin elapsed_ms=0",
              teardown_step_label(1, destination));
     draw_teardown_progress(1, destination, states);
     bool workers_joined = join_stream_worker(workers.input_thread, "input", 250);
@@ -1122,17 +1189,22 @@ static void stream_teardown(StreamWorkerThreads &workers,
     }
     states[1] = workers_joined ? TeardownStepState::DONE
                                : TeardownStepState::TIMED_OUT;
-    diag_log("TEARDOWN", "step=2/6 label=%s result=%s",
+    connection_menu_return_degraded = !workers_joined;
+    diag_log("TEARDOWN",
+             "step=2/6 label=%s phase=end result=%s elapsed_ms=%llu",
              teardown_step_label(1, destination),
-             workers_joined ? "complete" : "TIMED_OUT");
+             workers_joined ? "complete" : "TIMED_OUT",
+             static_cast<unsigned long long>(elapsed_ms_since(step_start_ticks)));
 
+    step_start_ticks = svcGetSystemTick();
     states[2] = TeardownStepState::RUNNING;
-    diag_log("TEARDOWN", "step=3/6 label=%s phase=begin",
+    diag_log("TEARDOWN", "step=3/6 label=%s phase=begin elapsed_ms=0",
              teardown_step_label(2, destination));
     draw_teardown_progress(2, destination, states);
     const u64 limelight_stop_start_ticks = svcGetSystemTick();
     connection_listener->set_teardown_logging(true);
-    diag_log("TEARDOWN", "LiStopConnection phase=before");
+    diag_log("TEARDOWN",
+             "LiStopConnection phase=before elapsed_ms=0 timeout_ms=none");
     LiStopConnection();
     connection_listener->set_teardown_logging(false);
     const u64 limelight_stop_ms =
@@ -1140,54 +1212,85 @@ static void stream_teardown(StreamWorkerThreads &workers,
         SYSCLOCK_ARM11;
     diag_log("TEARDOWN", "LiStopConnection phase=after elapsed_ms=%llu",
              static_cast<unsigned long long>(limelight_stop_ms));
-    n3ds_video_cleanup_after_stop();
-    states[2] = TeardownStepState::DONE;
-    diag_log("TEARDOWN", "step=3/6 label=%s phase=complete elapsed_ms=%llu",
+    bool decoder_cleanup_complete = true;
+    if (destination == TeardownDestination::CONNECTION_MENU) {
+        decoder_cleanup_complete = n3ds_video_cleanup_after_stop_bounded(500);
+    } else {
+        n3ds_video_cleanup_after_stop();
+    }
+    states[2] = decoder_cleanup_complete ? TeardownStepState::DONE
+                                         : TeardownStepState::TIMED_OUT;
+    connection_menu_return_degraded =
+        connection_menu_return_degraded || !decoder_cleanup_complete;
+    diag_log("TEARDOWN",
+             "step=3/6 label=%s phase=end result=%s elapsed_ms=%llu",
              teardown_step_label(2, destination),
-             static_cast<unsigned long long>(limelight_stop_ms));
+             decoder_cleanup_complete ? "complete" : "TIMED_OUT",
+             static_cast<unsigned long long>(elapsed_ms_since(step_start_ticks)));
 
+    step_start_ticks = svcGetSystemTick();
     states[3] = TeardownStepState::RUNNING;
-    diag_log("TEARDOWN", "step=4/6 label=%s phase=begin",
+    diag_log("TEARDOWN", "step=4/6 label=%s phase=begin elapsed_ms=0",
              teardown_step_label(3, destination));
     draw_teardown_progress(3, destination, states);
     const bool screens_cleared = n3ds_clear_stream_screens();
     states[3] = screens_cleared ? TeardownStepState::DONE
                                 : TeardownStepState::TIMED_OUT;
-    diag_log("TEARDOWN", "step=4/6 label=%s result=%s",
+    connection_menu_return_degraded =
+        connection_menu_return_degraded || !screens_cleared;
+    diag_log("TEARDOWN",
+             "step=4/6 label=%s phase=end result=%s elapsed_ms=%llu",
              teardown_step_label(3, destination),
-             screens_cleared ? "complete" : "TIMED_OUT");
+             screens_cleared ? "complete" : "TIMED_OUT",
+             static_cast<unsigned long long>(elapsed_ms_since(step_start_ticks)));
 
+    step_start_ticks = svcGetSystemTick();
     states[4] = TeardownStepState::RUNNING;
-    diag_log("TEARDOWN", "step=5/6 label=%s phase=begin",
+    diag_log("TEARDOWN", "step=5/6 label=%s phase=begin elapsed_ms=0",
              teardown_step_label(4, destination));
     draw_teardown_progress(4, destination, states);
     if (destination == TeardownDestination::CONNECTION_MENU) {
-        n3ds_restore_mono_display();
-        states[4] = TeardownStepState::DONE;
+        states[4] = n3ds_restore_mono_display() ? TeardownStepState::DONE
+                                                : TeardownStepState::TIMED_OUT;
     } else {
         states[4] = TeardownStepState::SKIPPED;
         diag_log("TEARDOWN", "mono restore skipped reason=app_exit");
     }
-    diag_log("TEARDOWN", "step=5/6 label=%s result=%s",
+    connection_menu_return_degraded =
+        connection_menu_return_degraded ||
+        states[4] == TeardownStepState::TIMED_OUT;
+    diag_log("TEARDOWN",
+             "step=5/6 label=%s phase=end result=%s elapsed_ms=%llu",
              teardown_step_label(4, destination),
-             destination == TeardownDestination::CONNECTION_MENU ? "complete"
-                                                                 : "skipped");
+             states[4] == TeardownStepState::DONE
+                 ? "complete"
+                 : (states[4] == TeardownStepState::TIMED_OUT ? "TIMED_OUT"
+                                                               : "skipped"),
+             static_cast<unsigned long long>(elapsed_ms_since(step_start_ticks)));
 
     if (connection_listener != nullptr) {
         N3dsConnectionListener::destroy_instance();
     }
 
+    step_start_ticks = svcGetSystemTick();
     states[5] = TeardownStepState::RUNNING;
-    diag_log("TEARDOWN", "step=6/6 label=%s phase=begin",
+    if (destination == TeardownDestination::CONNECTION_MENU) {
+        n3ds_set_home_allowed(false, "teardown_step6_menu_return");
+    }
+    diag_log("TEARDOWN",
+             "step=6/6 label=%s phase=begin elapsed_ms=0 timeout_ms=250",
              teardown_step_label(5, destination));
     draw_teardown_progress(5, destination, states);
     if (destination == TeardownDestination::CONNECTION_MENU) {
         connection_menu_return_pending = true;
         connection_menu_return_start_ticks = teardown_start_ticks;
+        connection_menu_return_step_start_ticks = step_start_ticks;
     } else {
         states[5] = TeardownStepState::DONE;
-        diag_log("TEARDOWN", "step=6/6 label=%s phase=complete",
-                 teardown_step_label(5, destination));
+        diag_log("TEARDOWN",
+                 "step=6/6 label=%s phase=complete result=app_exit elapsed_ms=%llu",
+                 teardown_step_label(5, destination),
+                 static_cast<unsigned long long>(elapsed_ms_since(step_start_ticks)));
     }
 
     if (destination == TeardownDestination::APP_EXIT) {

@@ -20,6 +20,7 @@
 #include "TouchHandler.hpp"
 #include "../../video/renderer/N3ds3DPresentation.hpp"
 #include "../../diagnostics.h"
+#include "../n3ds_input.hpp"
 #include <Limelight.h>
 #include <memory>
 #include <vector>
@@ -48,7 +49,6 @@ bool MenuTouchHandler::handle_home_press() {
     three_d_page = false;
     pending_enter_3d_page = false;
     pending_3d_action = ThreeDPanelAction::NONE;
-    aptSetHomeAllowed(true);
     MessageDispatcher::get_instance()->post(
         std::make_shared<TouchPanelPageChangedMsg>(false));
     diag_log("HOME", "page-back taken route=3d-panel");
@@ -76,7 +76,7 @@ void MenuTouchHandler::_handle_touch_up(touchPosition touch) {
             break;
         case ThreeDPanelAction::HOME:
             three_d_page = false;
-            aptSetHomeAllowed(true);
+            n3ds_set_home_allowed(true, "3d_panel_home_tile");
             break;
         case ThreeDPanelAction::NONE:
             break;
@@ -92,7 +92,7 @@ void MenuTouchHandler::_handle_touch_up(touchPosition touch) {
 
     if (pending_enter_3d_page) {
         three_d_page = true;
-        aptSetHomeAllowed(false);
+        n3ds_set_home_allowed(false, "3d_panel_opened");
         pending_enter_3d_page = false;
         MessageDispatcher::get_instance()->post(
             std::make_shared<TouchPanelPageChangedMsg>(true));

@@ -18,6 +18,7 @@
  */
 
 #include "video.hpp"
+#include "../diagnostics.h"
 
 #include <3ds.h>
 
@@ -98,10 +99,30 @@ MvdDecoder::MvdDecoder(int videoFormat, int width, int height, int redrawRate,
 // This function must be called after
 // decoding is finished
 MvdDecoder::~MvdDecoder() {
+    u64 start_ticks = svcGetSystemTick();
+    diag_log("TEARDOWN", "mvd_cleanup operation=y2rExit phase=begin elapsed_ms=0");
     y2rExit();
+    diag_log("TEARDOWN", "mvd_cleanup operation=y2rExit phase=end elapsed_ms=%llu",
+             static_cast<unsigned long long>(
+                 ((svcGetSystemTick() - start_ticks) * 1000ULL) /
+                 SYSCLOCK_ARM11));
+
+    start_ticks = svcGetSystemTick();
+    diag_log("TEARDOWN", "mvd_cleanup operation=mvdstdExit phase=begin elapsed_ms=0");
     mvdstdExit();
+    diag_log("TEARDOWN", "mvd_cleanup operation=mvdstdExit phase=end elapsed_ms=%llu",
+             static_cast<unsigned long long>(
+                 ((svcGetSystemTick() - start_ticks) * 1000ULL) /
+                 SYSCLOCK_ARM11));
+
+    start_ticks = svcGetSystemTick();
+    diag_log("TEARDOWN", "mvd_cleanup operation=linearFree phase=begin elapsed_ms=0");
     linearFree(nal_unit_buffer);
     linearFree(rgb_img_buffer);
+    diag_log("TEARDOWN", "mvd_cleanup operation=linearFree phase=end elapsed_ms=%llu",
+             static_cast<unsigned long long>(
+                 ((svcGetSystemTick() - start_ticks) * 1000ULL) /
+                 SYSCLOCK_ARM11));
     printf("Video decoder shutdown successfully\n");
 }
 

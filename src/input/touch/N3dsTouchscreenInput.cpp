@@ -19,6 +19,7 @@
 
 #include "N3dsTouchscreenInput.hpp"
 #include "../../diagnostics.h"
+#include "../n3ds_input.hpp"
 #include "../../system/dispatcher.hpp"
 
 N3dsTouchscreenInput::N3dsTouchscreenInput(GAMEPAD_STATE *gamepad_in,
@@ -46,6 +47,8 @@ void N3dsTouchscreenInput::accept(IMessage *msg) {
 
 bool N3dsTouchscreenInput::handle_home_press() {
     if (handler != nullptr && handler->handle_home_press()) {
+        home_restore_pending = true;
+        n3ds_set_home_allowed(false, "home_page_back_3d_panel");
         return true;
     }
 
@@ -54,8 +57,9 @@ bool N3dsTouchscreenInput::handle_home_press() {
     }
 
     home_back_pending = true;
+    home_restore_pending = true;
     next_touch_type.store(N3dsTouchType::MENU_TOUCH);
-    aptSetHomeAllowed(true);
+    n3ds_set_home_allowed(false, "home_page_back_touch_submenu");
     return true;
 }
 
@@ -91,8 +95,10 @@ void N3dsTouchscreenInput::_n3dsinput_set_touch(N3dsTouchType touch_type_in) {
         break;
     }
     touch_type = touch_type_in;
-    aptSetHomeAllowed(touch_type_in == N3dsTouchType::MENU_TOUCH ||
-                      touch_type_in == N3dsTouchType::DISABLED);
+    const bool allow_home = !home_restore_pending &&
+                            (touch_type_in == N3dsTouchType::MENU_TOUCH ||
+                             touch_type_in == N3dsTouchType::DISABLED);
+    n3ds_set_home_allowed(allow_home, "touch_mode_changed");
     if (home_back_pending && touch_type_in == N3dsTouchType::MENU_TOUCH) {
         home_back_pending = false;
         diag_log("HOME", "page-back taken route=touch-submenu");
@@ -102,6 +108,14 @@ void N3dsTouchscreenInput::_n3dsinput_set_touch(N3dsTouchType touch_type_in) {
 void N3dsTouchscreenInput::n3dsinput_handle_touch(u32 kDown, u32 kUp) {
     if (next_touch_type.load() != touch_type) {
         _n3dsinput_set_touch(next_touch_type.load());
+    }
+
+    // Keep OS HOME disabled through the rejected press. A new touch after the
+    // main panel is active proves the page-back press has ended.
+    if (home_restore_pending && touch_type == N3dsTouchType::MENU_TOUCH &&
+        (kDown & KEY_TOUCH)) {
+        home_restore_pending = false;
+        n3ds_set_home_allowed(true, "main_panel_touched_after_home_page_back");
     }
 
     if (handler == nullptr) {

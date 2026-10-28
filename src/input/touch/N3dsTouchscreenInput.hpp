@@ -44,5 +44,6 @@ class N3dsTouchscreenInput : public ISubscriber {
     AtomicVar<N3dsTouchType> next_touch_type = N3dsTouchType::DISABLED;
     N3dsTouchType touch_type = N3dsTouchType::DISABLED;
     bool home_back_pending = false;
+    bool home_restore_pending = false;
     std::unique_ptr<TouchHandlerBase> handler = nullptr;
 };

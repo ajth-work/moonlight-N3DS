@@ -74,3 +74,5 @@ class N3dsInput : public ISubscriber {
 unsigned int n3ds_quit_hold_elapsed_ms();
 void n3ds_viewonly_quit_hold_reset();
 bool n3ds_viewonly_quit_hold_requested();
+void n3ds_set_home_allowed(bool allowed, const char *source);
+bool n3ds_home_allowed();

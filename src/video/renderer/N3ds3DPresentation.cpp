@@ -8,9 +8,9 @@ namespace {
 constexpr float SCREEN_ASPECT = 400.0f / 240.0f;
 constexpr int MAX_HORIZONTAL_SHIFT = 8;
 
-AtomicVar<int> current_mode(static_cast<int>(N3ds3DMode::HSBS));
+AtomicVar<int> current_mode(static_cast<int>(N3ds3DMode::MONO_DUP));
 AtomicVar<int> current_aspect(static_cast<int>(N3ds3DAspect::STRETCH));
-AtomicVar<int> current_shift(0);
+AtomicVar<int> current_shift(-8);
 
 bool is_split_mode(N3ds3DMode mode) {
     return mode == N3ds3DMode::HSBS || mode == N3ds3DMode::HSBS_SWAP ||
@@ -25,9 +25,9 @@ N3ds3DSettings n3ds_3d_settings_snapshot() {
 }
 
 void n3ds_3d_reset_settings() {
-    current_mode.store(static_cast<int>(N3ds3DMode::HSBS));
+    current_mode.store(static_cast<int>(N3ds3DMode::MONO_DUP));
     current_aspect.store(static_cast<int>(N3ds3DAspect::STRETCH));
-    current_shift.store(0);
+    current_shift.store(-8);
 }
 
 void n3ds_3d_cycle_mode() {

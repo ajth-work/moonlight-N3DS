@@ -27,18 +27,89 @@
 #include "touchpad_bgr.h"
 #include "video.hpp"
 
+#include "../system/AtomicVar.hpp"
 #include <3ds.h>
 #include <stdio.h>
 
 static AtomicVar<bool> stream_teardown_started = false;
+static AtomicVar<bool> video_cleanup_pending = false;
+
+static u64 teardown_elapsed_ms(u64 start_ticks) {
+    return ((svcGetSystemTick() - start_ticks) * 1000ULL) / SYSCLOCK_ARM11;
+}
+
+static void run_cleanup_component(const char *name, void (*cleanup)()) {
+    const u64 start_ticks = svcGetSystemTick();
+    diag_log("TEARDOWN", "video_cleanup component=%s phase=begin elapsed_ms=0",
+             name);
+    cleanup();
+    diag_log("TEARDOWN", "video_cleanup component=%s phase=end elapsed_ms=%llu",
+             name, static_cast<unsigned long long>(
+                       teardown_elapsed_ms(start_ticks)));
+}
 
 void n3ds_video_begin_teardown() { stream_teardown_started.store(true); }
 
 void n3ds_video_cleanup_after_stop() {
-    n3ds_video_soft_finish_cleanup();
-    n3ds_video_mvd_finish_cleanup();
-    n3ds_video_mock_finish_cleanup();
+    const u64 start_ticks = svcGetSystemTick();
+    diag_log("TEARDOWN", "video_cleanup phase=begin elapsed_ms=0");
+    run_cleanup_component("soft", n3ds_video_soft_finish_cleanup);
+    run_cleanup_component("mvd", n3ds_video_mvd_finish_cleanup);
+    run_cleanup_component("mock", n3ds_video_mock_finish_cleanup);
+    diag_log("TEARDOWN", "video_cleanup phase=end elapsed_ms=%llu",
+             static_cast<unsigned long long>(teardown_elapsed_ms(start_ticks)));
 }
+
+static void video_cleanup_worker(void *) {
+    n3ds_video_cleanup_after_stop();
+    video_cleanup_pending.store(false);
+}
+
+bool n3ds_video_cleanup_after_stop_bounded(unsigned int timeout_ms) {
+    if (video_cleanup_pending.load()) {
+        diag_log("TEARDOWN",
+                 "video_cleanup_wait phase=begin timeout_ms=%u result=already_pending",
+                 timeout_ms);
+        return false;
+    }
+
+    video_cleanup_pending.store(true);
+    s32 priority = 0x30;
+    svcGetThreadPriority(&priority, CUR_THREAD_HANDLE);
+    Thread worker = threadCreate(video_cleanup_worker, NULL, 0x8000, priority,
+                                 -1, false);
+    if (worker == NULL) {
+        diag_log("TEARDOWN",
+                 "video_cleanup_wait result=thread_create_failed fallback=sync");
+        video_cleanup_pending.store(false);
+        n3ds_video_cleanup_after_stop();
+        return true;
+    }
+
+    const u64 start_ticks = svcGetSystemTick();
+    diag_log("TEARDOWN",
+             "video_cleanup_wait phase=begin timeout_ms=%u elapsed_ms=0",
+             timeout_ms);
+    const Result join_result =
+        threadJoin(worker, static_cast<u64>(timeout_ms) * 1000000ULL);
+    if (R_SUCCEEDED(join_result)) {
+        threadFree(worker);
+        diag_log("TEARDOWN",
+                 "video_cleanup_wait phase=end result=complete elapsed_ms=%llu",
+                 static_cast<unsigned long long>(
+                     teardown_elapsed_ms(start_ticks)));
+        return true;
+    }
+
+    threadDetach(worker);
+    diag_log("TEARDOWN",
+             "video_cleanup_wait phase=end result=TIMED_OUT elapsed_ms=%llu result_code=%ld",
+             static_cast<unsigned long long>(teardown_elapsed_ms(start_ticks)),
+             static_cast<long>(join_result));
+    return false;
+}
+
+bool n3ds_video_cleanup_pending() { return video_cleanup_pending.load(); }
 
 VideoDecoderBase::VideoDecoderBase(int width, int height) {
     stream_teardown_started.store(false);

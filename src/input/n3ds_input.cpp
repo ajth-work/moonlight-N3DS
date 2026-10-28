@@ -44,15 +44,25 @@
 #define ACTIVE_GAMEPAD_MASK 1
 
 static constexpr u32 QUIT_TO_MENU_CHORD =
-    KEY_L | KEY_R | KEY_START | KEY_SELECT;
+    KEY_L | KEY_R | KEY_START;
 static constexpr u64 QUIT_HOLD_SUPPRESS_TICKS =
     (SYSCLOCK_ARM11 * 500ULL) / 1000ULL;
 static constexpr u64 QUIT_HOLD_TRIGGER_TICKS =
-    (SYSCLOCK_ARM11 * 5000ULL) / 1000ULL;
+    (SYSCLOCK_ARM11 * 2000ULL) / 1000ULL;
 static AtomicVar<unsigned int> quit_hold_elapsed_ms = 0;
+static AtomicVar<bool> home_allowed_state = true;
 static u64 viewonly_quit_combo_start_ticks = 0;
 static unsigned int viewonly_last_quit_progress_bucket = 0;
 static bool viewonly_quit_to_menu = false;
+
+void n3ds_set_home_allowed(bool allowed, const char *source) {
+    aptSetHomeAllowed(allowed);
+    home_allowed_state.store(allowed);
+    diag_log("HOME", "applet_home_allowed=%u source=%s", allowed ? 1 : 0,
+             source != nullptr ? source : "unknown");
+}
+
+bool n3ds_home_allowed() { return home_allowed_state.load(); }
 
 unsigned int n3ds_quit_hold_elapsed_ms() {
     return quit_hold_elapsed_ms.load();
@@ -91,10 +101,10 @@ bool n3ds_viewonly_quit_hold_requested() {
         svcGetSystemTick() - viewonly_quit_combo_start_ticks;
     const unsigned int elapsed_ms = static_cast<unsigned int>(
         (elapsed_ticks * 1000ULL) / SYSCLOCK_ARM11);
-    const unsigned int displayed_ms = elapsed_ms > 5000 ? 5000 : elapsed_ms;
+    const unsigned int displayed_ms = elapsed_ms > 2000 ? 2000 : elapsed_ms;
     const unsigned int bucket = displayed_ms / 100;
     quit_hold_elapsed_ms.store(displayed_ms);
-    if (bucket != viewonly_last_quit_progress_bucket || displayed_ms == 5000) {
+    if (bucket != viewonly_last_quit_progress_bucket || displayed_ms == 2000) {
         MessageDispatcher::get_instance()->post(
             std::make_shared<QuitHoldProgressChangedMsg>(displayed_ms));
         viewonly_last_quit_progress_bucket = bucket;
@@ -125,7 +135,7 @@ N3dsInput::N3dsInput(int image_width, int image_height, bool swap_face_buttons,
     CUSTOM_KEY_ZL = swap_triggers_and_shoulders ? KEY_L : KEY_ZL;
     CUSTOM_KEY_ZR = swap_triggers_and_shoulders ? KEY_R : KEY_ZR;
 
-    aptSetHomeAllowed(false);
+    n3ds_set_home_allowed(false, "stream_input_start");
     touch_handler = std::make_unique<N3dsTouchscreenInput>(
         &gamepad_state, image_width, image_height);
 
@@ -143,7 +153,6 @@ N3dsInput::~N3dsInput() {
     gamepad_state = GAMEPAD_STATE();
     previous_state = GAMEPAD_STATE();
     touch_handler = nullptr;
-    aptSetHomeAllowed(true);
     printf("Input handler shutdown successfully\n");
 }
 
@@ -282,10 +291,10 @@ void N3dsInput::n3dsinput_handle_event() {
         const u64 elapsed_ticks = svcGetSystemTick() - quit_combo_start_ticks;
         const unsigned int elapsed_ms = static_cast<unsigned int>(
             (elapsed_ticks * 1000ULL) / SYSCLOCK_ARM11);
-        const unsigned int displayed_ms = elapsed_ms > 5000 ? 5000 : elapsed_ms;
+        const unsigned int displayed_ms = elapsed_ms > 2000 ? 2000 : elapsed_ms;
         const unsigned int bucket = displayed_ms / 100;
         quit_hold_elapsed_ms.store(displayed_ms);
-        if (bucket != last_quit_progress_bucket || displayed_ms == 5000) {
+        if (bucket != last_quit_progress_bucket || displayed_ms == 2000) {
             MessageDispatcher::get_instance()->post(
                 std::make_shared<QuitHoldProgressChangedMsg>(displayed_ms));
             last_quit_progress_bucket = bucket;
