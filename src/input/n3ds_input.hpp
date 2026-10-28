@@ -32,6 +32,8 @@ class N3dsInput : public ISubscriber {
     void accept(IMessage *msg) override;
     void n3dsinput_handle_event();
     void force_touchscreen_menu();
+    void shutdown();
+    bool quit_to_menu_requested();
 
   private:
     void _add_gamepad();
@@ -53,6 +55,11 @@ class N3dsInput : public ISubscriber {
     AtomicVar<bool> enable_accel = false;
     bool use_triggers_for_mouse = false;
     bool menu_active = false;
+    bool quit_combo_suppressed = false;
+    AtomicVar<bool> quit_to_menu = false;
+    u64 quit_combo_start_ticks = 0;
+    unsigned int last_quit_progress_bucket = 0;
+    bool gamepad_removed = false;
 
     uint32_t CUSTOM_KEY_A;
     uint32_t CUSTOM_KEY_B;
@@ -63,3 +70,7 @@ class N3dsInput : public ISubscriber {
     uint32_t CUSTOM_KEY_ZL;
     uint32_t CUSTOM_KEY_ZR;
 };
+
+unsigned int n3ds_quit_hold_elapsed_ms();
+void n3ds_viewonly_quit_hold_reset();
+bool n3ds_viewonly_quit_hold_requested();

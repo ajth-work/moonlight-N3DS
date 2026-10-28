@@ -44,6 +44,7 @@ class N3dsConnectionListener : public ISubscriber {
 
     void connection_terminated(int errorCode);
     void connection_log_message(const char *format, va_list arglist);
+    void set_teardown_logging(bool enabled);
     void connection_status_update(int status);
     void set_motion_event_state(unsigned short controllerNumber,
                                 unsigned char motionType,
@@ -55,6 +56,7 @@ class N3dsConnectionListener : public ISubscriber {
     static std::unique_ptr<N3dsConnectionListener> instance;
     bool enable_motion;
     AtomicVar<bool> debug = false;
+    AtomicVar<bool> teardown_logging = false;
     AtomicVar<bool> connection_closed = false;
 };
 

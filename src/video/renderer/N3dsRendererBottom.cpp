@@ -31,12 +31,35 @@ N3dsRendererBottom::N3dsRendererBottom(int src_width, int src_height,
                        src_width, src_height, px_size, debug_in) {}
 
 void N3dsRendererBottom::write_px_to_framebuffer(uint8_t *source) {
+    panel_source = nullptr;
     write_px_to_framebuffer_gpu(source);
+}
+
+void N3dsRendererBottom::set_quit_hold_progress(unsigned int elapsed_ms) {
+    quit_hold_elapsed_ms = elapsed_ms;
+    if (panel_source != nullptr) {
+        write_px_to_framebuffer_raw(
+            panel_source, panel_offset, panel_size,
+            panel_is_3d_page ? &panel_settings : nullptr);
+        return;
+    }
+
+    n3ds_draw_diag_version_overlay();
+    n3ds_draw_stream_quit_status(quit_hold_elapsed_ms);
+    gfxFlushBuffers();
+    gfxScreenSwapBuffers(GFX_BOTTOM, false);
 }
 
 void N3dsRendererBottom::write_px_to_framebuffer_raw(const uint8_t *source,
                                                      int offset, int size,
                                                      const N3ds3DSettings *page_settings) {
+    panel_source = source;
+    panel_offset = offset;
+    panel_size = size;
+    panel_is_3d_page = page_settings != nullptr;
+    if (page_settings != nullptr) {
+        panel_settings = *page_settings;
+    }
     u8 *gfxbtmadr = gfxGetFramebuffer(GFX_BOTTOM, GFX_LEFT, NULL, NULL);
 
     if (size == 0) {
@@ -45,6 +68,7 @@ void N3dsRendererBottom::write_px_to_framebuffer_raw(const uint8_t *source,
     memcpy(gfxbtmadr + offset, source, size);
 
     n3ds_draw_diag_version_overlay();
+    n3ds_draw_stream_quit_status(quit_hold_elapsed_ms);
     if (page_settings != nullptr) {
         n3ds_draw_touch_panel_3d_readout(*page_settings);
     }

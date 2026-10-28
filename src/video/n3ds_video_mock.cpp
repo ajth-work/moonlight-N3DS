@@ -42,7 +42,8 @@ static int fakeDrSetup(int videoFormat, int width, int height, int redrawRate,
 }
 static void fakeDrStart(void) {}
 static void fakeDrStop(void) {}
-static void fakeDrCleanup(void) { instance = nullptr; }
+static void fakeDrCleanup(void) {}
+void n3ds_video_mock_finish_cleanup() { instance = nullptr; }
 static int fakeDrSubmitDecodeUnit(PDECODE_UNIT decodeUnit) { return DR_OK; }
 
 DECODER_RENDERER_CALLBACKS decoder_callbacks_mock = {

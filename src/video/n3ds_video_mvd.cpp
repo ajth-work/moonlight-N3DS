@@ -170,7 +170,9 @@ static int n3ds_init(int videoFormat, int width, int height, int redrawRate,
     }
 }
 
-static void n3ds_destroy() { instance = nullptr; }
+static void n3ds_destroy() {}
+
+void n3ds_video_mvd_finish_cleanup() { instance = nullptr; }
 
 static int n3ds_submit_decode_unit(PDECODE_UNIT decodeUnit) {
     if (instance == nullptr) {

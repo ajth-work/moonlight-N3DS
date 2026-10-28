@@ -43,6 +43,68 @@
 #define CONTROLLER_NUMBER 0
 #define ACTIVE_GAMEPAD_MASK 1
 
+static constexpr u32 QUIT_TO_MENU_CHORD =
+    KEY_L | KEY_R | KEY_START | KEY_SELECT;
+static constexpr u64 QUIT_HOLD_SUPPRESS_TICKS =
+    (SYSCLOCK_ARM11 * 500ULL) / 1000ULL;
+static constexpr u64 QUIT_HOLD_TRIGGER_TICKS =
+    (SYSCLOCK_ARM11 * 5000ULL) / 1000ULL;
+static AtomicVar<unsigned int> quit_hold_elapsed_ms = 0;
+static u64 viewonly_quit_combo_start_ticks = 0;
+static unsigned int viewonly_last_quit_progress_bucket = 0;
+static bool viewonly_quit_to_menu = false;
+
+unsigned int n3ds_quit_hold_elapsed_ms() {
+    return quit_hold_elapsed_ms.load();
+}
+
+void n3ds_viewonly_quit_hold_reset() {
+    viewonly_quit_combo_start_ticks = 0;
+    viewonly_last_quit_progress_bucket = 0;
+    viewonly_quit_to_menu = false;
+    quit_hold_elapsed_ms.store(0);
+}
+
+bool n3ds_viewonly_quit_hold_requested() {
+    if (viewonly_quit_to_menu) {
+        return true;
+    }
+
+    hidScanInput();
+    const bool chord_held =
+        (hidKeysHeld() & QUIT_TO_MENU_CHORD) == QUIT_TO_MENU_CHORD;
+    if (!chord_held) {
+        viewonly_quit_combo_start_ticks = 0;
+        viewonly_last_quit_progress_bucket = 0;
+        if (quit_hold_elapsed_ms.load() != 0) {
+            quit_hold_elapsed_ms.store(0);
+            MessageDispatcher::get_instance()->post(
+                std::make_shared<QuitHoldProgressChangedMsg>(0));
+        }
+        return false;
+    }
+
+    if (viewonly_quit_combo_start_ticks == 0) {
+        viewonly_quit_combo_start_ticks = svcGetSystemTick();
+    }
+    const u64 elapsed_ticks =
+        svcGetSystemTick() - viewonly_quit_combo_start_ticks;
+    const unsigned int elapsed_ms = static_cast<unsigned int>(
+        (elapsed_ticks * 1000ULL) / SYSCLOCK_ARM11);
+    const unsigned int displayed_ms = elapsed_ms > 5000 ? 5000 : elapsed_ms;
+    const unsigned int bucket = displayed_ms / 100;
+    quit_hold_elapsed_ms.store(displayed_ms);
+    if (bucket != viewonly_last_quit_progress_bucket || displayed_ms == 5000) {
+        MessageDispatcher::get_instance()->post(
+            std::make_shared<QuitHoldProgressChangedMsg>(displayed_ms));
+        viewonly_last_quit_progress_bucket = bucket;
+    }
+    if (elapsed_ticks >= QUIT_HOLD_TRIGGER_TICKS) {
+        viewonly_quit_to_menu = true;
+    }
+    return viewonly_quit_to_menu;
+}
+
 N3dsInput::N3dsInput(int image_width, int image_height, bool swap_face_buttons,
                      bool swap_triggers_and_shoulders,
                      bool use_triggers_for_mouse_in) {
@@ -73,17 +135,32 @@ N3dsInput::N3dsInput(int image_width, int image_height, bool swap_face_buttons,
 }
 
 N3dsInput::~N3dsInput() {
+    shutdown();
     auto pDispatcher = MessageDispatcher::get_instance();
     pDispatcher->unsubscribe(MessageType::ENABLE_ACCEL, this);
     pDispatcher->unsubscribe(MessageType::ENABLE_GYRO, this);
 
-    _remove_gamepad();
     gamepad_state = GAMEPAD_STATE();
     previous_state = GAMEPAD_STATE();
     touch_handler = nullptr;
     aptSetHomeAllowed(true);
     printf("Input handler shutdown successfully\n");
 }
+
+void N3dsInput::shutdown() {
+    quit_hold_elapsed_ms.store(0);
+    last_quit_progress_bucket = 0;
+    if (!gamepad_removed) {
+        LiSendMultiControllerEvent(CONTROLLER_NUMBER, ACTIVE_GAMEPAD_MASK, 0,
+                                   0, 0, 0, 0, 0, 0);
+        gamepad_state = GAMEPAD_STATE();
+        previous_state = GAMEPAD_STATE();
+        _remove_gamepad();
+        gamepad_removed = true;
+    }
+}
+
+bool N3dsInput::quit_to_menu_requested() { return quit_to_menu.load(); }
 
 void N3dsInput::accept(IMessage *msg) {
     if (msg->getMessageType() == MessageType::ENABLE_ACCEL) {
@@ -180,6 +257,7 @@ void N3dsInput::n3dsinput_handle_event() {
     hidScanInput();
     u32 kDown = hidKeysDown();
     u32 kUp = hidKeysUp();
+    u32 kHeld = hidKeysHeld();
     previous_state = gamepad_state;
 
     touch_handler->n3dsinput_handle_touch(kDown, kUp);
@@ -193,6 +271,52 @@ void N3dsInput::n3dsinput_handle_event() {
         gamepad_state.buttons &= ~_n3ds_to_li_buttons(kUp);
         gamepad_state.leftTrigger &= ~n3ds_to_li_trigger(kUp, CUSTOM_KEY_ZL);
         gamepad_state.rightTrigger &= ~n3ds_to_li_trigger(kUp, CUSTOM_KEY_ZR);
+    }
+
+    const bool chord_held =
+        (kHeld & QUIT_TO_MENU_CHORD) == QUIT_TO_MENU_CHORD;
+    if (chord_held && !quit_combo_suppressed && !quit_to_menu.load()) {
+        if (quit_combo_start_ticks == 0) {
+            quit_combo_start_ticks = svcGetSystemTick();
+        }
+        const u64 elapsed_ticks = svcGetSystemTick() - quit_combo_start_ticks;
+        const unsigned int elapsed_ms = static_cast<unsigned int>(
+            (elapsed_ticks * 1000ULL) / SYSCLOCK_ARM11);
+        const unsigned int displayed_ms = elapsed_ms > 5000 ? 5000 : elapsed_ms;
+        const unsigned int bucket = displayed_ms / 100;
+        quit_hold_elapsed_ms.store(displayed_ms);
+        if (bucket != last_quit_progress_bucket || displayed_ms == 5000) {
+            MessageDispatcher::get_instance()->post(
+                std::make_shared<QuitHoldProgressChangedMsg>(displayed_ms));
+            last_quit_progress_bucket = bucket;
+        }
+        if (elapsed_ticks >= QUIT_HOLD_SUPPRESS_TICKS) {
+            quit_combo_suppressed = true;
+        }
+        if (elapsed_ticks >= QUIT_HOLD_TRIGGER_TICKS) {
+            quit_to_menu.store(true);
+        }
+    } else if (!chord_held) {
+        quit_combo_start_ticks = 0;
+        if (quit_hold_elapsed_ms.load() != 0) {
+            quit_hold_elapsed_ms.store(0);
+            last_quit_progress_bucket = 0;
+            MessageDispatcher::get_instance()->post(
+                std::make_shared<QuitHoldProgressChangedMsg>(0));
+        }
+        if ((kHeld & QUIT_TO_MENU_CHORD) == 0) {
+            quit_combo_suppressed = false;
+        }
+    }
+
+    if (quit_combo_suppressed) {
+        gamepad_state.buttons &= ~_n3ds_to_li_buttons(QUIT_TO_MENU_CHORD);
+        if (CUSTOM_KEY_ZL & QUIT_TO_MENU_CHORD) {
+            gamepad_state.leftTrigger = 0;
+        }
+        if (CUSTOM_KEY_ZR & QUIT_TO_MENU_CHORD) {
+            gamepad_state.rightTrigger = 0;
+        }
     }
 
     // Use the HOME button to open the menu

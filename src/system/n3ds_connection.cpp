@@ -20,6 +20,7 @@
 #include "n3ds_connection.hpp"
 #include "../input/n3ds_input.hpp"
 #include "../system/dispatcher.hpp"
+#include "../diagnostics.h"
 
 #include <3ds.h>
 #include <signal.h>
@@ -66,10 +67,20 @@ void N3dsConnectionListener::connection_terminated(int errorCode) {
 
 void N3dsConnectionListener::connection_log_message(const char *format,
                                                     va_list arglist) {
+    if (teardown_logging.load()) {
+        char line[192];
+        vsnprintf(line, sizeof(line), format, arglist);
+        diag_log("TEARDOWN", "limelight=%s", line);
+        return;
+    }
     if (!debug.load()) {
         return;
     }
     vprintf(format, arglist);
+}
+
+void N3dsConnectionListener::set_teardown_logging(bool enabled) {
+    teardown_logging.store(enabled);
 }
 
 void N3dsConnectionListener::connection_status_update(int status) {

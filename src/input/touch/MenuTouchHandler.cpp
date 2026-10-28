@@ -36,9 +36,9 @@ static std::map<int, std::map<int, N3dsTouchType>> button_map{
     {3, {{0, N3dsTouchType::DEBUG_TOUCH}, {1, N3dsTouchType::DISABLED}}},
 };
 
-MenuTouchHandler::MenuTouchHandler() { aptSetHomeAllowed(true); }
+MenuTouchHandler::MenuTouchHandler() = default;
 
-MenuTouchHandler::~MenuTouchHandler() { aptSetHomeAllowed(false); }
+MenuTouchHandler::~MenuTouchHandler() = default;
 
 bool MenuTouchHandler::handle_home_press() {
     if (!three_d_page) {

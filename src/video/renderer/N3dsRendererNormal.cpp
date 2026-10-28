@@ -53,3 +53,7 @@ void N3dsRendererNormal::write_px_to_framebuffer(uint8_t *source) {
 void N3dsRendererNormal::set_perf_decode_ticks(u64 ticks) {
     top_renderer.set_perf_decode_ticks(ticks);
 }
+
+void N3dsRendererNormal::set_quit_hold_progress(unsigned int elapsed_ms) {
+    bottom_renderer.set_quit_hold_progress(elapsed_ms);
+}

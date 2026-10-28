@@ -172,7 +172,9 @@ static int soft_video_setup(int videoFormat, int width, int height,
     }
 }
 
-static void soft_video_cleanup() { instance = nullptr; }
+static void soft_video_cleanup() {}
+
+void n3ds_video_soft_finish_cleanup() { instance = nullptr; }
 
 static int soft_video_submit_decode_unit(PDECODE_UNIT decodeUnit) {
     if (instance == nullptr) {

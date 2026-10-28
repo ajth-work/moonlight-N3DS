@@ -9,6 +9,7 @@ enum MessageType {
     TOUCH_STATE_CHANGED,
     TOUCH_PANEL_PAGE_CHANGED,
     KEYBOARD_STATE_CHANGED,
+    QUIT_HOLD_PROGRESS_CHANGED,
     EXIT_STREAM,
     MESSAGE_TYPE_COUNT
 };
@@ -78,6 +79,16 @@ class KeyboardStateChangedMsg : public IMessage {
     const uint8_t *keyboard_image;
     int key_offset;
     int key_size;
+};
+
+class QuitHoldProgressChangedMsg : public IMessage {
+  public:
+    explicit QuitHoldProgressChangedMsg(unsigned int elapsed_ms_in)
+        : elapsed_ms(elapsed_ms_in) {}
+    MessageType getMessageType() override {
+        return MessageType::QUIT_HOLD_PROGRESS_CHANGED;
+    }
+    unsigned int elapsed_ms;
 };
 
 class GenericEventMsg : public IMessage {

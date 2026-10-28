@@ -110,6 +110,7 @@ class GamepadTouchHandler : public TouchHandlerBase {
 
   private:
     GAMEPAD_STATE *gamepad_state;
+    bool home_tile_pressed = false;
 };
 
 class MouseTouchHandler : public TouchHandlerBase {

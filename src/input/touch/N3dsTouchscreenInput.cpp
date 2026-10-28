@@ -55,6 +55,7 @@ bool N3dsTouchscreenInput::handle_home_press() {
 
     home_back_pending = true;
     next_touch_type.store(N3dsTouchType::MENU_TOUCH);
+    aptSetHomeAllowed(true);
     return true;
 }
 
@@ -90,6 +91,8 @@ void N3dsTouchscreenInput::_n3dsinput_set_touch(N3dsTouchType touch_type_in) {
         break;
     }
     touch_type = touch_type_in;
+    aptSetHomeAllowed(touch_type_in == N3dsTouchType::MENU_TOUCH ||
+                      touch_type_in == N3dsTouchType::DISABLED);
     if (home_back_pending && touch_type_in == N3dsTouchType::MENU_TOUCH) {
         home_back_pending = false;
         diag_log("HOME", "page-back taken route=touch-submenu");

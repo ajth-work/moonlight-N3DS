@@ -18,6 +18,8 @@
  */
 
 #include "../system/dispatcher.hpp"
+#include "../system/n3ds_connection.hpp"
+#include "../diagnostics.h"
 #include "gamepad_bgr.h"
 #include "keyboard_bgr.h"
 #include "menu_bgr.h"
@@ -28,7 +30,18 @@
 #include <3ds.h>
 #include <stdio.h>
 
+static AtomicVar<bool> stream_teardown_started = false;
+
+void n3ds_video_begin_teardown() { stream_teardown_started.store(true); }
+
+void n3ds_video_cleanup_after_stop() {
+    n3ds_video_soft_finish_cleanup();
+    n3ds_video_mvd_finish_cleanup();
+    n3ds_video_mock_finish_cleanup();
+}
+
 VideoDecoderBase::VideoDecoderBase(int width, int height) {
+    stream_teardown_started.store(false);
     surface_height = GSP_SCREEN_WIDTH;
     // Render each eye at the native 400x240 top-screen size. The renderer
     // selects a source rectangle independently for the left and right eyes.
@@ -47,6 +60,7 @@ VideoDecoderBase::VideoDecoderBase(int width, int height) {
     pDispatcher->subscribe(MessageType::TOUCH_STATE_CHANGED, this);
     pDispatcher->subscribe(MessageType::TOUCH_PANEL_PAGE_CHANGED, this);
     pDispatcher->subscribe(MessageType::KEYBOARD_STATE_CHANGED, this);
+    pDispatcher->subscribe(MessageType::QUIT_HOLD_PROGRESS_CHANGED, this);
     pDispatcher->subscribe(MessageType::EXIT_STREAM, this);
 }
 
@@ -55,10 +69,14 @@ VideoDecoderBase::~VideoDecoderBase() {
     pDispatcher->unsubscribe(MessageType::TOUCH_STATE_CHANGED, this);
     pDispatcher->unsubscribe(MessageType::TOUCH_PANEL_PAGE_CHANGED, this);
     pDispatcher->unsubscribe(MessageType::KEYBOARD_STATE_CHANGED, this);
+    pDispatcher->unsubscribe(MessageType::QUIT_HOLD_PROGRESS_CHANGED, this);
     pDispatcher->unsubscribe(MessageType::EXIT_STREAM, this);
 }
 
 void VideoDecoderBase::accept(IMessage *msg) {
+    if (stream_teardown_started.load()) {
+        return;
+    }
     switch (msg->getMessageType()) {
     case MessageType::TOUCH_STATE_CHANGED: {
         auto touch_msg = static_cast<TouchStateChangedMsg *>(msg);
@@ -78,9 +96,25 @@ void VideoDecoderBase::accept(IMessage *msg) {
         _accept_keyboard_state_changed(
             static_cast<KeyboardStateChangedMsg *>(msg));
         break;
+    case MessageType::QUIT_HOLD_PROGRESS_CHANGED: {
+        const auto progress_msg =
+            static_cast<QuitHoldProgressChangedMsg *>(msg);
+        renderer_lock.lock();
+        renderer->set_quit_hold_progress(progress_msg->elapsed_ms);
+        renderer_lock.unlock();
+        break;
+    }
     case MessageType::EXIT_STREAM: {
-        _accept_touch_state_changed(N3dsTouchType::DISABLED);
-        printf("Exiting stream...\n");
+        // Renderer destruction is deferred until LiStopConnection has joined
+        // its decode workers and the main teardown sequence owns the renderer.
+        printf("Returning to the connection menu...\n");
+        auto connection_listener = N3dsConnectionListener::get_instance();
+        if (connection_listener != nullptr &&
+            !connection_listener->is_connection_closed()) {
+            diag_log("QUIT_TO_MENU", "trigger=touch_tile");
+            connection_listener->connection_terminated(
+                ML_ERROR_GRACEFUL_TERMINATION);
+        }
     } break;
     default:
         break;

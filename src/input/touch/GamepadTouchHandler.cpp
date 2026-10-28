@@ -18,13 +18,22 @@
  */
 
 #include "TouchHandler.hpp"
+#include "../../system/dispatcher.hpp"
 #include <Limelight.h>
 #include <cstring>
+
+static bool is_home_tile(touchPosition touch) {
+    return touch.py >= 132 && touch.px >= 112 && touch.px <= 208;
+}
 
 GamepadTouchHandler::GamepadTouchHandler(GAMEPAD_STATE *gamepad_in)
     : gamepad_state(gamepad_in) {}
 
 void GamepadTouchHandler::_handle_touch_down(touchPosition touch) {
+    home_tile_pressed = is_home_tile(touch);
+    if (home_tile_pressed) {
+        return;
+    }
     if (touch.py >= 120) {
         gamepad_state->buttons |= SPECIAL_FLAG;
         return;
@@ -37,10 +46,19 @@ void GamepadTouchHandler::_handle_touch_down(touchPosition touch) {
 }
 
 void GamepadTouchHandler::_handle_touch_up(touchPosition touch) {
+    if (home_tile_pressed && is_home_tile(touch)) {
+        MessageDispatcher::get_instance()->post(
+            std::make_shared<GenericEventMsg>(MessageType::EXIT_STREAM));
+    }
+    home_tile_pressed = false;
     gamepad_state->buttons &= ~(SPECIAL_FLAG | LS_CLK_FLAG | RS_CLK_FLAG);
 }
 
 void GamepadTouchHandler::_handle_touch_hold(touchPosition touch) {
+    if (home_tile_pressed || is_home_tile(touch)) {
+        gamepad_state->buttons &= ~(SPECIAL_FLAG | LS_CLK_FLAG | RS_CLK_FLAG);
+        return;
+    }
     gamepad_state->buttons &= ~(SPECIAL_FLAG | LS_CLK_FLAG | RS_CLK_FLAG);
 
     if (touch.py >= 120) {

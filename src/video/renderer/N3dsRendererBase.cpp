@@ -18,6 +18,7 @@
  */
 
 #include "N3dsRenderer.hpp"
+#include "../../input/n3ds_input.hpp"
 #include "N3ds3DPresentation.hpp"
 #include "../../diagnostics.h"
 #include "vshader_shbin.h"
@@ -30,6 +31,39 @@
 #include <stdbool.h>
 #include <stdexcept>
 #include <unistd.h>
+
+static constexpr u64 GPU_CLEAR_WAIT_TIMEOUT_NS = 250000000ULL;
+static AtomicVar<bool> psc0_wait_worker_active = false;
+
+static void psc0_wait_worker(void *) {
+    gspWaitForEvent(GSPGPU_EVENT_PSC0, false);
+    psc0_wait_worker_active.store(false);
+}
+
+static bool wait_for_psc0_bounded(u64 timeout_ns) {
+    if (psc0_wait_worker_active.load()) {
+        return false;
+    }
+
+    psc0_wait_worker_active.store(true);
+    s32 priority = 0x30;
+    svcGetThreadPriority(&priority, CUR_THREAD_HANDLE);
+    Thread waiter =
+        threadCreate(psc0_wait_worker, NULL, 0x2000, priority, -1, false);
+    if (waiter == NULL) {
+        psc0_wait_worker_active.store(false);
+        return false;
+    }
+
+    const Result join_result = threadJoin(waiter, timeout_ns);
+    if (R_SUCCEEDED(join_result)) {
+        threadFree(waiter);
+        return true;
+    }
+
+    threadDetach(waiter);
+    return false;
+}
 
 N3dsRendererBase::N3dsRendererBase(gfxScreen_t screen_in, int surface_width_in,
                                    int surface_height_in, int image_width_in,
@@ -57,48 +91,8 @@ N3dsRendererBase::~N3dsRendererBase() {
     vramFree(vramFb);
     vramFree(vramTex);
 
-    // Clear the target through GX so framebuffer clears never write into VRAM
-    // from the CPU.
-    u32 *framebuf = (u32 *)gfxGetFramebuffer(screen, GFX_LEFT, NULL, NULL);
-    const u32 framebuffer_words =
-        (surface_width * surface_height * px_size) / sizeof(u32);
-    if (framebuf != NULL) {
-        diag_log("TEARDOWN", "renderer_clear screen=%s phase=begin",
-                 screen == GFX_TOP ? "TOP" : "BOTTOM");
-        const Result clear_result = GX_MemoryFill(
-            framebuf, 0, framebuf + framebuffer_words,
-            GX_FILL_TRIGGER | GX_FILL_16BIT_DEPTH, NULL, 0, NULL, 0);
-        if (clear_result == 0) {
-            diag_log("TEARDOWN",
-                     "renderer_clear_wait screen=%s event=PSC0 phase=begin",
-                     screen == GFX_TOP ? "TOP" : "BOTTOM");
-            gspWaitForEvent(GSPGPU_EVENT_PSC0, 0);
-            diag_log("TEARDOWN",
-                     "renderer_clear_wait screen=%s event=PSC0 phase=end",
-                     screen == GFX_TOP ? "TOP" : "BOTTOM");
-        } else {
-            diag_log("RENDER",
-                     "framebuffer_clear screen=%s side=LEFT result=%ld",
-                     screen == GFX_TOP ? "TOP" : "BOTTOM",
-                     (long)clear_result);
-        }
-        diag_log("TEARDOWN", "renderer_clear screen=%s phase=end result=%ld",
-                 screen == GFX_TOP ? "TOP" : "BOTTOM",
-                 (long)clear_result);
-    } else {
-        diag_log("RENDER", "framebuffer_clear screen=%s side=LEFT result=null",
-                 screen == GFX_TOP ? "TOP" : "BOTTOM");
-    }
-    diag_log("TEARDOWN", "renderer_swap screen=%s phase=begin",
-             screen == GFX_TOP ? "TOP" : "BOTTOM");
-    gfxScreenSwapBuffers(screen, true);
-    diag_log("TEARDOWN", "renderer_swap screen=%s phase=end",
-             screen == GFX_TOP ? "TOP" : "BOTTOM");
-
-    // Return to the default display width before exiting
-    if (surface_width == GSP_SCREEN_HEIGHT_TOP_2X) {
-        gfxSetWide(false);
-    }
+    // Screen clears happen once, on the teardown coordinator, after all
+    // renderers and Limelight callbacks have stopped.
     diag_log("TEARDOWN", "renderer_destroy screen=%s phase=after",
              screen == GFX_TOP ? "TOP" : "BOTTOM");
 }
@@ -504,6 +498,12 @@ void N3dsRendererBase::write_px_to_framebuffer_gpu(uint8_t *__restrict source) {
         draw_perf_counters();
     }
 
+    if (screen == GFX_BOTTOM) {
+        n3ds_draw_diag_version_overlay();
+        n3ds_draw_stream_quit_status(n3ds_quit_hold_elapsed_ms());
+        gfxFlushBuffers();
+    }
+
     gfxScreenSwapBuffers(screen, true);
 
     renderer_frames_completed++;
@@ -526,6 +526,90 @@ void n3ds_draw_diag_version_overlay() {
         (u16 *)gfxGetFramebuffer(GFX_BOTTOM, GFX_LEFT, NULL, NULL);
     printf("\x1b[30;1HMoonlight " DIAG_BUILD_VERSION);
     consoleSelect(previous_console);
+}
+
+void n3ds_draw_stream_quit_status(unsigned int elapsed_ms) {
+    PrintConsole *previous_console =
+        consoleSelect(&DebugTouchHandler::bottomScreen);
+    DebugTouchHandler::bottomScreen.frameBuffer =
+        (u16 *)gfxGetFramebuffer(GFX_BOTTOM, GFX_LEFT, NULL, NULL);
+
+    printf("\x1b[28;1H%-40.40s",
+           "HOLD L+R+START+SELECT 5s: QUIT TO MENU");
+    if (elapsed_ms == 0) {
+        printf("\x1b[29;1H%-40.40s", " ");
+    } else {
+        if (elapsed_ms > 5000) {
+            elapsed_ms = 5000;
+        }
+        char status[41];
+        std::snprintf(status, sizeof(status), "Held %1.1fs - menu in %1.1fs",
+                      elapsed_ms / 1000.0,
+                      (5000 - elapsed_ms) / 1000.0);
+        printf("\x1b[29;1H%-40.40s", status);
+    }
+    consoleSelect(previous_console);
+}
+
+static bool fill_and_wait(u32 *first, u32 first_words, u32 *second,
+                          u32 second_words, const char *screen_name) {
+    if (first == NULL) {
+        diag_log("TEARDOWN", "step=Clearing the screens screen=%s result=null",
+                 screen_name);
+        return false;
+    }
+    const Result result = GX_MemoryFill(
+        first, 0, first + first_words,
+        GX_FILL_TRIGGER | GX_FILL_16BIT_DEPTH, second, 0,
+        second ? second + second_words : NULL,
+        second ? GX_FILL_16BIT_DEPTH : 0);
+    if (R_FAILED(result)) {
+        diag_log("TEARDOWN",
+                 "step=Clearing the screens screen=%s result=%ld",
+                 screen_name, (long)result);
+        return false;
+    }
+
+    diag_log("TEARDOWN",
+             "step=Clearing the screens screen=%s event=PSC0 timeout_ms=250 phase=begin",
+             screen_name);
+    if (!wait_for_psc0_bounded(GPU_CLEAR_WAIT_TIMEOUT_NS)) {
+        diag_log("TEARDOWN",
+                 "step=Clearing the screens screen=%s event=PSC0 TIMED_OUT",
+                 screen_name);
+        return false;
+    }
+    diag_log("TEARDOWN",
+             "step=Clearing the screens screen=%s event=PSC0 phase=end",
+             screen_name);
+    return true;
+}
+
+bool n3ds_clear_stream_screens() {
+    bool clear_ok = true;
+    gfxSetWide(false);
+    if (!gfxIs3D()) {
+        gfxSet3D(true);
+    }
+
+    u32 *bottom = (u32 *)gfxGetFramebuffer(GFX_BOTTOM, GFX_LEFT, NULL, NULL);
+    const u32 bottom_words =
+        (GSP_SCREEN_HEIGHT_BOTTOM * GSP_SCREEN_WIDTH * 2) / sizeof(u32);
+    const bool bottom_ok =
+        fill_and_wait(bottom, bottom_words, NULL, 0, "BOTTOM");
+    clear_ok = bottom_ok && clear_ok;
+    n3ds_draw_diag_version_overlay();
+    gfxFlushBuffers();
+    gfxScreenSwapBuffers(GFX_BOTTOM, true);
+
+    u32 *left = (u32 *)gfxGetFramebuffer(GFX_TOP, GFX_LEFT, NULL, NULL);
+    u32 *right = (u32 *)gfxGetFramebuffer(GFX_TOP, GFX_RIGHT, NULL, NULL);
+    const u32 top_words =
+        (GSP_SCREEN_HEIGHT_TOP * GSP_SCREEN_WIDTH * 2) / sizeof(u32);
+    const bool top_ok = fill_and_wait(left, top_words, right, top_words, "TOP");
+    clear_ok = top_ok && clear_ok;
+    gfxScreenSwapBuffers(GFX_TOP, true);
+    return clear_ok;
 }
 
 void n3ds_draw_touch_panel_3d_readout(const N3ds3DSettings &settings) {
@@ -554,36 +638,9 @@ void n3ds_draw_touch_panel_3d_readout(const N3ds3DSettings &settings) {
 void n3ds_restore_mono_display() {
     gfxSetWide(false);
     if (!gfxIs3D()) {
-        // Enable stereo briefly so GX can address and clear both eye buffers.
+        // The screen-clear phase already cleared both eye buffers.
         gfxSet3D(true);
     }
-
-    u32 *left = (u32 *)gfxGetFramebuffer(GFX_TOP, GFX_LEFT, NULL, NULL);
-    u32 *right = (u32 *)gfxGetFramebuffer(GFX_TOP, GFX_RIGHT, NULL, NULL);
-    const u32 framebuffer_words =
-        (GSP_SCREEN_HEIGHT_TOP * GSP_SCREEN_WIDTH * 2) / sizeof(u32);
-    if (left == NULL || right == NULL) {
-        diag_log("RENDER", "stereo_framebuffer_clear result=null");
-        gfxSet3D(false);
-        gfxSetWide(false);
-        return;
-    }
-    diag_log("TEARDOWN", "mono_display_clear phase=begin");
-    const Result clear_result = GX_MemoryFill(
-        left, 0, left + framebuffer_words,
-        GX_FILL_TRIGGER | GX_FILL_16BIT_DEPTH, right, 0,
-        right + framebuffer_words, GX_FILL_16BIT_DEPTH);
-    if (clear_result == 0) {
-        diag_log("TEARDOWN", "mono_display_clear_wait event=PSC0 phase=begin");
-        gspWaitForEvent(GSPGPU_EVENT_PSC0, 0);
-        diag_log("TEARDOWN", "mono_display_clear_wait event=PSC0 phase=end");
-    } else {
-        diag_log("RENDER", "stereo_framebuffer_clear result=%ld",
-                 (long)clear_result);
-    }
-    diag_log("TEARDOWN", "mono_display_clear phase=end result=%ld",
-             (long)clear_result);
-
     gfxSet3D(false);
     gfxSetWide(false);
     diag_log("TEARDOWN", "mono_display_swap phase=begin");

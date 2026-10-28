@@ -70,6 +70,8 @@
 static u32 *SOC_buffer = NULL;
 static aptHookCookie apt_status_hook_cookie{};
 static bool apt_status_hook_registered = false;
+static bool connection_menu_return_pending = false;
+static u64 connection_menu_return_start_ticks = 0;
 
 static void n3ds_apt_status_hook(APT_HookType hook, void *) {
     switch (hook) {
@@ -307,6 +309,18 @@ static int console_selection_prompt(std::string prompt,
         gfxFlushBuffers();
         gspWaitForVBlank();
 
+        if (connection_menu_return_pending) {
+            const u64 total_ms =
+                ((svcGetSystemTick() - connection_menu_return_start_ticks) *
+                 1000ULL) /
+                SYSCLOCK_ARM11;
+            diag_log("TEARDOWN",
+                     "step=6/6 label=Returning to the connection menu phase=complete");
+            diag_log("TEARDOWN", "end total_ms=%llu destination=menu",
+                     static_cast<unsigned long long>(total_ms));
+            connection_menu_return_pending = false;
+        }
+
         hidScanInput();
         u32 kDown = hidKeysDown();
 
@@ -358,10 +372,13 @@ static std::string prompt_for_action(PSERVER_DATA server) {
 static std::string prompt_for_address() {
     auto address_list = list_paired_addresses();
     address_list.push_back("new");
+    address_list.push_back("Quit to 3DS Home");
     int idx =
         console_selection_prompt("Select a server address", address_list, 0);
     if (idx < 0) {
         return "";
+    } else if (address_list[idx] == "Quit to 3DS Home") {
+        return "__QUIT_TO_3DS_HOME__";
     } else if (address_list[idx] != "new") {
         return address_list[idx];
     }
@@ -914,12 +931,17 @@ static int prompt_for_app_id(PSERVER_DATA server) {
     return app_ids[id_idx];
 }
 
+struct StreamWorkerThreads {
+    Thread input_thread = NULL;
+    Thread dispatch_thread = NULL;
+};
+
 static inline void dispatch_loop(void *_unused_) {
     auto pDispatcher = MessageDispatcher::get_instance();
     auto connection_listener = N3dsConnectionListener::get_instance();
     while (!connection_listener->is_connection_closed()) {
-        gspWaitForAnyEvent();
         pDispatcher->dispatch_all();
+        svcSleepThread(8000000ULL);
     }
 }
 
@@ -928,31 +950,268 @@ static inline void input_loop(void *input_handler_in) {
     auto connection_listener = N3dsConnectionListener::get_instance();
     input_handler->force_touchscreen_menu();
     while (!connection_listener->is_connection_closed()) {
-        gspWaitForAnyEvent();
         input_handler->n3dsinput_handle_event();
+        svcSleepThread(8000000ULL);
     }
 }
 
-static inline void stream_loop(PCONFIGURATION config,
-                               N3dsConnectionListener *connection_listener,
-                               std::shared_ptr<N3dsInput> input_handler) {
-    // Spin off worker threads
+static inline StreamWorkerThreads
+stream_loop(PCONFIGURATION config,
+            N3dsConnectionListener *connection_listener,
+            std::shared_ptr<N3dsInput> input_handler) {
+    StreamWorkerThreads workers;
+    if (input_handler == nullptr) {
+        n3ds_viewonly_quit_hold_reset();
+        MessageDispatcher::get_instance()->post(
+            std::make_shared<TouchStateChangedMsg>(N3dsTouchType::MENU_TOUCH));
+    }
     size_t stack_size = 0x20000;
     s32 priority = 0x30;
     svcGetThreadPriority(&priority, CUR_THREAD_HANDLE);
     if (!config->viewonly) {
-        threadCreate(input_loop, input_handler.get(), stack_size, priority, -1,
-                     true);
+        workers.input_thread = threadCreate(input_loop, input_handler.get(),
+                                            stack_size, priority, -1, false);
+        diag_log("STREAM_THREAD", "create name=input result=%s",
+                 workers.input_thread != NULL ? "started" : "failed");
     }
-    threadCreate(dispatch_loop, nullptr, stack_size, priority, -1, true);
+    workers.dispatch_thread =
+        threadCreate(dispatch_loop, nullptr, stack_size, priority, -1, false);
+    diag_log("STREAM_THREAD", "create name=dispatch result=%s",
+             workers.dispatch_thread != NULL ? "started" : "failed");
 
-    // Run the main connection loop
+    bool combo_quit_logged = false;
     while (!connection_listener->is_connection_closed() && aptMainLoop()) {
-        gspWaitForAnyEvent();
         if (aptShouldClose()) {
             connection_listener->connection_terminated(0);
         }
+        if (!combo_quit_logged && input_handler != nullptr &&
+            input_handler->quit_to_menu_requested()) {
+            combo_quit_logged = true;
+            diag_log("QUIT_TO_MENU", "trigger=hold_combo duration_ms=5000");
+            connection_listener->connection_terminated(
+                ML_ERROR_GRACEFUL_TERMINATION);
+        }
+        if (!combo_quit_logged && input_handler == nullptr &&
+            n3ds_viewonly_quit_hold_requested()) {
+            combo_quit_logged = true;
+            diag_log("QUIT_TO_MENU",
+                     "trigger=hold_combo duration_ms=5000 mode=view_only");
+            connection_listener->connection_terminated(
+                ML_ERROR_GRACEFUL_TERMINATION);
+        }
+        svcSleepThread(8000000ULL);
     }
+    return workers;
+}
+
+enum class TeardownDestination { CONNECTION_MENU, APP_EXIT };
+enum class TeardownStepState { WAITING, RUNNING, DONE, TIMED_OUT, SKIPPED };
+
+static const char *teardown_step_label(unsigned int step,
+                                       TeardownDestination destination) {
+    static const char *const labels[] = {
+        "Stopping the stream",
+        "Stopping input and controls",
+        "Disconnecting from the PC",
+        "Clearing the screens",
+        "Restoring the display",
+        "Returning to the connection menu",
+    };
+    if (step == 5 && destination == TeardownDestination::APP_EXIT) {
+        return "Returning to 3DS Home";
+    }
+    return labels[step];
+}
+
+static const char *teardown_state_label(TeardownStepState state) {
+    switch (state) {
+    case TeardownStepState::RUNNING:
+        return "IN PROGRESS";
+    case TeardownStepState::DONE:
+        return "DONE";
+    case TeardownStepState::TIMED_OUT:
+        return "SKIPPED (TIMED OUT)";
+    case TeardownStepState::SKIPPED:
+        return "SKIPPED";
+    case TeardownStepState::WAITING:
+    default:
+        return "WAITING";
+    }
+}
+
+static void draw_teardown_progress(unsigned int active_step,
+                                   TeardownDestination destination,
+                                   const TeardownStepState *states) {
+    consoleSelect(&DebugTouchHandler::topScreen);
+    DebugTouchHandler::topScreen.frameBuffer =
+        (u16 *)gfxGetFramebuffer(GFX_TOP, GFX_LEFT, NULL, NULL);
+    consoleClear();
+    printf("Returning to main menu...\n\n");
+    printf("Step %u of 6 - %s\n\n", active_step + 1,
+           teardown_step_label(active_step, destination));
+    for (unsigned int i = 0; i < 6; ++i) {
+        printf("%c %u. %s\n", i == active_step ? '>' : ' ', i + 1,
+               teardown_step_label(i, destination));
+        printf("    %s\n", teardown_state_label(states[i]));
+    }
+    n3ds_draw_diag_version_overlay();
+    consoleSelect(&DebugTouchHandler::topScreen);
+    gfxFlushBuffers();
+    gfxScreenSwapBuffers(GFX_TOP, false);
+}
+
+static bool join_stream_worker(Thread &thread, const char *name,
+                               unsigned int timeout_ms) {
+    if (thread == NULL) {
+        diag_log("TEARDOWN", "thread_join name=%s result=not_started", name);
+        return true;
+    }
+
+    diag_log("TEARDOWN", "thread_join name=%s phase=begin timeout_ms=%u",
+             name, timeout_ms);
+    const Result join_result =
+        threadJoin(thread, static_cast<u64>(timeout_ms) * 1000000ULL);
+    if (R_SUCCEEDED(join_result)) {
+        threadFree(thread);
+        thread = NULL;
+        diag_log("TEARDOWN", "thread_join name=%s phase=end result=joined",
+                 name);
+        return true;
+    }
+
+    threadDetach(thread);
+    thread = NULL;
+    diag_log("TEARDOWN",
+             "thread_join name=%s result=TIMED_OUT result_code=%ld",
+             name, (long)join_result);
+    return false;
+}
+
+static void stream_teardown(StreamWorkerThreads &workers,
+                            std::shared_ptr<N3dsInput> input_handler,
+                            N3dsConnectionListener *connection_listener,
+                            TeardownDestination destination) {
+    static constexpr unsigned int STEP_COUNT = 6;
+    TeardownStepState states[STEP_COUNT];
+    for (unsigned int i = 0; i < STEP_COUNT; ++i) {
+        states[i] = TeardownStepState::WAITING;
+    }
+    const u64 teardown_start_ticks = svcGetSystemTick();
+
+    states[0] = TeardownStepState::RUNNING;
+    diag_log("TEARDOWN", "step=1/6 label=%s phase=begin",
+             teardown_step_label(0, destination));
+    n3ds_video_begin_teardown();
+    if (!connection_listener->is_connection_closed()) {
+        connection_listener->connection_terminated(
+            ML_ERROR_GRACEFUL_TERMINATION);
+    }
+    states[0] = TeardownStepState::DONE;
+    diag_log("TEARDOWN", "step=1/6 label=%s phase=complete",
+             teardown_step_label(0, destination));
+
+    states[1] = TeardownStepState::RUNNING;
+    diag_log("TEARDOWN", "step=2/6 label=%s phase=begin",
+             teardown_step_label(1, destination));
+    draw_teardown_progress(1, destination, states);
+    bool workers_joined = join_stream_worker(workers.input_thread, "input", 250);
+    workers_joined = join_stream_worker(workers.dispatch_thread, "dispatch", 250) &&
+                     workers_joined;
+    if (input_handler != nullptr) {
+        input_handler->shutdown();
+    }
+    states[1] = workers_joined ? TeardownStepState::DONE
+                               : TeardownStepState::TIMED_OUT;
+    diag_log("TEARDOWN", "step=2/6 label=%s result=%s",
+             teardown_step_label(1, destination),
+             workers_joined ? "complete" : "TIMED_OUT");
+
+    states[2] = TeardownStepState::RUNNING;
+    diag_log("TEARDOWN", "step=3/6 label=%s phase=begin",
+             teardown_step_label(2, destination));
+    draw_teardown_progress(2, destination, states);
+    const u64 limelight_stop_start_ticks = svcGetSystemTick();
+    connection_listener->set_teardown_logging(true);
+    diag_log("TEARDOWN", "LiStopConnection phase=before");
+    LiStopConnection();
+    connection_listener->set_teardown_logging(false);
+    const u64 limelight_stop_ms =
+        ((svcGetSystemTick() - limelight_stop_start_ticks) * 1000ULL) /
+        SYSCLOCK_ARM11;
+    diag_log("TEARDOWN", "LiStopConnection phase=after elapsed_ms=%llu",
+             static_cast<unsigned long long>(limelight_stop_ms));
+    n3ds_video_cleanup_after_stop();
+    states[2] = TeardownStepState::DONE;
+    diag_log("TEARDOWN", "step=3/6 label=%s phase=complete elapsed_ms=%llu",
+             teardown_step_label(2, destination),
+             static_cast<unsigned long long>(limelight_stop_ms));
+
+    states[3] = TeardownStepState::RUNNING;
+    diag_log("TEARDOWN", "step=4/6 label=%s phase=begin",
+             teardown_step_label(3, destination));
+    draw_teardown_progress(3, destination, states);
+    const bool screens_cleared = n3ds_clear_stream_screens();
+    states[3] = screens_cleared ? TeardownStepState::DONE
+                                : TeardownStepState::TIMED_OUT;
+    diag_log("TEARDOWN", "step=4/6 label=%s result=%s",
+             teardown_step_label(3, destination),
+             screens_cleared ? "complete" : "TIMED_OUT");
+
+    states[4] = TeardownStepState::RUNNING;
+    diag_log("TEARDOWN", "step=5/6 label=%s phase=begin",
+             teardown_step_label(4, destination));
+    draw_teardown_progress(4, destination, states);
+    if (destination == TeardownDestination::CONNECTION_MENU) {
+        n3ds_restore_mono_display();
+        states[4] = TeardownStepState::DONE;
+    } else {
+        states[4] = TeardownStepState::SKIPPED;
+        diag_log("TEARDOWN", "mono restore skipped reason=app_exit");
+    }
+    diag_log("TEARDOWN", "step=5/6 label=%s result=%s",
+             teardown_step_label(4, destination),
+             destination == TeardownDestination::CONNECTION_MENU ? "complete"
+                                                                 : "skipped");
+
+    if (connection_listener != nullptr) {
+        N3dsConnectionListener::destroy_instance();
+    }
+
+    states[5] = TeardownStepState::RUNNING;
+    diag_log("TEARDOWN", "step=6/6 label=%s phase=begin",
+             teardown_step_label(5, destination));
+    draw_teardown_progress(5, destination, states);
+    if (destination == TeardownDestination::CONNECTION_MENU) {
+        connection_menu_return_pending = true;
+        connection_menu_return_start_ticks = teardown_start_ticks;
+    } else {
+        states[5] = TeardownStepState::DONE;
+        diag_log("TEARDOWN", "step=6/6 label=%s phase=complete",
+                 teardown_step_label(5, destination));
+    }
+
+    if (destination == TeardownDestination::APP_EXIT) {
+        const u64 total_ms =
+            ((svcGetSystemTick() - teardown_start_ticks) * 1000ULL) /
+            SYSCLOCK_ARM11;
+        diag_log("TEARDOWN", "end total_ms=%llu destination=app_exit",
+                 static_cast<unsigned long long>(total_ms));
+    }
+}
+
+static void log_idle_app_exit_teardown() {
+    const u64 start_ticks = svcGetSystemTick();
+    const TeardownDestination destination = TeardownDestination::APP_EXIT;
+    for (unsigned int i = 0; i < 5; ++i) {
+        diag_log("TEARDOWN", "step=%u/6 label=%s result=skipped reason=no_stream",
+                 i + 1, teardown_step_label(i, destination));
+    }
+    diag_log("TEARDOWN", "step=6/6 label=%s phase=complete",
+             teardown_step_label(5, destination));
+    const u64 total_ms =
+        ((svcGetSystemTick() - start_ticks) * 1000ULL) / SYSCLOCK_ARM11;
+    diag_log("TEARDOWN", "end total_ms=%llu destination=app_exit",
+             static_cast<unsigned long long>(total_ms));
 }
 
 struct LimelightStartCall {
@@ -999,6 +1258,9 @@ static void stream(PSERVER_DATA server, PCONFIGURATION config, int appId,
     if (ret < 0) {
         diag_log("STREAM_STOP", "app_id=%d reason=start_app_failed result=%d",
                  appId, ret);
+        if (input_handler != nullptr) {
+            input_handler->shutdown();
+        }
         if (ret == GS_NOT_SUPPORTED_4K)
             printf("Server doesn't support 4K\n");
         else if (ret == GS_NOT_SUPPORTED_MODE)
@@ -1059,6 +1321,12 @@ static void stream(PSERVER_DATA server, PCONFIGURATION config, int appId,
         diag_log("STREAM_STOP", "app_id=%d reason=connection_start_failed status=%d",
                  appId, status);
         n3ds_connection_callbacks.connectionTerminated(status);
+        n3ds_video_begin_teardown();
+        n3ds_video_cleanup_after_stop();
+        N3dsConnectionListener::destroy_instance();
+        if (input_handler != nullptr) {
+            input_handler->shutdown();
+        }
         printf("Connection failed with error: %d\n", status);
         wait_for_button();
         return;
@@ -1067,24 +1335,16 @@ static void stream(PSERVER_DATA server, PCONFIGURATION config, int appId,
     printf("Connected!\n");
     diag_log("STREAM_STARTED", "app_id=%d", appId);
     diag_set_phase("stream.active");
-    stream_loop(config, connection_listener, input_handler);
+    StreamWorkerThreads workers =
+        stream_loop(config, connection_listener, input_handler);
 
     diag_set_phase("stream.stopping");
     diag_log("STREAM_STOP", "app_id=%d reason=connection_loop_ended", appId);
-    diag_log("TEARDOWN", "begin");
-    diag_log("TEARDOWN", "LiStopConnection phase=before");
-    LiStopConnection();
-    diag_log("TEARDOWN", "LiStopConnection phase=after");
-    // LiStopConnection runs the decoder cleanup callback. Restore both top
-    // framebuffers to black before the menus resume, then present mono UI.
-    diag_log("TEARDOWN", "n3ds_restore_mono_display phase=before");
-    diag_log("DISPLAY_RESTORE", "teardown restore begin");
-    n3ds_restore_mono_display();
-    diag_log("DISPLAY_RESTORE", "teardown restore end");
-    diag_log("TEARDOWN", "n3ds_restore_mono_display phase=after");
+    const TeardownDestination destination =
+        aptMainLoop() ? TeardownDestination::CONNECTION_MENU
+                      : TeardownDestination::APP_EXIT;
+    stream_teardown(workers, input_handler, connection_listener, destination);
     diag_phase_outcome("stream.stopping", "complete", GS_OK);
-    N3dsConnectionListener::destroy_instance();
-    diag_log("TEARDOWN", "end");
 
     if (config->quitappafter) {
         printf("Sending app quit request ...\n");
@@ -1234,6 +1494,10 @@ int main_loop(int argc, char *argv[]) {
 
     while (aptMainLoop()) {
         auto address_string = prompt_for_address();
+        if (address_string == "__QUIT_TO_3DS_HOME__") {
+            log_idle_app_exit_teardown();
+            break;
+        }
         if (address_string.empty()) {
             continue;
         }
