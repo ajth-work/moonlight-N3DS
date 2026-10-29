@@ -36,6 +36,9 @@ N3dsRendererBase::N3dsRendererBase(gfxScreen_t screen_in, int surface_width_in,
     : screen(screen_in), surface_width(surface_width_in),
       surface_height(surface_height_in), image_width(image_width_in),
       image_height(image_height_in), debug(debug_in), px_size(pixel_size) {
+    // Decoder output is copied directly into gfxGetFramebuffer(). Keep that
+    // target off-screen until gfxScreenSwapBuffers() commits it at VBlank.
+    gfxSetDoubleBuffering(screen, true);
     cmdlist = (u32 *)linearAlloc(CMDLIST_SZ * 4);
     vramFb = vramAlloc(surface_width * surface_height * px_size);
     // Needs to be able to hold an 800x480

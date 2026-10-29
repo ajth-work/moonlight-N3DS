@@ -279,7 +279,7 @@ Screen::Screen(gfxScreen_t display)
       height_(SCREEN_HEIGHT), framebuffer_(nullptr) {
     diag_ui_state(display_ == GFX_TOP ? "TOP" : "BOTTOM", "toolkit GUI", true);
     // UI screens render into a hidden back buffer and commit it at VBlank.
-    // Stream renderers remain single-buffered after the UI session ends.
+    // Stream renderers enable buffering when they take ownership of a screen.
     gfxSetDoubleBuffering(display_, true);
 }
 
