@@ -13,12 +13,12 @@ namespace {
 constexpr int BOTTOM_SCREEN_WIDTH = GSP_SCREEN_HEIGHT_BOTTOM;
 constexpr int TOP_SCREEN_WIDTH = GSP_SCREEN_HEIGHT_TOP;
 constexpr int SCREEN_HEIGHT = GSP_SCREEN_WIDTH;
-constexpr Color COLOR_ACCENT_RGB = {72, 229, 190};
-constexpr Color COLOR_SELECTED_RGB = {72, 235, 197};
-constexpr Color COLOR_WHITE = {242, 247, 250};
-constexpr Color COLOR_MUTED = {119, 144, 167};
-constexpr Color COLOR_TEAL = {113, 240, 207};
-constexpr Color COLOR_FOOTER = {145, 165, 184};
+constexpr Color COLOR_ACCENT_RGB = {63, 190, 205};
+constexpr Color COLOR_SELECTED_RGB = {63, 190, 205};
+constexpr Color COLOR_TEXT = {38, 43, 48};
+constexpr Color COLOR_MUTED = {105, 114, 122};
+constexpr Color COLOR_TEAL = {0, 137, 153};
+constexpr Color COLOR_FOOTER = {105, 114, 122};
 
 constexpr size_t GLYPH_RECORD_SIZE = 13;
 constexpr int KERNED_CHARACTERS = 95;
@@ -344,7 +344,9 @@ void Screen::drawBackground() {
     }
 
     for (int y = 0; y < height_; ++y) {
-        const uint8_t gray = static_cast<uint8_t>(12 + (10 * y + 119) / 239);
+        // Near-white neutral background. A tiny vertical shift avoids a flat
+        // framebuffer without creating the dark middle band from GUI6.
+        const uint8_t gray = static_cast<uint8_t>(248 - (3 * y + 119) / 239);
         const Color row = {
             gray, gray, gray,
         };
@@ -355,20 +357,20 @@ void Screen::drawBackground() {
     }
 
     for (int x = 0; x < width_; ++x) {
-        const int header_gray = 12 + (10 * 60 + 119) / 239;
+        const int header_gray = 248 - (3 * 60 + 119) / 239;
         const Color header_line = {
-            static_cast<uint8_t>(blend_channel(header_gray, 96, 65, 255)),
-            static_cast<uint8_t>(blend_channel(header_gray, 96, 65, 255)),
-            static_cast<uint8_t>(blend_channel(header_gray, 96, 65, 255)),
+            static_cast<uint8_t>(blend_channel(header_gray, 205, 35, 255)),
+            static_cast<uint8_t>(blend_channel(header_gray, 205, 35, 255)),
+            static_cast<uint8_t>(blend_channel(header_gray, 205, 35, 255)),
         };
         setPixel(x, 60, rgb565(header_line));
 
         const int y = 222;
-        const int footer_gray = 12 + (10 * y + 119) / 239;
+        const int footer_gray = 248 - (3 * y + 119) / 239;
         const Color footer_line = {
-            static_cast<uint8_t>(blend_channel(footer_gray, 96, 45, 255)),
-            static_cast<uint8_t>(blend_channel(footer_gray, 96, 45, 255)),
-            static_cast<uint8_t>(blend_channel(footer_gray, 96, 45, 255)),
+            static_cast<uint8_t>(blend_channel(footer_gray, 205, 30, 255)),
+            static_cast<uint8_t>(blend_channel(footer_gray, 205, 30, 255)),
+            static_cast<uint8_t>(blend_channel(footer_gray, 205, 30, 255)),
         };
         setPixel(x, y, rgb565(footer_line));
     }
@@ -439,14 +441,14 @@ void Screen::drawTextStyle(int x, int y, const std::string &text, int font_id,
 }
 
 void Screen::drawFilledTile(const Rect &rect, int number) {
-    const uint16_t border = rgb565({41, 64, 90});
-    const uint16_t fill = rgb565({19, 34, 56});
+    const uint16_t border = rgb565({202, 208, 213});
+    const uint16_t fill = rgb565({255, 255, 255});
     fillRoundedRect(rect, 10, border);
     Rect inner = {rect.left + 1, rect.top + 1, rect.right - 1, rect.bottom - 1};
     fillRoundedRect(inner, 9, fill);
     Rect badge = {rect.right - 18, rect.top + 11, rect.right - 9,
                   rect.top + 20};
-    fillRoundedRect(badge, 4, rgb565({31, 60, 80}));
+    fillRoundedRect(badge, 4, rgb565({232, 236, 239}));
 
     char number_text[3];
     number_text[0] = static_cast<char>('0' + ((number / 10) % 10));
@@ -461,7 +463,7 @@ void Screen::drawProgressBar(const Rect &rect, unsigned int percent,
     if (rect.right <= rect.left || rect.bottom <= rect.top) {
         return;
     }
-    fillRoundedRect(rect, 4, rgb565({19, 34, 56}));
+    fillRoundedRect(rect, 4, rgb565({222, 227, 231}));
     const int inner_width = std::max(0, rect.right - rect.left - 4);
     const int fill_width = static_cast<int>(
         std::min(100U, percent) * static_cast<unsigned int>(inner_width) / 100);
@@ -476,7 +478,7 @@ void Screen::drawListRow(const Rect &rect, int number,
                          const std::string &label, bool selected) {
     drawFilledTile(rect, number);
     drawLiveText(rect.left + 28, rect.top + (rect.bottom - rect.top - 17) / 2,
-                 label, TextStyle::Header, COLOR_WHITE);
+                 label, TextStyle::Header, COLOR_TEXT);
     if (selected) {
         drawHighlight(rect);
     }
@@ -486,7 +488,7 @@ void Screen::drawHeader(const std::string &title,
                         const std::string &context) {
     fillRoundedRect({14, 11, 18, 48}, 2, rgb565(COLOR_ACCENT_RGB));
     drawLiveText(25, 10, title, TextStyle::Small, COLOR_TEAL);
-    drawLiveText(25, 25, context, TextStyle::Header, COLOR_WHITE);
+    drawLiveText(25, 25, context, TextStyle::Header, COLOR_TEXT);
 }
 
 void Screen::drawFooter(const std::string &version, const std::string &hint) {
@@ -526,7 +528,7 @@ void Screen::drawFrameTimingGraph(const Rect &rect,
         return;
     }
 
-    const uint16_t grid = rgb565({43, 63, 84});
+    const uint16_t grid = rgb565({207, 213, 218});
     const uint16_t line = rgb565(color);
     for (int x = rect.left; x <= rect.right; ++x) {
         setPixel(x, rect.bottom, grid);
@@ -609,7 +611,7 @@ bool runScreen(ScreenModel &model) {
             top.drawBackground();
             top.drawHeader("MOONLIGHT", "IN PROGRESS");
             top.drawLiveText(20, 91, "Connection task", TextStyle::Header,
-                             {242, 247, 250});
+                             COLOR_TEXT);
             top.drawFooter(DIAG_BUILD_VERSION, "PLEASE WAIT");
             screen.drawBackground();
             model.draw(screen);

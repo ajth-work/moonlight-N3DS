@@ -289,7 +289,7 @@ class GuiMenuScreen : public MoonlightUi::DualScreenModel {
             top.drawFilledTile(tile, index + 1);
             top.drawAutoRateText(tile.left + 30, tile.top + 6,
                                  items_[index].label, tile.right - tile.left - 42,
-                                 {242, 247, 250});
+                                 {38, 43, 48});
             if (index == selected_) top.drawHighlight(tile);
         }
         top.drawFooter(DIAG_BUILD_VERSION, "UP/DOWN  A SELECT");
@@ -297,15 +297,15 @@ class GuiMenuScreen : public MoonlightUi::DualScreenModel {
         if (!items_.empty()) {
             const GuiMenuItem &item = items_[selected_];
             bottom.drawAutoRateText(20, 65, item.label, bottom.width() - 40,
-                                    {242, 247, 250});
+                                    {38, 43, 48});
             if (!item.value.empty())
                 bottom.drawAutoRateText(20, 91, "CURRENT: " + item.value,
-                                        bottom.width() - 40, {113, 240, 207});
+                                        bottom.width() - 40, {0, 137, 153});
             draw_explanation(bottom, item.explanation);
         }
         bottom.drawFilledTile(ACTION_TILE, 1);
         bottom.drawLiveText(100, 194, "SELECT", MoonlightUi::TextStyle::Tile,
-                            {242, 247, 250});
+                            {38, 43, 48});
         bottom.drawFooter(DIAG_BUILD_VERSION, "A SELECT  B BACK  TOUCH");
     }
 
@@ -359,13 +359,13 @@ class GuiMenuScreen : public MoonlightUi::DualScreenModel {
         while (words >> word && y <= 177) {
             const std::string candidate = line.empty() ? word : line + " " + word;
             if (!line.empty() && screen.measureLiveText(candidate, MoonlightUi::TextStyle::Small) > screen.width() - 40) {
-                screen.drawLiveText(20, y, line, MoonlightUi::TextStyle::Small, {170, 191, 208});
+                screen.drawLiveText(20, y, line, MoonlightUi::TextStyle::Small, {105, 114, 122});
                 y += 16;
                 line = word;
             } else line = candidate;
         }
         if (!line.empty() && y <= 177)
-            screen.drawLiveText(20, y, line, MoonlightUi::TextStyle::Small, {170, 191, 208});
+            screen.drawLiveText(20, y, line, MoonlightUi::TextStyle::Small, {105, 114, 122});
     }
 };
 
@@ -446,7 +446,7 @@ class HostPickerScreen : public MoonlightUi::DualScreenModel {
                            : "Exit to 3DS HOME");
             top.drawAutoRateText(
                 tile.left + 28, tile.top + 6, label,
-                tile.right - tile.left - 40, {242, 247, 250});
+                tile.right - tile.left - 40, {38, 43, 48});
             if (item_index == selected_index_) {
                 top.drawHighlight(tile);
             }
@@ -461,7 +461,7 @@ class HostPickerScreen : public MoonlightUi::DualScreenModel {
 
         bottom.drawHeader("CONNECTION", "SELECTED HOST");
         bottom.drawLiveText(18, 67, "HOST", MoonlightUi::TextStyle::Small,
-                            {113, 240, 207});
+                            {0, 137, 153});
         const bool add_host_selected =
             selected_index_ == static_cast<int>(addresses_.size());
         const bool exit_selected =
@@ -471,7 +471,7 @@ class HostPickerScreen : public MoonlightUi::DualScreenModel {
             : exit_selected ? "Exit to 3DS HOME"
                             : addresses_[selected_index_];
         bottom.drawAutoRateText(18, 82, selected_label, bottom.width() - 36,
-                                {242, 247, 250});
+                                {38, 43, 48});
 
         bottom.drawFilledTile(CONNECT_TILE, 1);
         const std::string connect_label = exit_selected ? "EXIT TO HOME"
@@ -479,8 +479,8 @@ class HostPickerScreen : public MoonlightUi::DualScreenModel {
             : add_host_selected ? "SELECT A HOST" : "CONNECT";
         const MoonlightUi::Color connect_color =
             addresses_.empty() && !exit_selected
-                ? MoonlightUi::Color{119, 144, 167}
-                : MoonlightUi::Color{242, 247, 250};
+                ? MoonlightUi::Color{105, 114, 122}
+                : MoonlightUi::Color{38, 43, 48};
         const int connect_label_width = bottom.measureLiveText(
             connect_label, MoonlightUi::TextStyle::Tile);
         bottom.drawLiveText((bottom.width() - connect_label_width) / 2, 134,
@@ -489,7 +489,7 @@ class HostPickerScreen : public MoonlightUi::DualScreenModel {
         bottom.drawFilledTile(ADD_HOST_TILE, 2);
         bottom.drawLiveText(94, 185, "ADD NEW HOST",
                             MoonlightUi::TextStyle::Tile,
-                            {242, 247, 250});
+                            {38, 43, 48});
         bottom.drawFooter(
             DIAG_BUILD_VERSION,
             add_host_selected ? "A ADD HOST  B BACK  TOUCH"
@@ -1033,16 +1033,16 @@ class StreamProfilePickerScreen : public MoonlightUi::ScreenModel {
                     screen.drawLiveText(tile.left + 20, tile.top + 30,
                                         resolution,
                                         MoonlightUi::TextStyle::Tile,
-                                        {242, 247, 250});
+                                        {38, 43, 48});
                 } else {
                     screen.drawLiveText(tile.left + 22, tile.top + 27,
                                         "Custom",
                                         MoonlightUi::TextStyle::Tile,
-                                        {242, 247, 250});
+                                        {38, 43, 48});
                     screen.drawLiveText(tile.left + 23, tile.top + 50,
                                         "MANUAL",
                                         MoonlightUi::TextStyle::Small,
-                                        {113, 240, 207});
+                                        {0, 137, 153});
                 }
             }
             screen.drawHighlight(STREAM_PROFILE_RESOLUTION_TILES[selected_index_]);
@@ -1059,7 +1059,7 @@ class StreamProfilePickerScreen : public MoonlightUi::ScreenModel {
                 screen.drawAutoRateText(
                     tile.left + 27, tile.top + 25,
                     STREAM_PROFILE_RATE_LABELS[resolution_index_][index],
-                    tile.right - tile.left - 54, {242, 247, 250});
+                    tile.right - tile.left - 54, {38, 43, 48});
             }
             screen.drawHighlight(STREAM_PROFILE_RATE_TILES[selected_index_]);
         }
@@ -1248,13 +1248,13 @@ class GuiMessageScreen : public MoonlightUi::DualScreenModel {
     void draw(MoonlightUi::Screen &top, MoonlightUi::Screen &bottom) override {
         top.drawHeader("MOONLIGHT", title_);
         top.drawLiveText(20, 91, "Something needs attention", MoonlightUi::TextStyle::Header,
-                         {242, 247, 250});
+                         {38, 43, 48});
         top.drawFooter(DIAG_BUILD_VERSION, "RETURN TO HOST MENU");
         bottom.drawHeader("NEXT STEP", "YOU CAN GO BACK");
         bottom.drawAutoRateText(20, 82, message_, bottom.width() - 40,
-                                {242, 247, 250});
+                                {38, 43, 48});
         bottom.drawAutoRateText(20, 116, hint_, bottom.width() - 40,
-                                {170, 191, 208});
+                                {105, 114, 122});
         bottom.drawFooter(DIAG_BUILD_VERSION, "A OR B BACK");
     }
     bool handleInput(const MoonlightUi::InputEvent &event, bool *redraw) override {
@@ -1350,11 +1350,11 @@ class GuiCallProgressScreen : public MoonlightUi::ScreenModel {
         screen.drawLiveText(20, 98,
                             cancelling_ ? "Cancelling request..."
                                         : "Waiting for the host...",
-                            MoonlightUi::TextStyle::Header, {242, 247, 250});
+                            MoonlightUi::TextStyle::Header, {38, 43, 48});
         screen.drawLiveText(20, 137,
                             cancelling_ ? "Waiting for cleanup"
                                         : detail_.empty() ? "Waiting for host response" : detail_,
-                            MoonlightUi::TextStyle::Small, {130, 160, 184});
+                            MoonlightUi::TextStyle::Small, {105, 114, 122});
         screen.drawFooter(DIAG_BUILD_VERSION,
                           task_->cancellable_http || task_->interrupt_connection
                               ? "B CANCEL"
@@ -1555,7 +1555,7 @@ class ConnectionTestQualityScreen : public MoonlightUi::ScreenModel {
                                     "x" +
                                     std::to_string(STREAM_PROFILE_HEIGHTS[index]),
                                 MoonlightUi::TextStyle::Tile,
-                                {242, 247, 250});
+                                {38, 43, 48});
         }
         screen.drawHighlight(TILES[selected_index_]);
         screen.drawFooter(DIAG_BUILD_VERSION, "A CHOOSE  B BACK");
@@ -1943,21 +1943,21 @@ class ConnectionTestStreamScreen : public MoonlightUi::ScreenModel {
                                               std::to_string(height_) + "  " +
                                               std::to_string(fps_) + " FPS");
         screen.drawLiveText(18, 66, app_name_, MoonlightUi::TextStyle::Small,
-                            {175, 200, 220});
+                            {105, 114, 122});
         const unsigned int elapsed = elapsed_ms();
         const unsigned int percent = std::min(
             100U, elapsed * 100U / CONNECTION_TEST_RUNG_MS);
         screen.drawProgressBar({18, 82, 302, 106}, percent,
-                               {72, 229, 190});
+                               {63, 190, 205});
         screen.drawLiveText(18, 114,
                             std::to_string(bitrate_) + " kbps  " +
                                 std::to_string(snapshot.frames) + " frames",
-                            MoonlightUi::TextStyle::Small, {242, 247, 250});
+                            MoonlightUi::TextStyle::Small, {38, 43, 48});
         screen.drawFrameTimingGraph({20, 140, 300, 194},
                                     snapshot.frame_intervals_ms, 60,
-                                    {72, 229, 190});
+                                    {63, 190, 205});
         screen.drawLiveText(18, 199, "FRAME INTERVAL 0-60 ms",
-                            MoonlightUi::TextStyle::Small, {130, 160, 184});
+                            MoonlightUi::TextStyle::Small, {105, 114, 122});
         screen.drawFooter(DIAG_BUILD_VERSION, "B STOP TEST");
     }
 
@@ -2033,17 +2033,17 @@ class ConnectionTestResultsScreen : public MoonlightUi::ScreenModel {
             18, 62,
             fit_connection_test_text(screen, app_name_, 280,
                                      MoonlightUi::TextStyle::Small),
-            MoonlightUi::TextStyle::Small, {175, 200, 220});
+            MoonlightUi::TextStyle::Small, {105, 114, 122});
         if (graph_rung != nullptr &&
             !graph_rung->frame_intervals_ms.empty()) {
             const uint16_t scale = static_cast<uint16_t>(std::min(
                 65535, 60));
             screen.drawFrameTimingGraph({20, 78, 300, 123},
                                         graph_rung->frame_intervals_ms, scale,
-                                        {72, 229, 190});
+                                        {63, 190, 205});
             screen.drawLiveText(18, 126, "FRAME INTERVAL 0-60 ms",
                                 MoonlightUi::TextStyle::Small,
-                                {130, 160, 184});
+                                {105, 114, 122});
             const std::string control_rtt =
                 graph_rung->median_control_rtt_ms == 0
                     ? "CONTROL RTT unavailable"
@@ -2055,11 +2055,11 @@ class ConnectionTestResultsScreen : public MoonlightUi::ScreenModel {
                           " ms";
             screen.drawLiveText(155, 126, control_rtt,
                                 MoonlightUi::TextStyle::Small,
-                                {130, 160, 184});
+                                {105, 114, 122});
         } else {
             screen.drawLiveText(18, 95, "No frame timing samples",
                                 MoonlightUi::TextStyle::Small,
-                                {130, 160, 184});
+                                {105, 114, 122});
         }
 
         int row = 0;
@@ -2103,8 +2103,8 @@ class ConnectionTestResultsScreen : public MoonlightUi::ScreenModel {
             }
             screen.drawLiveText(18, 150 + row * 15, detail,
                                 MoonlightUi::TextStyle::Small,
-                                rung.stable ? MoonlightUi::Color{113, 240, 207}
-                                            : MoonlightUi::Color{198, 165, 135});
+                                rung.stable ? MoonlightUi::Color{0, 137, 153}
+                                            : MoonlightUi::Color{105, 114, 122});
             ++row;
             if (row == 3) {
                 break;
@@ -2119,22 +2119,22 @@ class ConnectionTestResultsScreen : public MoonlightUi::ScreenModel {
             " kbps";
         screen.drawLiveText(18, 193, recommendation_line,
                             MoonlightUi::TextStyle::Small,
-                            {242, 247, 250});
+                            {38, 43, 48});
         if (save_failed_) {
             screen.drawLiveText(18, 207, "Save failed; check SD storage",
                                 MoonlightUi::TextStyle::Small,
-                                {242, 150, 130});
+                                {176, 45, 45});
         } else if (saved_) {
             screen.drawLiveText(18, 207, "Saved for this host and bracket",
                                 MoonlightUi::TextStyle::Small,
-                                {113, 240, 207});
+                                {0, 137, 153});
         } else if (has_existing_) {
             screen.drawLiveText(
                 18, 207,
                 "Saved: " + std::to_string(existing_.fps30_bitrate) + "/" +
                     std::to_string(existing_.fps60_bitrate) +
                     " kbps. A replaces these.",
-                MoonlightUi::TextStyle::Small, {239, 194, 119});
+                MoonlightUi::TextStyle::Small, {135, 91, 0});
         }
         screen.drawFooter(
             DIAG_BUILD_VERSION,
@@ -2464,7 +2464,7 @@ class ConnectionTestMessageScreen : public MoonlightUi::ScreenModel {
     void draw(MoonlightUi::Screen &screen) override {
         screen.drawHeader("CONNECTION TEST", title_);
         screen.drawLiveText(18, 101, message_, MoonlightUi::TextStyle::Small,
-                            {242, 247, 250});
+                            {38, 43, 48});
         screen.drawFooter(DIAG_BUILD_VERSION, "A/B BACK");
     }
     bool handleInput(const MoonlightUi::InputEvent &event,
