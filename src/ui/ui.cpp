@@ -344,10 +344,9 @@ void Screen::drawBackground() {
     }
 
     for (int y = 0; y < height_; ++y) {
+        const uint8_t gray = static_cast<uint8_t>(12 + (10 * y + 119) / 239);
         const Color row = {
-            static_cast<uint8_t>(8 + (6 * y + 119) / 239),
-            static_cast<uint8_t>(17 + (10 * y + 119) / 239),
-            static_cast<uint8_t>(30 + (13 * y + 119) / 239),
+            gray, gray, gray,
         };
         const uint16_t color = rgb565(row);
         for (int x = 0; x < width_; ++x) {
@@ -355,77 +354,21 @@ void Screen::drawBackground() {
         }
     }
 
-    // The two translucent corner ellipses from the ui2 shared background.
-    for (int y = 0; y <= 76; ++y) {
-        for (int x = std::max(0, width_ - 84); x < width_; ++x) {
-            const int dx = x - (width_ - 7);
-            const int dy = y + 1;
-            if (dx * dx + dy * dy <= 77 * 77) {
-                const int base_red = 8 + (6 * y + 119) / 239;
-                const int base_green = 17 + (10 * y + 119) / 239;
-                const int base_blue = 30 + (13 * y + 119) / 239;
-                Color over = {
-                    static_cast<uint8_t>(blend_channel(base_red, 47, 20, 255)),
-                    static_cast<uint8_t>(blend_channel(base_green, 116, 20, 255)),
-                    static_cast<uint8_t>(blend_channel(base_blue, 113, 20, 255)),
-                };
-                setPixel(x, y, rgb565(over));
-            }
-        }
-    }
-    for (int y = 176; y < height_; ++y) {
-        for (int x = 0; x <= 94; ++x) {
-            const int dx = x + 5;
-            const int dy = y - 275;
-            if (dx * dx + dy * dy <= 100 * 100) {
-                const int base_red = 8 + (6 * y + 119) / 239;
-                const int base_green = 17 + (10 * y + 119) / 239;
-                const int base_blue = 30 + (13 * y + 119) / 239;
-                Color over = {
-                    static_cast<uint8_t>(blend_channel(base_red, 33, 18, 255)),
-                    static_cast<uint8_t>(blend_channel(base_green, 75, 18, 255)),
-                    static_cast<uint8_t>(blend_channel(base_blue, 110, 18, 255)),
-                };
-                setPixel(x, y, rgb565(over));
-            }
-        }
-    }
-
     for (int x = 0; x < width_; ++x) {
-        int header_red = 8 + (6 * 60 + 119) / 239;
-        int header_green = 17 + (10 * 60 + 119) / 239;
-        int header_blue = 30 + (13 * 60 + 119) / 239;
-        const int header_dx = x - (width_ - 7);
-        const int header_dy = 61;
-        if (header_dx * header_dx + header_dy * header_dy <= 77 * 77) {
-            header_red = blend_channel(header_red, 47, 20, 255);
-            header_green = blend_channel(header_green, 116, 20, 255);
-            header_blue = blend_channel(header_blue, 113, 20, 255);
-        }
+        const int header_gray = 12 + (10 * 60 + 119) / 239;
         const Color header_line = {
-            static_cast<uint8_t>(blend_channel(header_red, 87, 65, 255)),
-            static_cast<uint8_t>(blend_channel(header_green, 123, 65, 255)),
-            static_cast<uint8_t>(blend_channel(header_blue, 143, 65, 255)),
+            static_cast<uint8_t>(blend_channel(header_gray, 96, 65, 255)),
+            static_cast<uint8_t>(blend_channel(header_gray, 96, 65, 255)),
+            static_cast<uint8_t>(blend_channel(header_gray, 96, 65, 255)),
         };
         setPixel(x, 60, rgb565(header_line));
 
         const int y = 222;
-        int footer_red = 8 + (6 * y + 119) / 239;
-        int footer_green = 17 + (10 * y + 119) / 239;
-        int footer_blue = 30 + (13 * y + 119) / 239;
-        if (x <= 94) {
-            const int dx = x + 5;
-            const int dy = y - 275;
-            if (dx * dx + dy * dy <= 100 * 100) {
-                footer_red = blend_channel(footer_red, 33, 18, 255);
-                footer_green = blend_channel(footer_green, 75, 18, 255);
-                footer_blue = blend_channel(footer_blue, 110, 18, 255);
-            }
-        }
+        const int footer_gray = 12 + (10 * y + 119) / 239;
         const Color footer_line = {
-            static_cast<uint8_t>(blend_channel(footer_red, 87, 45, 255)),
-            static_cast<uint8_t>(blend_channel(footer_green, 123, 45, 255)),
-            static_cast<uint8_t>(blend_channel(footer_blue, 143, 45, 255)),
+            static_cast<uint8_t>(blend_channel(footer_gray, 96, 45, 255)),
+            static_cast<uint8_t>(blend_channel(footer_gray, 96, 45, 255)),
+            static_cast<uint8_t>(blend_channel(footer_gray, 96, 45, 255)),
         };
         setPixel(x, y, rgb565(footer_line));
     }

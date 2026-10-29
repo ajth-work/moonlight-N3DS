@@ -7,7 +7,7 @@ the stream-profile picker (3.1.0-ui1/ui2). The picker is the design seed,
 not the finish.
 
 **Base:** `feature/stream-profile-picker` tip (3.1.0-ui2, 90c2c34).
-**GUI line versioning:** `3.5.0-guiN`, version always on the bottom screen.
+**GUI line versioning:** `3.6.0-guiN`, version always on the bottom screen.
 
 ## Where the UI stands today (verified by code read, 2026-10-26)
 
@@ -145,6 +145,26 @@ perfect LAN, and only a real stream sees both.
   legacy graphical UI, terminal text (`graphical=0`), native system UI,
   stream video, or stream controls. Records contain no host address or secret.
 - Phase 4 remains separate and requires AJ's hardware retest before dispatch.
+
+### GUI6 in-stream presentation variant (2026-10-29)
+
+- Preserves the GUI5 base as `gui5-checkpoint-20261029`; this variant is on
+  `feature/gui-stream-moonlight-theme` and is not merged.
+- Changes the app-owned UI presentation to a neutral Moonlight gray and white
+  palette and removes the upper-right decorative ellipse. Stream input, touch
+  zones, and controls remain as they were in GUI5; virtual sticks are out of
+  scope.
+- AJ reported GUI5 retested. This is user-reported only; no per-step outcomes
+  were supplied or inferred.
+- GUI6 physical retest (record each result on issue #3 after testing):
+  1. Install `3.6.0-gui6` and confirm the title/version on the bottom screen.
+  2. Start a stream and inspect the existing bottom panel's gray/white theme
+     and confirm the upper-right ellipse is absent.
+  3. Exercise each existing bottom-panel control and touch zone; confirm the
+     expected control behavior and stream input remain intact.
+  4. Switch among the existing in-stream bottom UI modes and confirm the
+     footer remains visible on app-owned bottom-screen UI.
+  5. Return to the host menu and confirm streaming exits cleanly.
 
 - Version string on the bottom screen at all times (standing rule).
 - Config semantics unchanged: `moonlight.conf` and
