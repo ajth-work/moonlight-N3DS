@@ -2256,6 +2256,7 @@ static void draw_stream_gamepad_panel(uint32_t rtt_ms, bool rtt_available,
                                      unsigned int session_seconds,
                                      int battery_percent,
                                      int touch_buttons,
+                                     int touch_x, int touch_y,
                                      bool settings_open,
                                      const STREAM_CONFIGURATION &stream_config,
                                      int display_count, int default_display) {
@@ -2263,39 +2264,52 @@ static void draw_stream_gamepad_panel(uint32_t rtt_ms, bool rtt_available,
     using MoonlightUi::Color;
     using MoonlightUi::Rect;
     using MoonlightUi::TextStyle;
-    const Color ink{38, 43, 48};
-    const Color muted{105, 114, 122};
-    const Color teal{0, 137, 153};
-    bottom.drawBackground();
-    bottom.drawHeader("MOONLIGHT",
-                      settings_open ? "STREAM SETTINGS" : "IN-STREAM GAMEPAD");
+    const Color ink{231, 239, 244};
+    const Color muted{151, 166, 178};
+    const Color teal{64, 205, 214};
+    const Color dark{17, 25, 34};
+    bottom.drawSolidBackground(dark);
+    bottom.drawLiveText(12, 7, "MOONLIGHT", TextStyle::Small, teal);
+    bottom.drawLiveText(12, 22, settings_open ? "STREAM SETTINGS" : "COMPANION PANEL",
+                        TextStyle::Header, ink);
+    bottom.drawLiveText(220, 10, DIAG_BUILD_VERSION, TextStyle::Small, muted);
 
     char status[64];
     if (rtt_available)
         snprintf(status, sizeof(status), "RTT  %lu ms", (unsigned long)rtt_ms);
     else
         snprintf(status, sizeof(status), "RTT  unavailable");
-    bottom.drawLiveText(18, 43, status, TextStyle::Small, teal);
+    bottom.drawLiveText(12, 42, status, TextStyle::Small, teal);
     char battery[32];
     if (battery_percent >= 0)
         snprintf(battery, sizeof(battery), "BATTERY  %d%%", battery_percent);
     else
         snprintf(battery, sizeof(battery), "BATTERY  unavailable");
-    bottom.drawLiveText(112, 43, battery, TextStyle::Small, muted);
+    bottom.drawLiveText(103, 42, battery, TextStyle::Small, muted);
     char session[32];
     snprintf(session, sizeof(session), "SESSION  %02u:%02u",
              session_seconds / 3600, (session_seconds / 60) % 60);
-    bottom.drawLiveText(224, 43, session, TextStyle::Small, muted);
+    bottom.drawLiveText(215, 42, session, TextStyle::Small, muted);
+    bottom.drawFrameTimingGraph({12, 53, 70, 62}, history, 200, teal);
+    bottom.drawLiveText(77, 54, "SUNSHINE", TextStyle::Small, muted);
+    bottom.drawDisplaySelector(default_display, display_count, settings_open);
 
-    bottom.drawFilledTile({8, 66, 156, 174}, 1);
-    bottom.drawFilledTile({164, 66, 312, 174}, 2);
-    if (touch_buttons & LS_CLK_FLAG) bottom.drawHighlight({8, 66, 156, 174});
-    if (touch_buttons & RS_CLK_FLAG) bottom.drawHighlight({164, 66, 312, 174});
-    bottom.drawLiveText(31, 92, "L3", TextStyle::Tile, ink);
-    bottom.drawLiveText(31, 125, "TOUCH AND HOLD", TextStyle::Small, muted);
-    bottom.drawLiveText(187, 92, "R3", TextStyle::Tile, ink);
-    bottom.drawLiveText(187, 125, "TOUCH AND HOLD", TextStyle::Small, muted);
-    bottom.drawFrameTimingGraph({45, 146, 275, 169}, history, 200, teal);
+    const int lx = 80 + (touch_x * 31 / 32767);
+    const int ly = 128 - (touch_y * 25 / 32767);
+    const int rx = 240 + (touch_x * 31 / 32767);
+    const int ry = 128 - (touch_y * 25 / 32767);
+    bottom.drawCircle(80, 130, 45, {33, 47, 59});
+    bottom.drawCircle(80, 130, 40, {20, 31, 42});
+    bottom.drawCircle(240, 130, 45, {33, 47, 59});
+    bottom.drawCircle(240, 130, 40, {20, 31, 42});
+    if (touch_buttons & LS_CLK_FLAG) bottom.drawCircle(80, 130, 34, {11, 122, 137});
+    if (touch_buttons & RS_CLK_FLAG) bottom.drawCircle(240, 130, 34, {11, 122, 137});
+    bottom.drawCircle(lx, ly, 10, teal);
+    bottom.drawCircle(rx, ry, 10, teal);
+    bottom.drawLiveText(12, 88, "L3", TextStyle::Header, ink);
+    bottom.drawLiveText(173, 88, "R3", TextStyle::Header, ink);
+    bottom.drawLiveText(36, 174, "MOVE / HOLD = CLICK", TextStyle::Small, muted);
+    bottom.drawLiveText(196, 174, "MOVE / HOLD = CLICK", TextStyle::Small, muted);
     if (settings_open) {
         char settings[64];
         snprintf(settings, sizeof(settings), "%dx%d  %dfps  %dkbps",
@@ -2304,17 +2318,13 @@ static void draw_stream_gamepad_panel(uint32_t rtt_ms, bool rtt_available,
         bottom.drawLiveText(18, 174, settings, TextStyle::Small, muted);
     }
 
-    bottom.drawFilledTile({8, 182, 156, 218}, 3);
-    bottom.drawFilledTile({164, 182, 312, 218}, 4);
+    const Color button_ink{38, 43, 48};
+    const Color button_fill{214, 226, 233};
+    bottom.drawPanelButton({5, 184, 101, 220}, "MAGNIFY", button_fill, button_ink);
+    bottom.drawPanelButton({108, 184, 210, 220}, "KEYBOARD", button_fill, button_ink);
+    bottom.drawPanelButton({217, 184, 315, 220}, "SETTINGS", button_fill, button_ink);
     if (settings_open)
-        bottom.drawLiveText(18, 183,
-                            "SUNSHINE ONLY: HOST COUNT IS NOT ENUMERATED",
-                            TextStyle::Small, muted);
-    bottom.drawLiveText(35, 194, "KEYBOARD", TextStyle::Header, ink);
-    bottom.drawLiveText(202, 194, "SETTINGS", TextStyle::Header, ink);
-    bottom.drawDisplaySelector(default_display, display_count, settings_open);
-    if (!settings_open)
-        bottom.drawLiveText(18, 226, DIAG_BUILD_VERSION, TextStyle::Small, muted);
+        bottom.drawLiveText(12, 226, "HOST COUNT IS USER CONFIGURED", TextStyle::Small, muted);
     bottom.present(false);
 }
 
@@ -2339,6 +2349,7 @@ static inline void stream_loop(PCONFIGURATION config,
     MessageDispatcher::get_instance()->post_immediate(
         std::make_shared<TouchStateChangedMsg>(N3dsTouchType::GAMEPAD));
     if (input_handler) input_handler->set_stream_panel_enabled(true);
+    diag_log("MONITOR_CONFIG", "configured_count=%d selected=%d", config->sunshine_display_count, config->sunshine_default_display);
     if (!config->viewonly) {
         threadCreate(input_loop, input_handler.get(), stack_size, priority, -1,
                      true);
@@ -2361,23 +2372,35 @@ static inline void stream_loop(PCONFIGURATION config,
             settings_open = !settings_open;
         if (input_handler) {
             const int display_action = input_handler->consume_stream_display_action();
-            if (display_action == 2 && settings_open) {
+            static bool top_magnified = false;
+            if (display_action == 3) {
+                top_magnified = !top_magnified;
+                n3ds_set_top_magnified(top_magnified);
+                diag_log("STREAM_MAGNIFIER", "top_screen=%s", top_magnified ? "on" : "off");
+            } else if (display_action == 2 && settings_open) {
                 config->sunshine_display_count = config->sunshine_display_count >= 12
                     ? 1 : config->sunshine_display_count + 1;
                 if (config->sunshine_default_display > config->sunshine_display_count)
                     config->sunshine_default_display = config->sunshine_display_count;
                 config_save(stream_config_path, config);
+                diag_log("MONITOR_COUNT", "configured_count=%d selected=%d", config->sunshine_display_count, config->sunshine_default_display);
             } else if (display_action != 0 && config->sunshine_display_count > 1) {
                 int selected = config->sunshine_default_display + display_action;
-                if (selected < 1) selected = config->sunshine_display_count;
-                if (selected > config->sunshine_display_count) selected = 1;
-                config->sunshine_default_display = selected;
-                config_save(stream_config_path, config);
-                const int key = 0x70 + selected - 1; // VK_F1 ... VK_F12
-                LiSendKeyboardEvent(key, KEY_ACTION_DOWN,
-                                    MODIFIER_CTRL | MODIFIER_ALT | MODIFIER_SHIFT);
-                LiSendKeyboardEvent(key, KEY_ACTION_UP,
-                                    MODIFIER_CTRL | MODIFIER_ALT | MODIFIER_SHIFT);
+                if (selected < 1) selected = 1;
+                if (selected > config->sunshine_display_count)
+                    selected = config->sunshine_display_count;
+                if (selected != config->sunshine_default_display) {
+                    config->sunshine_default_display = selected;
+                    config_save(stream_config_path, config);
+                    diag_log("MONITOR_REQUEST", "requested_display=%d configured_count=%d", selected, config->sunshine_display_count);
+                    const int key = 0x70 + selected - 1; // VK_F1 ... VK_F12
+                    const char modifiers = MODIFIER_CTRL | MODIFIER_ALT | MODIFIER_SHIFT;
+                    const int down_status = LiSendKeyboardEvent(key, KEY_ACTION_DOWN, modifiers);
+                    diag_log("MONITOR_SHORTCUT", "key=F%d action=down modifiers=ctrl+alt+shift result=%d", selected, down_status);
+                    const int up_status = LiSendKeyboardEvent(key, KEY_ACTION_UP, modifiers);
+                    diag_log("MONITOR_SHORTCUT", "key=F%d action=up modifiers=ctrl+alt+shift result=%d", selected, up_status);
+                    diag_log("MONITOR_SELECTED", "requested=%d configured_count=%d", selected, config->sunshine_display_count);
+                }
             }
         }
         const u64 now = svcGetSystemTick();
@@ -2397,6 +2420,8 @@ static inline void stream_loop(PCONFIGURATION config,
                 latest_rtt_ms, rtt_available, rtt_history, session_seconds,
                 battery_available ? static_cast<int>(battery_level) * 20 : -1,
                 input_handler ? input_handler->stream_panel_touch_buttons() : 0,
+                input_handler ? input_handler->stream_panel_touch_x() : 0,
+                input_handler ? input_handler->stream_panel_touch_y() : 0,
                 settings_open, config->stream, config->sunshine_display_count,
                 config->sunshine_default_display);
             last_panel_update = now;

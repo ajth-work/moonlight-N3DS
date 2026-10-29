@@ -376,6 +376,30 @@ void Screen::drawBackground() {
         setPixel(x, y, rgb565(footer_line));
     }
 }
+
+void Screen::drawSolidBackground(Color color) {
+    framebuffer_ = reinterpret_cast<uint16_t *>(
+        gfxGetFramebuffer(display_, GFX_LEFT, nullptr, nullptr));
+    const uint16_t pixel = rgb565(color);
+    for (int y = 0; y < height_; ++y)
+        for (int x = 0; x < width_; ++x) setPixel(x, y, pixel);
+}
+
+void Screen::drawCircle(int cx, int cy, int radius, Color color) {
+    const uint16_t pixel = rgb565(color);
+    for (int y = -radius; y <= radius; ++y)
+        for (int x = -radius; x <= radius; ++x)
+            if (x * x + y * y <= radius * radius) setPixel(cx + x, cy + y, pixel);
+}
+
+void Screen::drawPanelButton(const Rect &rect, const std::string &label,
+                             Color fill, Color text) {
+    fillRoundedRect(rect, 8, rgb565(fill));
+    const int width = measureLiveText(label, TextStyle::Header);
+    drawLiveText(rect.left + (rect.right - rect.left - width) / 2,
+                 rect.top + (rect.bottom - rect.top - 15) / 2,
+                 label, TextStyle::Header, text);
+}
 void Screen::drawTextStyle(int x, int y, const std::string &text, int font_id,
                            Color color) {
     if (framebuffer_ == nullptr || FONT_DATA[0] != 'M' || FONT_DATA[1] != 'L' ||
@@ -480,23 +504,23 @@ void Screen::drawDisplaySelector(int selected, int count, bool configure_count) 
     const Color muted{105, 114, 122};
     const uint16_t edge = rgb565(ink);
     // One unnumbered monitor silhouette; the selected display number is live text.
-    fillRoundedRect({144, 224, 176, 235}, 2, edge);
-    fillRoundedRect({146, 226, 174, 233}, 1, rgb565({248, 246, 245}));
-    for (int x = 157; x <= 163; ++x) setPixel(x, 236, edge);
-    for (int x = 153; x <= 167; ++x) setPixel(x, 237, edge);
+    fillRoundedRect({144, 60, 176, 75}, 2, edge);
+    fillRoundedRect({146, 62, 174, 72}, 1, rgb565({20, 31, 42}));
+    for (int x = 157; x <= 163; ++x) setPixel(x, 76, edge);
+    for (int x = 153; x <= 167; ++x) setPixel(x, 77, edge);
     if (count > 1 && selected > 1)
-        drawLiveText(112, 226, "<", TextStyle::Header, ink);
+        drawLiveText(66, 59, "<", TextStyle::Header, ink);
     if (count > 1 && selected < count)
-        drawLiveText(190, 226, ">", TextStyle::Header, ink);
+        drawLiveText(250, 59, ">", TextStyle::Header, ink);
     char value[12];
     snprintf(value, sizeof(value), "%d", selected);
-    drawLiveText(151, 227, value, TextStyle::Small, ink);
+    drawLiveText(151, 63, value, TextStyle::Small, ink);
     if (configure_count) {
         char hint[48];
         snprintf(hint, sizeof(hint), "COUNT %d  + 1", count);
-        drawLiveText(18, 226, hint, TextStyle::Small, muted);
+        drawLiveText(16, 64, hint, TextStyle::Small, muted);
     } else {
-        drawLiveText(218, 226, "SUNSHINE", TextStyle::Small, muted);
+        drawLiveText(191, 64, "SUNSHINE", TextStyle::Small, muted);
     }
 }
 

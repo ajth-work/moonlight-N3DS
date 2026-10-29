@@ -20,6 +20,7 @@
 #include "n3ds_input.hpp"
 #include "../system/dispatcher.hpp"
 #include "touch/TouchHandler.hpp"
+#include "../diagnostics.h"
 
 #include <3ds.h>
 #include <Limelight.h>
@@ -188,6 +189,8 @@ void N3dsInput::set_stream_panel_enabled(bool enabled) {
     } else {
         panel_touch_zone.store(0);
         panel_touch_buttons.store(0);
+        panel_touch_x.store(0);
+        panel_touch_y.store(0);
         panel_keyboard_requested.store(false);
         panel_settings_requested.store(false);
         panel_display_action.store(0);
@@ -229,18 +232,27 @@ void N3dsInput::n3dsinput_handle_event() {
         if (kDown & KEY_TOUCH) {
             touchPosition touch;
             hidTouchRead(&touch);
-            if (touch.py >= 62 && touch.py < 178) {
+            if (touch.py >= 86 && touch.py < 178) {
                 const int zone = touch.px < 160 ? 1 : 2;
                 panel_touch_zone.store(zone);
-                const int touch_buttons = zone == 1 ? LS_CLK_FLAG : RS_CLK_FLAG;
-                panel_touch_buttons.store(touch_buttons);
-            } else if (touch.py >= 184 && touch.py < 222) {
-                if (touch.px < 160) panel_keyboard_requested.store(true);
+                panel_touch_start_x = touch.px;
+                panel_touch_start_y = touch.py;
+                panel_touch_start_ticks = svcGetSystemTick();
+                panel_touch_click.store(false);
+                panel_touch_buttons.store(0);
+                panel_touch_x.store(0);
+                panel_touch_y.store(0);
+            } else if (touch.py >= 183 && touch.py < 222) {
+                if (touch.px < 80) panel_display_action.store(3);
+                else if (touch.px < 160) panel_keyboard_requested.store(true);
                 else panel_settings_requested.store(true);
-            } else if (touch.py >= 222) {
-                if (touch.px < 140) panel_display_action.store(-1);
-                else if (touch.px > 180) panel_display_action.store(1);
-                else panel_display_action.store(2);
+            } else if (touch.py >= 54 && touch.py < 84) {
+                int action = 0;
+                if (touch.px < 92) action = -1;
+                else if (touch.px > 228) action = 1;
+                else action = 2;
+                panel_display_action.store(action);
+                diag_log("MONITOR_TOUCH", "x=%u y=%u action=%d", touch.px, touch.py, action);
             }
         }
         if (kHeld & KEY_TOUCH) {
@@ -248,17 +260,37 @@ void N3dsInput::n3dsinput_handle_event() {
             if (zone != 0) {
                 touchPosition touch;
                 hidTouchRead(&touch);
-                if (touch.py < 62 || touch.py >= 178 ||
+                if (touch.py < 86 || touch.py >= 178 ||
                     (zone == 1 && touch.px >= 160) ||
                     (zone == 2 && touch.px < 160)) {
                     panel_touch_zone.store(0);
                     panel_touch_buttons.store(0);
+                    panel_touch_x.store(0);
+                    panel_touch_y.store(0);
+                } else {
+                    int dx = (touch.px - (zone == 1 ? 80 : 240)) * 32767 / 48;
+                    int dy = (128 - touch.py) * 32767 / 42;
+                    if (dx < -32767) dx = -32767;
+                    if (dx > 32767) dx = 32767;
+                    if (dy < -32767) dy = -32767;
+                    if (dy > 32767) dy = 32767;
+                    panel_touch_x.store(dx);
+                    panel_touch_y.store(dy);
+                    const int moved = abs(touch.px - panel_touch_start_x) +
+                                      abs(touch.py - panel_touch_start_y);
+                    if (moved < 8 && svcGetSystemTick() - panel_touch_start_ticks > SYSCLOCK_ARM11 / 3) {
+                        panel_touch_click.store(true);
+                        panel_touch_buttons.store(zone == 1 ? LS_CLK_FLAG : RS_CLK_FLAG);
+                    }
                 }
             }
         }
         if (kUp & KEY_TOUCH) {
             panel_touch_zone.store(0);
             panel_touch_buttons.store(0);
+            panel_touch_x.store(0);
+            panel_touch_y.store(0);
+            panel_touch_click.store(false);
         }
     } else {
         touch_handler->n3dsinput_handle_touch(kDown, kUp);
@@ -293,7 +325,6 @@ void N3dsInput::n3dsinput_handle_event() {
         if (QUIT_TO_MENU_CHORD & CUSTOM_KEY_ZL) gamepad_state.leftTrigger = 0;
         if (QUIT_TO_MENU_CHORD & CUSTOM_KEY_ZR) gamepad_state.rightTrigger = 0;
     }
-    gamepad_state.buttons |= panel_touch_buttons.load();
 
     // Use the HOME button to open the menu
     if (aptCheckHomePressRejected()) {
@@ -317,6 +348,28 @@ void N3dsInput::n3dsinput_handle_event() {
         scale_n3ds_axis(cstick_pos.dx, N3DS_C_STICK_MAX);
     gamepad_state.rightStickY =
         scale_n3ds_axis(cstick_pos.dy, N3DS_C_STICK_MAX);
+
+    // Physical controls keep precedence; touch contributes only while the
+    // corresponding physical stick is near its neutral position.
+    const int touch_zone = panel_touch_zone.load();
+    if (touch_zone == 1 && abs(cpad_pos.dx) < N3DS_ANALOG_MAX / 8 &&
+        abs(cpad_pos.dy) < N3DS_ANALOG_MAX / 8) {
+        gamepad_state.leftStickX = panel_touch_x.load();
+        gamepad_state.leftStickY = panel_touch_y.load();
+    } else if (touch_zone == 2 && abs(cstick_pos.dx) < N3DS_C_STICK_MAX / 8 &&
+               abs(cstick_pos.dy) < N3DS_C_STICK_MAX / 8) {
+        gamepad_state.rightStickX = panel_touch_x.load();
+        gamepad_state.rightStickY = panel_touch_y.load();
+    }
+    const bool physical_left_active = abs(cpad_pos.dx) >= N3DS_ANALOG_MAX / 8 ||
+                                     abs(cpad_pos.dy) >= N3DS_ANALOG_MAX / 8;
+    const bool physical_right_active = abs(cstick_pos.dx) >= N3DS_C_STICK_MAX / 8 ||
+                                       abs(cstick_pos.dy) >= N3DS_C_STICK_MAX / 8;
+    const int virtual_click = panel_touch_buttons.load();
+    if (!physical_left_active && (virtual_click & LS_CLK_FLAG))
+        gamepad_state.buttons |= LS_CLK_FLAG;
+    if (!physical_right_active && (virtual_click & RS_CLK_FLAG))
+        gamepad_state.buttons |= RS_CLK_FLAG;
 
     if (_gamepad_state_changed()) {
         if (use_triggers_for_mouse) {

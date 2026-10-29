@@ -56,6 +56,10 @@ class Screen {
     int width() const;
     int height() const;
     void drawBackground();
+    void drawSolidBackground(Color color);
+    void drawCircle(int center_x, int center_y, int radius, Color color);
+    void drawPanelButton(const Rect &rect, const std::string &label,
+                         Color fill, Color text);
     void drawFilledTile(const Rect &rect, int number);
     void drawProgressBar(const Rect &rect, unsigned int percent, Color color);
     void drawListRow(const Rect &rect, int number, const std::string &label,

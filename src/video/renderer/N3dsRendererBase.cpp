@@ -29,6 +29,9 @@
 #include <stdexcept>
 #include <unistd.h>
 
+static AtomicVar<bool> top_screen_magnified = false;
+void n3ds_set_top_magnified(bool enabled) { top_screen_magnified.store(enabled); }
+
 N3dsRendererBase::N3dsRendererBase(gfxScreen_t screen_in, int surface_width_in,
                                    int surface_height_in, int image_width_in,
                                    int image_height_in, int pixel_size,
@@ -278,8 +281,15 @@ void N3dsRendererBase::write_px_to_framebuffer_gpu(uint8_t *__restrict source) {
 
 #define ATTR(X, Y, Z, W)                                                       \
     {                                                                          \
-        write24(param.x, f32tof24(X));                                         \
-        write24(param.y, f32tof24(Y));                                         \
+        float tex_x = (X);                                                     \
+        float tex_y = (Y);                                                     \
+        if (screen == GFX_TOP && top_screen_magnified.load()) {                \
+            tex_x = sw * 0.5f + (tex_x - sw * 0.5f) / 1.35f;                  \
+            const float tex_center_y = (sh - hh) * 0.5f;                     \
+            tex_y = tex_center_y + (tex_y - tex_center_y) / 1.35f;           \
+        }                                                                      \
+        write24(param.x, f32tof24(tex_x));                                    \
+        write24(param.y, f32tof24(tex_y));                                    \
         write24(param.z, f32tof24(Z));                                         \
         write24(param.w, f32tof24(W));                                         \
                                                                                \
