@@ -66,6 +66,7 @@ class Screen {
     void drawFrameTimingGraph(const Rect &rect,
                               const std::vector<uint16_t> &intervals_ms,
                               uint16_t scale_ms, Color color);
+    void drawDisplaySelector(int selected, int count, bool configure_count);
     void drawLiveText(int x, int y, const std::string &text, TextStyle style,
                       Color color);
     void drawAutoRateText(int x, int y, const std::string &text,

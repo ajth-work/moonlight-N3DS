@@ -57,6 +57,8 @@ typedef struct _CONFIGURATION {
     bool swap_triggers_and_shoulders;
     bool use_triggers_for_mouse;
     bool diagnostic_logging;
+    int sunshine_display_count;
+    int sunshine_default_display;
 } CONFIGURATION, *PCONFIGURATION;
 
 bool config_file_parse(char *filename, PCONFIGURATION config);

@@ -475,6 +475,31 @@ void Screen::drawProgressBar(const Rect &rect, unsigned int percent,
     }
 }
 
+void Screen::drawDisplaySelector(int selected, int count, bool configure_count) {
+    const Color ink{38, 43, 48};
+    const Color muted{105, 114, 122};
+    const uint16_t edge = rgb565(ink);
+    // One unnumbered monitor silhouette; the selected display number is live text.
+    fillRoundedRect({144, 224, 176, 235}, 2, edge);
+    fillRoundedRect({146, 226, 174, 233}, 1, rgb565({248, 246, 245}));
+    for (int x = 157; x <= 163; ++x) setPixel(x, 236, edge);
+    for (int x = 153; x <= 167; ++x) setPixel(x, 237, edge);
+    if (count > 1 && selected > 1)
+        drawLiveText(112, 226, "<", TextStyle::Header, ink);
+    if (count > 1 && selected < count)
+        drawLiveText(190, 226, ">", TextStyle::Header, ink);
+    char value[12];
+    snprintf(value, sizeof(value), "%d", selected);
+    drawLiveText(151, 227, value, TextStyle::Small, ink);
+    if (configure_count) {
+        char hint[48];
+        snprintf(hint, sizeof(hint), "COUNT %d  + 1", count);
+        drawLiveText(18, 226, hint, TextStyle::Small, muted);
+    } else {
+        drawLiveText(218, 226, "SUNSHINE", TextStyle::Small, muted);
+    }
+}
+
 void Screen::drawListRow(const Rect &rect, int number,
                          const std::string &label, bool selected) {
     drawFilledTile(rect, number);

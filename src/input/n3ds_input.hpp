@@ -37,6 +37,7 @@ class N3dsInput : public ISubscriber {
     int stream_panel_touch_buttons() { return panel_touch_buttons.load(); }
     bool consume_stream_panel_keyboard_request();
     bool consume_stream_panel_settings_request();
+    int consume_stream_display_action();
     void open_stream_keyboard();
 
   private:
@@ -67,6 +68,7 @@ class N3dsInput : public ISubscriber {
     AtomicVar<int> panel_touch_zone = 0;
     AtomicVar<bool> panel_keyboard_requested = false;
     AtomicVar<bool> panel_settings_requested = false;
+    AtomicVar<int> panel_display_action = 0;
 
     uint32_t CUSTOM_KEY_A;
     uint32_t CUSTOM_KEY_B;

@@ -2257,7 +2257,8 @@ static void draw_stream_gamepad_panel(uint32_t rtt_ms, bool rtt_available,
                                      int battery_percent,
                                      int touch_buttons,
                                      bool settings_open,
-                                     const STREAM_CONFIGURATION &stream_config) {
+                                     const STREAM_CONFIGURATION &stream_config,
+                                     int display_count, int default_display) {
     static MoonlightUi::Screen bottom(GFX_BOTTOM);
     using MoonlightUi::Color;
     using MoonlightUi::Rect;
@@ -2300,14 +2301,20 @@ static void draw_stream_gamepad_panel(uint32_t rtt_ms, bool rtt_available,
         snprintf(settings, sizeof(settings), "%dx%d  %dfps  %dkbps",
                  stream_config.width, stream_config.height, stream_config.fps,
                  stream_config.bitrate);
-        bottom.drawLiveText(90, 174, settings, TextStyle::Small, muted);
+        bottom.drawLiveText(18, 174, settings, TextStyle::Small, muted);
     }
 
     bottom.drawFilledTile({8, 182, 156, 218}, 3);
     bottom.drawFilledTile({164, 182, 312, 218}, 4);
+    if (settings_open)
+        bottom.drawLiveText(18, 183,
+                            "SUNSHINE ONLY: HOST COUNT IS NOT ENUMERATED",
+                            TextStyle::Small, muted);
     bottom.drawLiveText(35, 194, "KEYBOARD", TextStyle::Header, ink);
     bottom.drawLiveText(202, 194, "SETTINGS", TextStyle::Header, ink);
-    bottom.drawFooter(DIAG_BUILD_VERSION, "TOUCH L3/R3  HOLD");
+    bottom.drawDisplaySelector(default_display, display_count, settings_open);
+    if (!settings_open)
+        bottom.drawLiveText(18, 226, DIAG_BUILD_VERSION, TextStyle::Small, muted);
     bottom.present(false);
 }
 
@@ -2326,6 +2333,7 @@ static inline void stream_loop(PCONFIGURATION config,
     uint8_t battery_level = 0;
     std::vector<uint16_t> rtt_history;
     const u64 session_started = svcGetSystemTick();
+    char *stream_config_path = (char *)MOONLIGHT_3DS_PATH "/moonlight.conf";
     u64 last_panel_update = 0;
     const bool ptmu_ready = R_SUCCEEDED(ptmuInit());
     MessageDispatcher::get_instance()->post_immediate(
@@ -2351,6 +2359,27 @@ static inline void stream_loop(PCONFIGURATION config,
         }
         if (input_handler && input_handler->consume_stream_panel_settings_request())
             settings_open = !settings_open;
+        if (input_handler) {
+            const int display_action = input_handler->consume_stream_display_action();
+            if (display_action == 2 && settings_open) {
+                config->sunshine_display_count = config->sunshine_display_count >= 12
+                    ? 1 : config->sunshine_display_count + 1;
+                if (config->sunshine_default_display > config->sunshine_display_count)
+                    config->sunshine_default_display = config->sunshine_display_count;
+                config_save(stream_config_path, config);
+            } else if (display_action != 0 && config->sunshine_display_count > 1) {
+                int selected = config->sunshine_default_display + display_action;
+                if (selected < 1) selected = config->sunshine_display_count;
+                if (selected > config->sunshine_display_count) selected = 1;
+                config->sunshine_default_display = selected;
+                config_save(stream_config_path, config);
+                const int key = 0x70 + selected - 1; // VK_F1 ... VK_F12
+                LiSendKeyboardEvent(key, KEY_ACTION_DOWN,
+                                    MODIFIER_CTRL | MODIFIER_ALT | MODIFIER_SHIFT);
+                LiSendKeyboardEvent(key, KEY_ACTION_UP,
+                                    MODIFIER_CTRL | MODIFIER_ALT | MODIFIER_SHIFT);
+            }
+        }
         const u64 now = svcGetSystemTick();
         if (panel_active && now - last_panel_update >= SYSCLOCK_ARM11 / 2) {
             uint32_t rtt_variance = 0;
@@ -2368,7 +2397,8 @@ static inline void stream_loop(PCONFIGURATION config,
                 latest_rtt_ms, rtt_available, rtt_history, session_seconds,
                 battery_available ? static_cast<int>(battery_level) * 20 : -1,
                 input_handler ? input_handler->stream_panel_touch_buttons() : 0,
-                settings_open, config->stream);
+                settings_open, config->stream, config->sunshine_display_count,
+                config->sunshine_default_display);
             last_panel_update = now;
         }
     }

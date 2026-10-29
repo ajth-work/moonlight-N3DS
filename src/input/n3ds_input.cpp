@@ -190,6 +190,7 @@ void N3dsInput::set_stream_panel_enabled(bool enabled) {
         panel_touch_buttons.store(0);
         panel_keyboard_requested.store(false);
         panel_settings_requested.store(false);
+        panel_display_action.store(0);
     }
 }
 
@@ -203,6 +204,12 @@ bool N3dsInput::consume_stream_panel_settings_request() {
     const bool requested = panel_settings_requested.load();
     panel_settings_requested.store(false);
     return requested;
+}
+
+int N3dsInput::consume_stream_display_action() {
+    const int action = panel_display_action.load();
+    panel_display_action.store(0);
+    return action;
 }
 
 void N3dsInput::open_stream_keyboard() {
@@ -230,6 +237,10 @@ void N3dsInput::n3dsinput_handle_event() {
             } else if (touch.py >= 184 && touch.py < 222) {
                 if (touch.px < 160) panel_keyboard_requested.store(true);
                 else panel_settings_requested.store(true);
+            } else if (touch.py >= 222) {
+                if (touch.px < 140) panel_display_action.store(-1);
+                else if (touch.px > 180) panel_display_action.store(1);
+                else panel_display_action.store(2);
             }
         }
         if (kHeld & KEY_TOUCH) {

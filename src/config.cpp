@@ -23,6 +23,7 @@
 #include "util.h"
 
 #include <cstring>
+#include <algorithm>
 #include <fstream>
 #include <getopt.h>
 
@@ -54,6 +55,8 @@ static struct option long_options[] = {
     {"swaptriggersandshoulders", required_argument, NULL, 'B'},
     {"usetriggersformouse", required_argument, NULL, 'C'},
     {"diagnostic_logging", required_argument, NULL, 'D'},
+    {"sunshine_display_count", required_argument, NULL, 'E'},
+    {"sunshine_default_display", required_argument, NULL, 'F'},
     {0, 0, 0, 0},
 };
 
@@ -120,6 +123,12 @@ void parse_argument(int c, char *value, PCONFIGURATION config) {
         config->diagnostic_logging =
             ((value != NULL) && (strcmp(value, "true") == 0));
         break;
+    case 'E':
+        config->sunshine_display_count = std::max(1, std::min(12, atoi(value)));
+        break;
+    case 'F':
+        config->sunshine_default_display = std::max(1, std::min(12, atoi(value)));
+        break;
     case 1:
         if (config->action == NULL)
             config->action = value;
@@ -180,6 +189,8 @@ void config_save(char *filename, PCONFIGURATION config) {
                       config->use_triggers_for_mouse);
     write_config_bool(fd, "motion_controls", config->motion_controls);
     write_config_bool(fd, "diagnostic_logging", config->diagnostic_logging);
+    write_config_int(fd, "sunshine_display_count", config->sunshine_display_count);
+    write_config_int(fd, "sunshine_default_display", config->sunshine_default_display);
 
     if (strcmp(config->app, "Steam") != 0)
         write_config_string(fd, "app", config->app);
@@ -221,8 +232,12 @@ void config_parse(int argc, char *argv[], PCONFIGURATION config) {
     config->swap_triggers_and_shoulders = false;
     config->use_triggers_for_mouse = false;
     config->diagnostic_logging = true;
+    config->sunshine_display_count = 1;
+    config->sunshine_default_display = 1;
 
     config_file_parse(config);
+    if (config->sunshine_default_display > config->sunshine_display_count)
+        config->sunshine_default_display = config->sunshine_display_count;
 
     if (config->stream.bitrate == -1) {
         // This table prefers 16:10 resolutions because they are
