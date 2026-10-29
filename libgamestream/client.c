@@ -941,6 +941,9 @@ int gs_init(PSERVER_DATA server, char *address, unsigned short httpPort, const c
   }
   diag_phase_outcome("connect.load_certificate", "success", GS_OK);
 
+  uintptr_t stack_pointer;
+  __asm__ volatile("mov %0, sp" : "=r"(stack_pointer) : : "memory");
+  diag_stack_checkpoint("connect.http_init.before_phase", stack_pointer);
   diag_set_phase("connect.http_init");
   ret = http_init(keyDirectory, log_level);
   diag_phase_outcome("connect.http_init", ret == GS_OK ? "success" : "failed", ret);

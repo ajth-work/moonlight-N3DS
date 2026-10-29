@@ -511,6 +511,22 @@ void Screen::drawFilledTile(const Rect &rect, int number) {
                   COLOR_MUTED);
 }
 
+void Screen::drawProgressBar(const Rect &rect, unsigned int percent,
+                             Color color) {
+    if (rect.right <= rect.left || rect.bottom <= rect.top) {
+        return;
+    }
+    fillRoundedRect(rect, 4, rgb565({19, 34, 56}));
+    const int inner_width = std::max(0, rect.right - rect.left - 4);
+    const int fill_width = static_cast<int>(
+        std::min(100U, percent) * static_cast<unsigned int>(inner_width) / 100);
+    if (fill_width > 0) {
+        fillRoundedRect({rect.left + 2, rect.top + 2,
+                         rect.left + 2 + fill_width, rect.bottom - 2},
+                        3, rgb565(color));
+    }
+}
+
 void Screen::drawListRow(const Rect &rect, int number,
                          const std::string &label, bool selected) {
     drawFilledTile(rect, number);
@@ -529,9 +545,15 @@ void Screen::drawHeader(const std::string &title,
 }
 
 void Screen::drawFooter(const std::string &version, const std::string &hint) {
+    const std::string build = "Moonlight " + version;
     const std::string footer =
-        "Moonlight " + version + "  ·  " + hint;
-    drawLiveText(14, 226, footer, TextStyle::Small, COLOR_FOOTER);
+        build + "  ·  " + hint;
+    const int available_width = width_ - 28;
+    drawLiveText(14, 226,
+                 measureLiveText(footer, TextStyle::Small) <= available_width
+                     ? footer
+                     : build,
+                 TextStyle::Small, COLOR_FOOTER);
 }
 
 void Screen::drawHighlight(const Rect &rect) {
@@ -548,6 +570,45 @@ void Screen::drawHighlight(const Rect &rect) {
         for (int y = top; y <= bottom; ++y) {
             setPixel(left, y, color);
             setPixel(right, y, color);
+        }
+    }
+}
+
+void Screen::drawFrameTimingGraph(const Rect &rect,
+                                  const std::vector<uint16_t> &intervals_ms,
+                                  uint16_t scale_ms, Color color) {
+    if (rect.right <= rect.left || rect.bottom <= rect.top) {
+        return;
+    }
+
+    const uint16_t grid = rgb565({43, 63, 84});
+    const uint16_t line = rgb565(color);
+    for (int x = rect.left; x <= rect.right; ++x) {
+        setPixel(x, rect.bottom, grid);
+    }
+    for (int y = rect.top; y <= rect.bottom; ++y) {
+        setPixel(rect.left, y, grid);
+    }
+    if (intervals_ms.empty()) {
+        return;
+    }
+
+    const int width = rect.right - rect.left - 1;
+    const int height = rect.bottom - rect.top - 1;
+    const size_t visible = std::min(intervals_ms.size(),
+                                    static_cast<size_t>(std::max(1, width)));
+    const size_t first = intervals_ms.size() - visible;
+    const uint32_t scale = std::max<uint16_t>(1, scale_ms);
+    for (size_t sample = 0; sample < visible; ++sample) {
+        const int x = rect.left + 1 + static_cast<int>(
+            sample * static_cast<size_t>(std::max(1, width)) / visible);
+        const uint32_t value = std::min<uint32_t>(intervals_ms[first + sample],
+                                                  scale);
+        const int bar_height = std::max(
+            1, static_cast<int>(value * static_cast<uint32_t>(height) / scale));
+        for (int y = rect.bottom - 1;
+             y >= rect.bottom - bar_height && y > rect.top; --y) {
+            setPixel(x, y, line);
         }
     }
 }
@@ -593,6 +654,11 @@ bool runScreen(ScreenModel &model) {
     Screen screen;
     bool redraw = true;
     while (aptMainLoop()) {
+        bool updated = false;
+        if (!model.update(&updated)) {
+            return true;
+        }
+        redraw = redraw || updated;
         if (redraw) {
             screen.drawBackground();
             model.draw(screen);

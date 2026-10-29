@@ -11,7 +11,9 @@ extern "C" {
 #endif
 
 #define DIAG_WATCHDOG_LIMIT_MS 30000ULL
-#define DIAG_BUILD_VERSION "3.3.0-gui1"
+#define DIAG_BUILD_VERSION "3.3.0-gui3-stackdiag3"
+#define DIAG_MAIN_STACK_REQUESTED_SIZE 0x40000U
+/* app.rsf SystemControlInfo.StackSize */
 #define DIAG_LOG_LINE_MAX 512
 #define DIAG_RECENT_LINE_COUNT 8
 #define DIAG_CERT_FINGERPRINT_HEX_LENGTH 64
@@ -27,8 +29,12 @@ typedef enum {
 void diag_init(void);
 void diag_close(void);
 void diag_log(const char *event, const char *format, ...);
+void diag_stack_checkpoint(const char *boundary, uintptr_t stack_pointer);
 void diag_set_phase(const char *phase);
 void diag_phase_outcome(const char *phase, const char *outcome, int result);
+/* Begin before host initialization; flush only after its call stack unwinds. */
+void diag_http_summary_begin(void);
+void diag_http_summary_flush(int result, bool cancelled);
 void diag_http_begin(const char *method, const char *safe_url);
 void diag_http_end(long status_code, int transport_result);
 void diag_get_active_http(char *out, unsigned int capacity, bool *active);

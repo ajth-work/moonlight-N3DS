@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace MoonlightUi {
 
@@ -56,11 +57,15 @@ class Screen {
     int height() const;
     void drawBackground();
     void drawFilledTile(const Rect &rect, int number);
+    void drawProgressBar(const Rect &rect, unsigned int percent, Color color);
     void drawListRow(const Rect &rect, int number, const std::string &label,
                      bool selected);
     void drawHeader(const std::string &title, const std::string &context);
     void drawFooter(const std::string &version, const std::string &hint);
     void drawHighlight(const Rect &rect);
+    void drawFrameTimingGraph(const Rect &rect,
+                              const std::vector<uint16_t> &intervals_ms,
+                              uint16_t scale_ms, Color color);
     void drawLiveText(int x, int y, const std::string &text, TextStyle style,
                       Color color);
     void drawAutoRateText(int x, int y, const std::string &text,
@@ -85,6 +90,11 @@ class ScreenModel {
   public:
     virtual ~ScreenModel() = default;
     virtual void draw(Screen &screen) = 0;
+    // Called once per frame; return false to dismiss the screen.
+    virtual bool update(bool *redraw) {
+        *redraw = false;
+        return true;
+    }
     // Return false to leave the screen. Set redraw when visible state changed.
     virtual bool handleInput(const InputEvent &event, bool *redraw) = 0;
 };

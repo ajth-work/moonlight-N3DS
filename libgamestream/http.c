@@ -50,6 +50,8 @@ static bool tls_combined_identity_created;
 static mbedtls_x509_crt tls_mbed_certificate;
 static mbedtls_pk_context tls_mbed_private_key;
 static bool tls_mbed_identity_initialized;
+/* http_init is a serialized singleton path; keep path assembly off its stack. */
+static char tls_identity_file_path[4096];
 
 static bool _read_identity_file(const char *path, unsigned char **contents,
                                 size_t *length) {
@@ -86,6 +88,32 @@ static bool _read_identity_file(const char *path, unsigned char **contents,
         free(buffer);
     }
     return success;
+}
+
+static bool _read_identity_file_from_directory(const char *directory,
+                                               const char *filename,
+                                               unsigned char **contents,
+                                               size_t *length) {
+    size_t directory_length;
+    size_t filename_length;
+
+    if (directory == NULL || filename == NULL) {
+        return false;
+    }
+
+    directory_length = strlen(directory);
+    filename_length = strlen(filename);
+    if (directory_length > sizeof(tls_identity_file_path) - 2 ||
+        filename_length > sizeof(tls_identity_file_path) -
+                              directory_length - 2) {
+        return false;
+    }
+
+    memcpy(tls_identity_file_path, directory, directory_length);
+    tls_identity_file_path[directory_length] = '/';
+    memcpy(tls_identity_file_path + directory_length + 1, filename,
+           filename_length + 1);
+    return _read_identity_file(tls_identity_file_path, contents, length);
 }
 
 static void _free_tls_identity(void) {
@@ -465,8 +493,10 @@ int http_init(const char *keyDirectory, int logLevel) {
     int parse_private_key_result;
     mbedtls_pk_type_t private_key_type_id;
     const char *private_key_type;
-    char certificateFilePath[4096];
-    char keyFilePath[4096];
+
+    uintptr_t stack_pointer;
+    __asm__ volatile("mov %0, sp" : "=r"(stack_pointer) : : "memory");
+    diag_stack_checkpoint("connect.http_init.entry", stack_pointer);
 
     curl = curl_easy_init();
     if (!curl)
@@ -482,12 +512,6 @@ int http_init(const char *keyDirectory, int logLevel) {
              curl_info != NULL && curl_info->ssl_version != NULL
                  ? curl_info->ssl_version : "unavailable");
 
-    snprintf(certificateFilePath, sizeof(certificateFilePath), "%s/%s",
-             keyDirectory, CERTIFICATE_FILE_NAME);
-
-    snprintf(keyFilePath, sizeof(keyFilePath), "%s/%s", keyDirectory,
-             KEY_FILE_NAME);
-
     log_level = logLevel;
     tls_trace_attempted = false;
     tls_trace_request_active = false;
@@ -498,10 +522,12 @@ int http_init(const char *keyDirectory, int logLevel) {
     mbedtls_x509_crt_init(&tls_mbed_certificate);
     mbedtls_pk_init(&tls_mbed_private_key);
     tls_mbed_identity_initialized = true;
-    if (!_read_identity_file(certificateFilePath, &tls_certificate_pem,
-                             &tls_certificate_pem_length) ||
-        !_read_identity_file(keyFilePath, &tls_private_key_pem,
-                             &tls_private_key_pem_length)) {
+    if (!_read_identity_file_from_directory(
+            keyDirectory, CERTIFICATE_FILE_NAME, &tls_certificate_pem,
+            &tls_certificate_pem_length) ||
+        !_read_identity_file_from_directory(
+            keyDirectory, KEY_FILE_NAME, &tls_private_key_pem,
+            &tls_private_key_pem_length)) {
         diag_log("TLS_IDENTITY_LOAD", "result=failed source=existing_pem_files");
         curl_easy_cleanup(curl);
         curl = NULL;
@@ -605,7 +631,9 @@ static CURLcode _perform_https_attempt(const char *url, PHTTP_DATA data,
 }
 
 int http_request(char *url, PHTTP_DATA data) {
-    char safe_url[4096];
+    /* Diagnostic-only truncation; CURLOPT_URL still receives the original URL.
+     * Per-call storage avoids races without holding a lock across curl. */
+    char safe_url[384];
     long response_code = 0;
     bool https = _is_https(url);
     bool capture_tls = https && !tls_trace_attempted;

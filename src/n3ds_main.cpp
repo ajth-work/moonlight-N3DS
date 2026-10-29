@@ -38,6 +38,8 @@
 
 #include <arpa/inet.h>
 #include <algorithm>
+#include <cerrno>
+#include <climits>
 #include <cstdlib>
 #include <exception>
 #include <fstream>
@@ -316,6 +318,7 @@ static std::string prompt_for_action(PSERVER_DATA server) {
         std::vector<std::string> actions = {
             "stream",
             "stream profile",
+            "connection test",
             "quit stream",
             "stream settings",
             "unpair",
@@ -562,18 +565,26 @@ static bool prompt_for_boolean(std::string prompt, bool default_val) {
 }
 
 static int prompt_for_int(std::string initial_text) {
-    char *setting_buff = (char *)malloc(MAX_INPUT_CHAR);
-    memset(setting_buff, 0, MAX_INPUT_CHAR);
+    const int previous = std::stoi(initial_text);
+    char setting_buff[MAX_INPUT_CHAR] = {};
 
     SwkbdState swkbd;
-    swkbdInit(&swkbd, SWKBD_TYPE_NUMPAD, 1, 8);
+    swkbdInit(&swkbd, SWKBD_TYPE_NUMPAD, 2, 8);
     swkbdSetInitialText(&swkbd, initial_text.c_str());
-    swkbdInputText(&swkbd, setting_buff, MAX_INPUT_CHAR);
+    SwkbdButton button = swkbdInputText(&swkbd, setting_buff, MAX_INPUT_CHAR);
     std::string setting_str = std::string(setting_buff);
-
-    free(setting_buff);
     trim(setting_str);
-    return std::stoi(setting_str);
+    if (button != SWKBD_BUTTON_CONFIRM || setting_str.empty()) {
+        return previous;
+    }
+    errno = 0;
+    char *end = NULL;
+    long value = strtol(setting_str.c_str(), &end, 10);
+    if (errno == ERANGE || end == setting_str.c_str() || *end != '\0' ||
+        value < INT_MIN || value > INT_MAX) {
+        return previous;
+    }
+    return static_cast<int>(value);
 }
 
 static void prompt_for_stream_settings(PCONFIGURATION config) {
@@ -717,10 +728,16 @@ static bool load_host_stream_profile(const std::string &host_key,
     while (std::getline(file, line)) {
         std::istringstream record(line);
         std::string stored_host;
+        std::string record_type;
         StreamProfilePick stored_pick{};
-        if (record >> std::quoted(stored_host) >> stored_pick.resolution_index >>
-                stored_pick.rate_index &&
-            stored_host == host_key && valid_stream_profile_pick(stored_pick)) {
+        if (!(record >> std::quoted(stored_host) >> record_type) ||
+            stored_host != host_key || record_type == "T") {
+            continue;
+        }
+        std::istringstream resolution_record(record_type);
+        if (resolution_record >> stored_pick.resolution_index &&
+            record >> stored_pick.rate_index &&
+            valid_stream_profile_pick(stored_pick)) {
             *pick = stored_pick;
             return true;
         }
@@ -728,36 +745,104 @@ static bool load_host_stream_profile(const std::string &host_key,
     return false;
 }
 
-static bool save_host_stream_profile(const std::string &host_key,
-                                     const StreamProfilePick &pick) {
+struct ConnectionTestProfile {
+    int resolution_index;
+    int fps30_bitrate;
+    int fps60_bitrate;
+};
+
+static bool valid_connection_test_profile(
+    const ConnectionTestProfile &profile) {
+    return profile.resolution_index >= 0 && profile.resolution_index < 3 &&
+           profile.fps30_bitrate > 0 && profile.fps60_bitrate > 0;
+}
+
+static bool load_connection_test_profile(
+    const std::string &host_key, int resolution_index,
+    ConnectionTestProfile *profile) {
+    std::ifstream file(stream_profile_store_path());
+    std::string line;
+    while (std::getline(file, line)) {
+        std::istringstream record(line);
+        std::string stored_host;
+        std::string record_type;
+        ConnectionTestProfile stored{};
+        if ((record >> std::quoted(stored_host) >> record_type) &&
+            stored_host == host_key && record_type == "T" &&
+            record >> stored.resolution_index >> stored.fps30_bitrate >>
+                stored.fps60_bitrate &&
+            valid_connection_test_profile(stored) &&
+            stored.resolution_index == resolution_index) {
+            *profile = stored;
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool save_connection_test_profile(
+    const std::string &host_key, const ConnectionTestProfile &profile) {
+    if (!valid_connection_test_profile(profile)) {
+        return false;
+    }
     const std::string path = stream_profile_store_path();
-    std::vector<std::pair<std::string, StreamProfilePick>> profiles;
+    std::vector<std::string> records;
     std::ifstream existing_file(path);
     std::string line;
     while (std::getline(existing_file, line)) {
         std::istringstream record(line);
         std::string stored_host;
-        StreamProfilePick stored_pick{};
-        if (!(record >> std::quoted(stored_host) >>
-              stored_pick.resolution_index >> stored_pick.rate_index) ||
-            !valid_stream_profile_pick(stored_pick)) {
+        std::string record_type;
+        int stored_resolution = -1;
+        if ((record >> std::quoted(stored_host) >> record_type) &&
+            stored_host == host_key && record_type == "T" &&
+            record >> stored_resolution &&
+            stored_resolution == profile.resolution_index) {
             continue;
         }
-        if (stored_host != host_key) {
-            profiles.push_back({stored_host, stored_pick});
-        }
+        records.push_back(line);
     }
-    profiles.push_back({host_key, pick});
 
     std::ofstream profile_file(path, std::ios::trunc);
     if (!profile_file) {
         return false;
     }
-    for (const auto &profile : profiles) {
-        profile_file << std::quoted(profile.first) << ' '
-                     << profile.second.resolution_index << ' '
-                     << profile.second.rate_index << '\n';
+    for (const std::string &existing_record : records) {
+        profile_file << existing_record << '\n';
     }
+    profile_file << std::quoted(host_key) << " T "
+                 << profile.resolution_index << ' ' << profile.fps30_bitrate
+                 << ' ' << profile.fps60_bitrate << '\n';
+    profile_file.close();
+    return static_cast<bool>(profile_file);
+}
+
+static bool save_host_stream_profile(const std::string &host_key,
+                                     const StreamProfilePick &pick) {
+    const std::string path = stream_profile_store_path();
+    std::vector<std::string> records;
+    std::ifstream existing_file(path);
+    std::string line;
+    while (std::getline(existing_file, line)) {
+        std::istringstream record(line);
+        std::string stored_host;
+        std::string record_type;
+        if ((record >> std::quoted(stored_host) >> record_type) &&
+            stored_host == host_key && record_type != "T") {
+            continue;
+        }
+        records.push_back(line);
+    }
+
+    std::ofstream profile_file(path, std::ios::trunc);
+    if (!profile_file) {
+        return false;
+    }
+    for (const std::string &existing_record : records) {
+        profile_file << existing_record << '\n';
+    }
+    profile_file << std::quoted(host_key) << ' ' << pick.resolution_index
+                 << ' ' << pick.rate_index << '\n';
     profile_file.close();
     if (!profile_file) {
         return false;
@@ -1114,6 +1199,910 @@ static int prompt_for_app_id(PSERVER_DATA server) {
     return app_ids[id_idx];
 }
 
+struct GuiCallTask {
+    DiagnosticTaskFunction function;
+    void *context;
+    AtomicVar<bool> done{false};
+    bool cancellable_http;
+    bool interrupt_connection;
+};
+
+static void gui_call_entry(void *opaque) {
+    GuiCallTask *task = static_cast<GuiCallTask *>(opaque);
+    task->function(task->context);
+    task->done.store(true);
+}
+
+class GuiCallProgressScreen : public MoonlightUi::ScreenModel {
+  public:
+    GuiCallProgressScreen(GuiCallTask *task, const std::string &title)
+        : task_(task), title_(title) {}
+
+    void draw(MoonlightUi::Screen &screen) override {
+        screen.drawHeader("CONNECTION TEST", title_);
+        screen.drawLiveText(20, 98,
+                            cancelling_ ? "Cancelling request..."
+                                        : "Waiting for the host...",
+                            MoonlightUi::TextStyle::Header, {242, 247, 250});
+        screen.drawLiveText(20, 137,
+                            cancelling_ ? "Waiting for cleanup"
+                                        : "This screen can be cancelled",
+                            MoonlightUi::TextStyle::Small, {130, 160, 184});
+        screen.drawFooter(DIAG_BUILD_VERSION,
+                          task_->cancellable_http || task_->interrupt_connection
+                              ? "B CANCEL"
+                              : "PLEASE WAIT");
+    }
+
+    bool update(bool *redraw) override {
+        ++frames_;
+        *redraw = frames_ % 15 == 0;
+        return !task_->done.load();
+    }
+
+    bool handleInput(const MoonlightUi::InputEvent &event,
+                     bool *redraw) override {
+        *redraw = false;
+        if (event.type == MoonlightUi::InputEvent::Type::Back && !cancelling_ &&
+            (task_->cancellable_http || task_->interrupt_connection)) {
+            cancelling_ = true;
+            if (task_->interrupt_connection) {
+                LiInterruptConnection();
+            }
+            if (task_->cancellable_http) {
+                diag_request_cancel();
+            }
+            *redraw = true;
+        }
+        return true;
+    }
+
+    bool cancelled() const { return cancelling_; }
+
+  private:
+    GuiCallTask *task_;
+    std::string title_;
+    unsigned int frames_ = 0;
+    bool cancelling_ = false;
+};
+
+static bool run_gui_call(const char *phase, const std::string &title,
+                         DiagnosticTaskFunction function, void *context,
+                         bool cancellable_http = true,
+                         bool interrupt_connection = false) {
+    GuiCallTask task{function, context, {false}, cancellable_http,
+                     interrupt_connection};
+    s32 priority = 0x30;
+    svcGetThreadPriority(&priority, CUR_THREAD_HANDLE);
+    diag_cancel_reset();
+    diag_set_phase(phase);
+    Thread worker = threadCreate(gui_call_entry, &task, 0x20000, priority, -1,
+                                 false);
+    if (worker == NULL) {
+        diag_log("GUI_TASK_ERROR", "phase=%s reason=threadCreate failed",
+                 phase);
+        return false;
+    }
+    GuiCallProgressScreen screen(&task, title);
+    const bool screen_finished = MoonlightUi::runScreen(screen);
+    if (!screen_finished && !task.done.load()) {
+        if (interrupt_connection) {
+            LiInterruptConnection();
+        }
+        if (cancellable_http) {
+            diag_request_cancel();
+        }
+    }
+    threadJoin(worker, 0xFFFFFFFFFFFFFFFFULL);
+    threadFree(worker);
+    diag_phase_outcome(phase, screen.cancelled() ? "cancelled" : "returned",
+                       screen.cancelled() ? -1 : GS_OK);
+    restore_bottom_console();
+    return screen.cancelled() || !screen_finished;
+}
+
+struct ConnectionTestApp {
+    int id;
+    std::string name;
+};
+
+static std::string fit_connection_test_text(
+    const MoonlightUi::Screen &screen, std::string text, int max_width,
+    MoonlightUi::TextStyle style) {
+    if (screen.measureLiveText(text, style) <= max_width) {
+        return text;
+    }
+    while (!text.empty() &&
+           screen.measureLiveText(text + "...", style) > max_width) {
+        size_t last = text.size() - 1;
+        while (last > 0 &&
+               (static_cast<unsigned char>(text[last]) & 0xC0) == 0x80) {
+            --last;
+        }
+        text.erase(last);
+    }
+    return text + "...";
+}
+
+class ConnectionTestAppPickerScreen : public MoonlightUi::ScreenModel {
+  public:
+    explicit ConnectionTestAppPickerScreen(
+        const std::vector<ConnectionTestApp> &apps)
+        : apps_(apps) {}
+
+    enum class Result { Cancelled, Selected };
+
+    void draw(MoonlightUi::Screen &screen) override {
+        screen.drawHeader("CONNECTION TEST", "CHOOSE A HOST APP");
+        const int visible = visible_count();
+        const int first = first_visible();
+        for (int row = 0; row < visible; ++row) {
+            const int index = first + row;
+            if (index >= static_cast<int>(apps_.size())) {
+                break;
+            }
+            const int y = 68 + row * 24;
+            const std::string visible_name = fit_connection_test_text(
+                screen, apps_[index].name, 250,
+                MoonlightUi::TextStyle::Header);
+            screen.drawListRow({14, y, 306, y + 21}, index + 1,
+                               visible_name, index == selected_index_);
+        }
+        screen.drawFooter(DIAG_BUILD_VERSION, "A CHOOSE  B BACK");
+    }
+
+    bool handleInput(const MoonlightUi::InputEvent &event,
+                     bool *redraw) override {
+        *redraw = false;
+        if (event.type == MoonlightUi::InputEvent::Type::Back) {
+            result_ = Result::Cancelled;
+            return false;
+        }
+        if (apps_.empty()) {
+            return true;
+        }
+        if (event.type == MoonlightUi::InputEvent::Type::Confirm) {
+            result_ = Result::Selected;
+            return false;
+        }
+        if (event.type == MoonlightUi::InputEvent::Type::Touch) {
+            const int first = first_visible();
+            const int row = (event.touch.py - 68) / 24;
+            const int index = first + row;
+            if (event.touch.py >= 68 && row >= 0 && row < visible_count() &&
+                index < static_cast<int>(apps_.size())) {
+                selected_index_ = index;
+                result_ = Result::Selected;
+                return false;
+            }
+            return true;
+        }
+        if (event.type == MoonlightUi::InputEvent::Type::Direction) {
+            const int old = selected_index_;
+            if (event.direction == MoonlightUi::Direction::Up &&
+                selected_index_ > 0) {
+                --selected_index_;
+            } else if (event.direction == MoonlightUi::Direction::Down &&
+                       selected_index_ + 1 < static_cast<int>(apps_.size())) {
+                ++selected_index_;
+            }
+            *redraw = old != selected_index_;
+        }
+        return true;
+    }
+
+    Result result() const { return result_; }
+    const ConnectionTestApp &selected_app() const {
+        return apps_[selected_index_];
+    }
+
+  private:
+    const std::vector<ConnectionTestApp> &apps_;
+    int selected_index_ = 0;
+    Result result_ = Result::Cancelled;
+
+    int visible_count() const {
+        return std::max(1, std::min(6, static_cast<int>(apps_.size())));
+    }
+    int first_visible() const {
+        return std::max(0, std::min(selected_index_ - visible_count() + 1,
+                                    static_cast<int>(apps_.size()) -
+                                        visible_count()));
+    }
+};
+
+class ConnectionTestQualityScreen : public MoonlightUi::ScreenModel {
+  public:
+    enum class Result { Cancelled, Selected };
+    static const MoonlightUi::Rect TILES[3];
+
+    void draw(MoonlightUi::Screen &screen) override {
+        screen.drawHeader("CONNECTION TEST", "CHOOSE ONE QUALITY BRACKET");
+        for (int index = 0; index < 3; ++index) {
+            const auto &tile = TILES[index];
+            screen.drawFilledTile(tile, index + 1);
+            screen.drawLiveText(tile.left + 20, tile.top + 25,
+                                std::to_string(STREAM_PROFILE_WIDTHS[index]) +
+                                    "x" +
+                                    std::to_string(STREAM_PROFILE_HEIGHTS[index]),
+                                MoonlightUi::TextStyle::Tile,
+                                {242, 247, 250});
+        }
+        screen.drawHighlight(TILES[selected_index_]);
+        screen.drawFooter(DIAG_BUILD_VERSION, "A CHOOSE  B BACK");
+    }
+
+    bool handleInput(const MoonlightUi::InputEvent &event,
+                     bool *redraw) override {
+        *redraw = false;
+        if (event.type == MoonlightUi::InputEvent::Type::Back) {
+            result_ = Result::Cancelled;
+            return false;
+        }
+        if (event.type == MoonlightUi::InputEvent::Type::Confirm) {
+            result_ = Result::Selected;
+            return false;
+        }
+        if (event.type == MoonlightUi::InputEvent::Type::Touch) {
+            for (int index = 0; index < 3; ++index) {
+                const auto &tile = TILES[index];
+                if (event.touch.px >= tile.left &&
+                    event.touch.px <= tile.right &&
+                    event.touch.py >= tile.top &&
+                    event.touch.py <= tile.bottom) {
+                    selected_index_ = index;
+                    result_ = Result::Selected;
+                    return false;
+                }
+            }
+            return true;
+        }
+        if (event.type == MoonlightUi::InputEvent::Type::Direction) {
+            const int old = selected_index_;
+            if ((event.direction == MoonlightUi::Direction::Left ||
+                 event.direction == MoonlightUi::Direction::Up) &&
+                selected_index_ > 0) {
+                --selected_index_;
+            } else if ((event.direction == MoonlightUi::Direction::Right ||
+                        event.direction == MoonlightUi::Direction::Down) &&
+                       selected_index_ < 2) {
+                ++selected_index_;
+            }
+            *redraw = old != selected_index_;
+        }
+        return true;
+    }
+
+    Result result() const { return result_; }
+    int resolution_index() const { return selected_index_; }
+
+  private:
+    int selected_index_ = 0;
+    Result result_ = Result::Cancelled;
+};
+
+const MoonlightUi::Rect ConnectionTestQualityScreen::TILES[3] = {
+    {14, 75, 154, 142}, {166, 75, 306, 142}, {90, 151, 230, 218}};
+
+static const int CONNECTION_TEST_BITRATES[3][3] = {
+    {1000, 2000, 3000}, {3000, 6000, 9000}, {5000, 10000, 15000}};
+static const unsigned int CONNECTION_TEST_RUNG_MS = 8000;
+static const size_t CONNECTION_TEST_MAX_SAMPLES = 600;
+
+struct ConnectionTestMetricsSnapshot {
+    unsigned int frames = 0;
+    std::vector<uint16_t> frame_intervals_ms;
+    std::vector<uint16_t> frame_receive_spans_ms;
+    std::vector<uint16_t> host_processing_ms;
+    std::vector<uint16_t> local_submit_ms;
+    std::vector<uint16_t> control_rtt_ms;
+    std::vector<uint16_t> control_rtt_variance_ms;
+};
+
+class ConnectionTestMetrics {
+  public:
+    void reset() {
+        lock_.lock();
+        frames_ = 0;
+        previous_receive_us_ = 0;
+        clear_series(frame_intervals_ms_);
+        clear_series(frame_receive_spans_ms_);
+        clear_series(host_processing_ms_);
+        clear_series(local_submit_ms_);
+        clear_series(control_rtt_ms_);
+        clear_series(control_rtt_variance_ms_);
+        lock_.unlock();
+    }
+
+    void record_frame(PDECODE_UNIT unit, uint32_t local_submit_us) {
+        if (unit == nullptr) {
+            return;
+        }
+        lock_.lock();
+        ++frames_;
+        // receiveTimeUs is the first-packet arrival time; this records frame
+        // delivery intervals, not one-way latency or decoded/displayed FPS.
+        if (unit->receiveTimeUs != 0 && previous_receive_us_ != 0 &&
+            unit->receiveTimeUs > previous_receive_us_) {
+            append(frame_intervals_ms_, static_cast<uint16_t>(std::min<uint64_t>(
+                65535, (unit->receiveTimeUs - previous_receive_us_ + 500) /
+                          1000)));
+        }
+        if (unit->receiveTimeUs != 0) {
+            previous_receive_us_ = unit->receiveTimeUs;
+        }
+        // The Moonlight depacketizer documents this difference as frame
+        // receive/assembly span. It is kept separate from the ENet RTT sample.
+        if (unit->enqueueTimeUs >= unit->receiveTimeUs &&
+            unit->receiveTimeUs != 0) {
+            append(frame_receive_spans_ms_, static_cast<uint16_t>(
+                std::min<uint64_t>(65535,
+                                   (unit->enqueueTimeUs - unit->receiveTimeUs +
+                                    500) /
+                                       1000)));
+        }
+        if (unit->frameHostProcessingLatency != 0) {
+            append(host_processing_ms_, static_cast<uint16_t>(
+                (unit->frameHostProcessingLatency + 5) / 10));
+        }
+        append(local_submit_ms_, static_cast<uint16_t>(std::min<uint32_t>(
+            65535, (local_submit_us + 999) / 1000)));
+        lock_.unlock();
+    }
+
+    void record_control_rtt(uint32_t rtt_ms, uint32_t variance_ms) {
+        lock_.lock();
+        append(control_rtt_ms_, static_cast<uint16_t>(
+                                    std::min<uint32_t>(65535, rtt_ms)));
+        append(control_rtt_variance_ms_, static_cast<uint16_t>(
+                                             std::min<uint32_t>(65535,
+                                                                variance_ms)));
+        lock_.unlock();
+    }
+
+    ConnectionTestMetricsSnapshot snapshot() {
+        ConnectionTestMetricsSnapshot result;
+        lock_.lock();
+        result.frames = frames_;
+        copy_series(frame_intervals_ms_, &result.frame_intervals_ms);
+        copy_series(frame_receive_spans_ms_, &result.frame_receive_spans_ms);
+        copy_series(host_processing_ms_, &result.host_processing_ms);
+        copy_series(local_submit_ms_, &result.local_submit_ms);
+        copy_series(control_rtt_ms_, &result.control_rtt_ms);
+        copy_series(control_rtt_variance_ms_,
+                    &result.control_rtt_variance_ms);
+        lock_.unlock();
+        return result;
+    }
+
+  private:
+    struct Series {
+        uint16_t values[CONNECTION_TEST_MAX_SAMPLES] = {};
+        size_t count = 0;
+        size_t next = 0;
+    };
+
+    ThreadLock lock_;
+    unsigned int frames_ = 0;
+    uint64_t previous_receive_us_ = 0;
+    Series frame_intervals_ms_;
+    Series frame_receive_spans_ms_;
+    Series host_processing_ms_;
+    Series local_submit_ms_;
+    Series control_rtt_ms_;
+    Series control_rtt_variance_ms_;
+
+    static void clear_series(Series &series) {
+        series.count = 0;
+        series.next = 0;
+    }
+    static void append(Series &series, uint16_t value) {
+        series.values[series.next] = value;
+        series.next = (series.next + 1) % CONNECTION_TEST_MAX_SAMPLES;
+        if (series.count < CONNECTION_TEST_MAX_SAMPLES) {
+            ++series.count;
+        }
+    }
+    static void copy_series(const Series &series,
+                            std::vector<uint16_t> *destination) {
+        destination->clear();
+        destination->reserve(series.count);
+        const size_t first =
+            (series.next + CONNECTION_TEST_MAX_SAMPLES - series.count) %
+            CONNECTION_TEST_MAX_SAMPLES;
+        for (size_t index = 0; index < series.count; ++index) {
+            destination->push_back(
+                series.values[(first + index) % CONNECTION_TEST_MAX_SAMPLES]);
+        }
+    }
+};
+
+struct ConnectionTestSession {
+    AtomicVar<bool> terminated{false};
+    AtomicVar<int> termination_error{0};
+    AtomicVar<bool> poor_status_seen{false};
+};
+
+static ConnectionTestSession *active_connection_test_session = nullptr;
+
+static void connection_test_terminated(int error_code) {
+    if (active_connection_test_session != nullptr) {
+        active_connection_test_session->termination_error.store(error_code);
+        active_connection_test_session->terminated.store(true);
+    }
+    N3dsConnectionListener *listener = N3dsConnectionListener::get_instance();
+    if (listener != nullptr) {
+        listener->connection_terminated(error_code, false);
+    }
+}
+
+static void connection_test_status_update(int status) {
+    if (status == CONN_STATUS_POOR &&
+        active_connection_test_session != nullptr) {
+        active_connection_test_session->poor_status_seen.store(true);
+    }
+    if (n3ds_connection_callbacks.connectionStatusUpdate != nullptr) {
+        n3ds_connection_callbacks.connectionStatusUpdate(status);
+    }
+}
+
+static int connection_test_submit_decode_unit(
+    PDECODER_RENDERER_CALLBACKS delegate, ConnectionTestMetrics *metrics,
+    PDECODE_UNIT unit) {
+    if (delegate == nullptr || delegate->submitDecodeUnit == nullptr) {
+        return DR_OK;
+    }
+    const u64 started = svcGetSystemTick();
+    const int status = delegate->submitDecodeUnit(unit);
+    const u64 elapsed_ticks = svcGetSystemTick() - started;
+    const uint32_t elapsed_us = static_cast<uint32_t>(std::min<uint64_t>(
+        UINT32_MAX, elapsed_ticks * 1000000ULL / SYSCLOCK_ARM11));
+    metrics->record_frame(unit, elapsed_us);
+    return status;
+}
+
+static PDECODER_RENDERER_CALLBACKS connection_test_delegate = nullptr;
+static ConnectionTestMetrics *connection_test_active_metrics = nullptr;
+
+static int connection_test_video_setup(int video_format, int width, int height,
+                                       int redraw_rate, void *context,
+                                       int dr_flags) {
+    if (connection_test_delegate == nullptr ||
+        connection_test_delegate->setup == nullptr) {
+        return -1;
+    }
+    return connection_test_delegate->setup(video_format, width, height,
+                                           redraw_rate, context, dr_flags);
+}
+
+static void connection_test_video_start() {
+    if (connection_test_delegate != nullptr &&
+        connection_test_delegate->start != nullptr) {
+        connection_test_delegate->start();
+    }
+}
+
+static void connection_test_video_stop() {
+    if (connection_test_delegate != nullptr &&
+        connection_test_delegate->stop != nullptr) {
+        connection_test_delegate->stop();
+    }
+}
+
+static void connection_test_video_cleanup() {
+    if (connection_test_delegate != nullptr &&
+        connection_test_delegate->cleanup != nullptr) {
+        connection_test_delegate->cleanup();
+    }
+}
+
+static int connection_test_video_submit(PDECODE_UNIT unit) {
+    return connection_test_submit_decode_unit(
+        connection_test_delegate, connection_test_active_metrics, unit);
+}
+
+static DECODER_RENDERER_CALLBACKS connection_test_video_callbacks = {};
+
+static PDECODER_RENDERER_CALLBACKS wrap_connection_test_video_callbacks(
+    PDECODER_RENDERER_CALLBACKS delegate, ConnectionTestMetrics *metrics) {
+    connection_test_delegate = delegate;
+    connection_test_active_metrics = metrics;
+    connection_test_video_callbacks.setup = connection_test_video_setup;
+    connection_test_video_callbacks.start = connection_test_video_start;
+    connection_test_video_callbacks.stop = connection_test_video_stop;
+    connection_test_video_callbacks.cleanup = connection_test_video_cleanup;
+    connection_test_video_callbacks.submitDecodeUnit =
+        connection_test_video_submit;
+    connection_test_video_callbacks.capabilities = delegate->capabilities;
+    return &connection_test_video_callbacks;
+}
+
+static uint16_t percentile_ms(std::vector<uint16_t> samples,
+                              unsigned int percentile) {
+    if (samples.empty()) {
+        return 0;
+    }
+    std::sort(samples.begin(), samples.end());
+    const size_t index = std::min(
+        samples.size() - 1,
+        (samples.size() * percentile + 99) / 100 - 1);
+    return samples[index];
+}
+
+struct ConnectionTestRung {
+    int fps = 0;
+    int bitrate = 0;
+    bool attempted = false;
+    bool skipped = false;
+    bool connected = false;
+    bool stable = false;
+    bool cancelled = false;
+    bool stream_ended_early = false;
+    int connection_error = 0;
+    unsigned int duration_ms = 0;
+    unsigned int submitted_units_per_second = 0;
+    bool cleanup_failed = false;
+    bool poor_status = false;
+    bool local_work_over_budget = false;
+    bool delivery_timing_over_budget = false;
+    unsigned int frames = 0;
+    uint16_t p95_interval_ms = 0;
+    uint16_t p95_receive_span_ms = 0;
+    uint16_t p95_host_processing_ms = 0;
+    uint16_t p95_local_submit_ms = 0;
+    uint16_t median_control_rtt_ms = 0;
+    uint16_t p95_control_rtt_variance_ms = 0;
+    std::vector<uint16_t> frame_intervals_ms;
+};
+
+static void finish_connection_test_rung(ConnectionTestRung *rung,
+                                        ConnectionTestMetrics *metrics,
+                                        unsigned int duration_ms) {
+    rung->duration_ms = duration_ms;
+    const ConnectionTestMetricsSnapshot snapshot = metrics->snapshot();
+    rung->frames = snapshot.frames;
+    if (duration_ms > 0) {
+        rung->submitted_units_per_second =
+            static_cast<unsigned int>(snapshot.frames * 1000ULL / duration_ms);
+    }
+    rung->p95_interval_ms =
+        percentile_ms(snapshot.frame_intervals_ms, 95);
+    rung->p95_receive_span_ms =
+        percentile_ms(snapshot.frame_receive_spans_ms, 95);
+    rung->p95_host_processing_ms =
+        percentile_ms(snapshot.host_processing_ms, 95);
+    rung->p95_local_submit_ms = percentile_ms(snapshot.local_submit_ms, 95);
+    rung->median_control_rtt_ms =
+        percentile_ms(snapshot.control_rtt_ms, 50);
+    rung->p95_control_rtt_variance_ms =
+        percentile_ms(snapshot.control_rtt_variance_ms, 95);
+    rung->frame_intervals_ms = snapshot.frame_intervals_ms;
+
+    const unsigned int expected_frames =
+        static_cast<unsigned int>(rung->fps) * duration_ms / 1000;
+    const uint16_t frame_period_ms =
+        static_cast<uint16_t>((1000 + rung->fps - 1) / rung->fps);
+    const bool adequate_frame_count =
+        rung->frames >= (expected_frames * 85) / 100;
+    const bool adequate_timing =
+        rung->p95_interval_ms <= (frame_period_ms * 3) / 2;
+    const bool local_work_in_budget =
+        rung->p95_local_submit_ms <= frame_period_ms;
+    rung->local_work_over_budget = !local_work_in_budget;
+    rung->delivery_timing_over_budget =
+        !adequate_frame_count || !adequate_timing || rung->poor_status;
+    rung->stable = rung->connected && !rung->stream_ended_early &&
+                   !rung->poor_status &&
+                   duration_ms >= 7000 &&
+                   adequate_frame_count &&
+                   adequate_timing && local_work_in_budget;
+}
+
+class ConnectionTestStreamScreen : public MoonlightUi::ScreenModel {
+  public:
+    ConnectionTestStreamScreen(ConnectionTestMetrics *metrics,
+                               ConnectionTestSession *session,
+                               const std::string &app_name, int width,
+                               int height, int fps, int bitrate)
+        : metrics_(metrics), session_(session), app_name_(app_name),
+          width_(width), height_(height), fps_(fps), bitrate_(bitrate),
+          started_tick_(svcGetSystemTick()) {}
+
+    void draw(MoonlightUi::Screen &screen) override {
+        const ConnectionTestMetricsSnapshot snapshot = metrics_->snapshot();
+        screen.drawHeader("TEST STREAM", std::to_string(width_) + "x" +
+                                              std::to_string(height_) + "  " +
+                                              std::to_string(fps_) + " FPS");
+        screen.drawLiveText(18, 66, app_name_, MoonlightUi::TextStyle::Small,
+                            {175, 200, 220});
+        const unsigned int elapsed = elapsed_ms();
+        const unsigned int percent = std::min(
+            100U, elapsed * 100U / CONNECTION_TEST_RUNG_MS);
+        screen.drawProgressBar({18, 82, 302, 106}, percent,
+                               {72, 229, 190});
+        screen.drawLiveText(18, 114,
+                            std::to_string(bitrate_) + " kbps  " +
+                                std::to_string(snapshot.frames) + " frames",
+                            MoonlightUi::TextStyle::Small, {242, 247, 250});
+        screen.drawFrameTimingGraph({20, 140, 300, 194},
+                                    snapshot.frame_intervals_ms, 60,
+                                    {72, 229, 190});
+        screen.drawLiveText(18, 199, "FRAME INTERVAL 0-60 ms",
+                            MoonlightUi::TextStyle::Small, {130, 160, 184});
+        screen.drawFooter(DIAG_BUILD_VERSION, "B STOP TEST");
+    }
+
+    bool update(bool *redraw) override {
+        ++frames_;
+        const u64 now = svcGetSystemTick();
+        if (now - last_rtt_tick_ >= SYSCLOCK_ARM11 / 2) {
+            uint32_t rtt_ms = 0;
+            uint32_t variance_ms = 0;
+            if (LiGetEstimatedRttInfo(&rtt_ms, &variance_ms)) {
+                metrics_->record_control_rtt(rtt_ms, variance_ms);
+            }
+            last_rtt_tick_ = now;
+        }
+        *redraw = frames_ % 15 == 0;
+        return !cancelled_ && !session_->terminated.load() &&
+               elapsed_ms() < CONNECTION_TEST_RUNG_MS;
+    }
+
+    bool handleInput(const MoonlightUi::InputEvent &event,
+                     bool *redraw) override {
+        *redraw = false;
+        if (event.type == MoonlightUi::InputEvent::Type::Back) {
+            cancelled_ = true;
+            return false;
+        }
+        return true;
+    }
+
+    bool cancelled() const { return cancelled_; }
+    unsigned int elapsed_ms() const {
+        return static_cast<unsigned int>(
+            (svcGetSystemTick() - started_tick_) * 1000ULL / SYSCLOCK_ARM11);
+    }
+
+  private:
+    ConnectionTestMetrics *metrics_;
+    ConnectionTestSession *session_;
+    std::string app_name_;
+    int width_;
+    int height_;
+    int fps_;
+    int bitrate_;
+    u64 started_tick_;
+    u64 last_rtt_tick_ = 0;
+    unsigned int frames_ = 0;
+    bool cancelled_ = false;
+};
+
+class ConnectionTestResultsScreen : public MoonlightUi::ScreenModel {
+  public:
+    enum class Result { Done, Save };
+
+    ConnectionTestResultsScreen(
+        const std::string &host_key, const std::string &app_name,
+        int resolution_index, const std::vector<ConnectionTestRung> &rungs)
+        : host_key_(host_key), app_name_(app_name),
+          resolution_index_(resolution_index), rungs_(rungs),
+          has_existing_(load_connection_test_profile(
+              host_key, resolution_index, &existing_)) {}
+
+    void draw(MoonlightUi::Screen &screen) override {
+        const int fps = page_ == 0 ? 30 : 60;
+        const ConnectionTestRung *graph_rung = best_rung(fps);
+        screen.drawHeader("CONNECTION TEST RESULTS",
+                          std::to_string(STREAM_PROFILE_WIDTHS[
+                              resolution_index_]) +
+                              "x" +
+                              std::to_string(STREAM_PROFILE_HEIGHTS[
+                                  resolution_index_]) +
+                              "  /  " + std::to_string(fps) + " FPS");
+        screen.drawLiveText(
+            18, 62,
+            fit_connection_test_text(screen, app_name_, 280,
+                                     MoonlightUi::TextStyle::Small),
+            MoonlightUi::TextStyle::Small, {175, 200, 220});
+        if (graph_rung != nullptr &&
+            !graph_rung->frame_intervals_ms.empty()) {
+            const uint16_t scale = static_cast<uint16_t>(std::min(
+                65535, 60));
+            screen.drawFrameTimingGraph({20, 78, 300, 123},
+                                        graph_rung->frame_intervals_ms, scale,
+                                        {72, 229, 190});
+            screen.drawLiveText(18, 126, "FRAME INTERVAL 0-60 ms",
+                                MoonlightUi::TextStyle::Small,
+                                {130, 160, 184});
+            const std::string control_rtt =
+                graph_rung->median_control_rtt_ms == 0
+                    ? "CONTROL RTT unavailable"
+                    : "CONTROL RTT " +
+                          std::to_string(
+                              graph_rung->median_control_rtt_ms) +
+                          " +/- " + std::to_string(
+                                        graph_rung->p95_control_rtt_variance_ms) +
+                          " ms";
+            screen.drawLiveText(155, 126, control_rtt,
+                                MoonlightUi::TextStyle::Small,
+                                {130, 160, 184});
+        } else {
+            screen.drawLiveText(18, 95, "No frame timing samples",
+                                MoonlightUi::TextStyle::Small,
+                                {130, 160, 184});
+        }
+
+        int row = 0;
+        for (const ConnectionTestRung &rung : rungs_) {
+            if (rung.fps != fps) {
+                continue;
+            }
+            const std::string status =
+                rung.skipped ? "SKIP"
+                             : rung.cleanup_failed
+                                   ? "CLEANUP"
+                                   : rung.cancelled
+                                         ? "STOP"
+                                         : rung.poor_status
+                                               ? "POOR"
+                                               : rung.stable
+                                                     ? "STABLE"
+                                                     : !rung.connected
+                                                           ? "FAIL"
+                                                           : rung.local_work_over_budget &&
+                                                                     rung.delivery_timing_over_budget
+                                                                 ? "MIXED"
+                                                                 : rung.local_work_over_budget
+                                                                       ? "LOCAL"
+                                                                       : rung.delivery_timing_over_budget
+                                                                             ? "DELIVERY"
+                                                                             : "LIMIT";
+            std::string detail = std::to_string(rung.bitrate) + " " + status;
+            if (rung.attempted) {
+                detail += " " +
+                          std::to_string(rung.submitted_units_per_second) +
+                          " sub/s int " +
+                          std::to_string(rung.p95_interval_ms) + " local " +
+                          std::to_string(rung.p95_local_submit_ms) +
+                          " rxspan " +
+                          std::to_string(rung.p95_receive_span_ms) + " ms";
+                if (rung.p95_host_processing_ms > 0) {
+                    detail += " host " +
+                              std::to_string(rung.p95_host_processing_ms);
+                }
+            }
+            screen.drawLiveText(18, 150 + row * 15, detail,
+                                MoonlightUi::TextStyle::Small,
+                                rung.stable ? MoonlightUi::Color{113, 240, 207}
+                                            : MoonlightUi::Color{198, 165, 135});
+            ++row;
+            if (row == 3) {
+                break;
+            }
+        }
+
+        const int fps30 = recommendation(30);
+        const int fps60 = recommendation(60);
+        std::string recommendation_line =
+            "30: " + (fps30 > 0 ? std::to_string(fps30) : "none") +
+            "  /  60: " + (fps60 > 0 ? std::to_string(fps60) : "none") +
+            " kbps";
+        screen.drawLiveText(18, 193, recommendation_line,
+                            MoonlightUi::TextStyle::Small,
+                            {242, 247, 250});
+        if (save_failed_) {
+            screen.drawLiveText(18, 207, "Save failed; check SD storage",
+                                MoonlightUi::TextStyle::Small,
+                                {242, 150, 130});
+        } else if (saved_) {
+            screen.drawLiveText(18, 207, "Saved for this host and bracket",
+                                MoonlightUi::TextStyle::Small,
+                                {113, 240, 207});
+        } else if (has_existing_) {
+            screen.drawLiveText(
+                18, 207,
+                "Saved: " + std::to_string(existing_.fps30_bitrate) + "/" +
+                    std::to_string(existing_.fps60_bitrate) +
+                    " kbps. A replaces these.",
+                MoonlightUi::TextStyle::Small, {239, 194, 119});
+        }
+        screen.drawFooter(
+            DIAG_BUILD_VERSION,
+            can_save() ? "LEFT/RIGHT FPS  A SAVE  B DONE"
+                       : "LEFT/RIGHT FPS  B DONE");
+    }
+
+    bool handleInput(const MoonlightUi::InputEvent &event,
+                     bool *redraw) override {
+        *redraw = false;
+        if (event.type == MoonlightUi::InputEvent::Type::Back) {
+            result_ = Result::Done;
+            return false;
+        }
+        if (event.type == MoonlightUi::InputEvent::Type::Confirm) {
+            if (can_save()) {
+                result_ = Result::Save;
+                return false;
+            }
+            return true;
+        }
+        if (event.type == MoonlightUi::InputEvent::Type::Direction &&
+            (event.direction == MoonlightUi::Direction::Left ||
+             event.direction == MoonlightUi::Direction::Right)) {
+            const int next_page = page_ == 0 ? 1 : 0;
+            *redraw = next_page != page_;
+            page_ = next_page;
+        }
+        return true;
+    }
+
+    Result result() const { return result_; }
+    int fps30_recommendation() const { return recommendation(30); }
+    int fps60_recommendation() const { return recommendation(60); }
+    void save_failed() {
+        save_failed_ = true;
+        result_ = Result::Done;
+    }
+    void saved() {
+        saved_ = true;
+        result_ = Result::Done;
+    }
+
+  private:
+    std::string host_key_;
+    std::string app_name_;
+    int resolution_index_;
+    const std::vector<ConnectionTestRung> &rungs_;
+    int page_ = 0;
+    Result result_ = Result::Done;
+    ConnectionTestProfile existing_{};
+    bool has_existing_ = false;
+    bool save_failed_ = false;
+    bool saved_ = false;
+
+    int recommendation(int fps) const {
+        int bitrate = 0;
+        for (const ConnectionTestRung &rung : rungs_) {
+            if (rung.fps == fps && rung.stable) {
+                bitrate = std::max(bitrate, rung.bitrate);
+            }
+        }
+        return bitrate;
+    }
+    bool can_save() const {
+        return recommendation(30) > 0 && recommendation(60) > 0 &&
+               !has_cleanup_failure();
+    }
+    bool has_cleanup_failure() const {
+        for (const ConnectionTestRung &rung : rungs_) {
+            if (rung.cleanup_failed) {
+                return true;
+            }
+        }
+        return false;
+    }
+    const ConnectionTestRung *best_rung(int fps) const {
+        const ConnectionTestRung *best_stable = nullptr;
+        const ConnectionTestRung *best_with_samples = nullptr;
+        for (const ConnectionTestRung &rung : rungs_) {
+            if (rung.fps != fps || !rung.attempted) {
+                continue;
+            }
+            if (!rung.frame_intervals_ms.empty() &&
+                (best_with_samples == nullptr ||
+                 rung.bitrate > best_with_samples->bitrate)) {
+                best_with_samples = &rung;
+            }
+            if (rung.stable &&
+                (best_stable == nullptr || rung.bitrate > best_stable->bitrate)) {
+                best_stable = &rung;
+            }
+        }
+        return best_stable != nullptr ? best_stable : best_with_samples;
+    }
+};
+
 static inline void dispatch_loop(void *_unused_) {
     auto pDispatcher = MessageDispatcher::get_instance();
     auto connection_listener = N3dsConnectionListener::get_instance();
@@ -1158,6 +2147,7 @@ static inline void stream_loop(PCONFIGURATION config,
 struct LimelightStartCall {
     PSERVER_DATA server;
     PCONFIGURATION config;
+    PCONNECTION_LISTENER_CALLBACKS listener_callbacks;
     PDECODER_RENDERER_CALLBACKS video_callbacks;
     AUDIO_RENDERER_CALLBACKS *audio_callbacks;
     int status;
@@ -1167,7 +2157,7 @@ static void limelight_start_call(void *opaque) {
     LimelightStartCall *call = static_cast<LimelightStartCall *>(opaque);
     call->status = LiStartConnection(
         &call->server->serverInfo, &call->config->stream,
-        &n3ds_connection_callbacks, call->video_callbacks,
+        call->listener_callbacks, call->video_callbacks,
         call->audio_callbacks, NULL, DISPLAY_FULLSCREEN,
         call->config->audio_device, 0);
 }
@@ -1246,8 +2236,10 @@ static void stream(PSERVER_DATA server, PCONFIGURATION config, int appId,
 
     auto connection_listener =
         N3dsConnectionListener::create_instance(config->motion_controls);
-    LimelightStartCall connection_call{server, config, video_callbacks,
-                                       audio_callbacks, GS_ERROR};
+    LimelightStartCall connection_call{server, config,
+                                       &n3ds_connection_callbacks,
+                                       video_callbacks, audio_callbacks,
+                                       GS_ERROR};
     run_monitored_call("stream.limelight_start", limelight_start_call,
                        &connection_call, false);
     int status = connection_call.status;
@@ -1350,6 +2342,306 @@ static void action_stream(CONFIGURATION *config, SERVER_DATA *server) {
     stream(server, config, appId, input_handler);
 }
 
+class ConnectionTestMessageScreen : public MoonlightUi::ScreenModel {
+  public:
+    ConnectionTestMessageScreen(const std::string &title,
+                                const std::string &message)
+        : title_(title), message_(message) {}
+
+    void draw(MoonlightUi::Screen &screen) override {
+        screen.drawHeader("CONNECTION TEST", title_);
+        screen.drawLiveText(18, 101, message_, MoonlightUi::TextStyle::Small,
+                            {242, 247, 250});
+        screen.drawFooter(DIAG_BUILD_VERSION, "A/B BACK");
+    }
+    bool handleInput(const MoonlightUi::InputEvent &event,
+                     bool *redraw) override {
+        *redraw = false;
+        return event.type != MoonlightUi::InputEvent::Type::Confirm &&
+               event.type != MoonlightUi::InputEvent::Type::Back;
+    }
+
+  private:
+    std::string title_;
+    std::string message_;
+};
+
+struct ConnectionTestStartAppCall {
+    PSERVER_DATA server;
+    PCONFIGURATION config;
+    int app_id;
+    int status = GS_ERROR;
+};
+
+static void connection_test_start_app_task(void *opaque) {
+    ConnectionTestStartAppCall *call =
+        static_cast<ConnectionTestStartAppCall *>(opaque);
+    call->status = gs_start_app(call->server, &call->config->stream,
+                                call->app_id, call->config->sops,
+                                call->config->localaudio, 1);
+}
+
+struct ConnectionTestQuitAppCall {
+    PSERVER_DATA server;
+    int status = GS_ERROR;
+};
+
+static void connection_test_quit_app_task(void *opaque) {
+    ConnectionTestQuitAppCall *call =
+        static_cast<ConnectionTestQuitAppCall *>(opaque);
+    call->status = gs_quit_app(call->server);
+}
+
+static int close_connection_test_app(PSERVER_DATA server) {
+    ConnectionTestQuitAppCall call{server, GS_ERROR};
+    const bool cancelled = run_gui_call(
+        "connection_test.cleanup", "Closing selected app",
+        connection_test_quit_app_task, &call, false, false);
+    return cancelled ? GS_ERROR : call.status;
+}
+
+static PDECODER_RENDERER_CALLBACKS selected_video_callbacks(
+    PCONFIGURATION config) {
+    switch (config->video_decoder) {
+    case VIDEO_DECODER_TYPE::HARDWARE_VIDEO_DECODER:
+        return &decoder_callbacks_n3ds_mvd;
+    case VIDEO_DECODER_TYPE::SOFTWARE_VIDEO_DECODER:
+        return &decoder_callbacks_n3ds;
+    default:
+        return &decoder_callbacks_mock;
+    }
+}
+
+static bool run_connection_test_rung(
+    CONFIGURATION *base_config, PSERVER_DATA server, int app_id,
+    const std::string &app_name, int resolution_index, int fps, int bitrate,
+    ConnectionTestRung *rung, ConnectionTestMetrics *metrics) {
+    CONFIGURATION test_config = *base_config;
+    test_config.stream.width = STREAM_PROFILE_WIDTHS[resolution_index];
+    test_config.stream.height = STREAM_PROFILE_HEIGHTS[resolution_index];
+    test_config.stream.fps = fps;
+    test_config.stream.bitrate = bitrate;
+    test_config.stream.supportedVideoFormats = VIDEO_FORMAT_H264;
+    rung->fps = fps;
+    rung->bitrate = bitrate;
+    rung->attempted = true;
+    metrics->reset();
+
+    ConnectionTestStartAppCall start_app{server, &test_config, app_id,
+                                         GS_ERROR};
+    const bool start_cancelled = run_gui_call(
+        "connection_test.start_app",
+        "Starting " + app_name + " / " + std::to_string(fps) + " FPS",
+        connection_test_start_app_task, &start_app);
+    if (start_cancelled) {
+        rung->cancelled = true;
+        rung->cleanup_failed = close_connection_test_app(server) != GS_OK;
+        return true;
+    }
+    if (start_app.status < 0) {
+        rung->connection_error = start_app.status;
+        return false;
+    }
+
+    ConnectionTestSession session;
+    active_connection_test_session = &session;
+    N3dsConnectionListener::create_instance(false);
+    CONNECTION_LISTENER_CALLBACKS test_listener_callbacks =
+        n3ds_connection_callbacks;
+    test_listener_callbacks.connectionTerminated = connection_test_terminated;
+    test_listener_callbacks.connectionStatusUpdate =
+        connection_test_status_update;
+    AUDIO_RENDERER_CALLBACKS *audio_callbacks =
+        test_config.localaudio ? &audio_callbacks_mock : &audio_callbacks_n3ds;
+    PDECODER_RENDERER_CALLBACKS video_callbacks =
+        wrap_connection_test_video_callbacks(
+            selected_video_callbacks(&test_config), metrics);
+    LimelightStartCall connection_call{server,
+                                       &test_config,
+                                       &test_listener_callbacks,
+                                       video_callbacks,
+                                       audio_callbacks,
+                                       GS_ERROR};
+    const bool connect_cancelled = run_gui_call(
+        "connection_test.connect",
+        "Connecting " + std::to_string(fps) + " FPS / " +
+            std::to_string(bitrate) + " kbps",
+        limelight_start_call, &connection_call, false, true);
+
+    bool cancelled = connect_cancelled;
+    N3dsConnectionListener *listener =
+        N3dsConnectionListener::get_instance();
+    Thread dispatcher = nullptr;
+    if (connection_call.status == 0 && !connect_cancelled) {
+        rung->connected = true;
+        s32 priority = 0x30;
+        svcGetThreadPriority(&priority, CUR_THREAD_HANDLE);
+        dispatcher = threadCreate(dispatch_loop, nullptr, 0x20000, priority,
+                                  -1, false);
+        if (dispatcher == NULL) {
+            rung->connection_error = -2;
+            if (listener != nullptr) {
+                listener->connection_terminated(0, false);
+            }
+        } else {
+            ConnectionTestStreamScreen progress(
+                metrics, &session, app_name, test_config.stream.width,
+                test_config.stream.height, fps, bitrate);
+            const bool screen_finished = MoonlightUi::runScreen(progress);
+            cancelled = progress.cancelled() || !screen_finished;
+            rung->duration_ms = progress.elapsed_ms();
+        }
+        if (session.terminated.load()) {
+            rung->stream_ended_early = true;
+            rung->connection_error = session.termination_error.load();
+        }
+        rung->poor_status = session.poor_status_seen.load();
+        if (listener != nullptr && !listener->is_connection_closed()) {
+            listener->connection_terminated(0, false);
+        }
+        LiStopConnection();
+    } else {
+        rung->connection_error = connection_call.status;
+        if (connection_call.status == 0) {
+            if (listener != nullptr && !listener->is_connection_closed()) {
+                listener->connection_terminated(0, false);
+            }
+            LiStopConnection();
+        }
+    }
+
+    if (dispatcher != nullptr) {
+        threadJoin(dispatcher, 0xFFFFFFFFFFFFFFFFULL);
+        threadFree(dispatcher);
+    }
+    N3dsConnectionListener::destroy_instance();
+    active_connection_test_session = nullptr;
+    connection_test_delegate = nullptr;
+    connection_test_active_metrics = nullptr;
+    if (cancelled) {
+        rung->cancelled = true;
+    }
+    finish_connection_test_rung(rung, metrics, rung->duration_ms);
+    if (!rung->connected || rung->duration_ms < CONNECTION_TEST_RUNG_MS) {
+        rung->stable = false;
+    }
+    rung->cleanup_failed = close_connection_test_app(server) != GS_OK;
+    return cancelled || rung->cleanup_failed;
+}
+
+static void free_connection_test_app_list(PAPP_LIST list) {
+    while (list != nullptr) {
+        PAPP_LIST next = list->next;
+        free(list->name);
+        free(list);
+        list = next;
+    }
+}
+
+static void action_connection_test(CONFIGURATION *config, SERVER_DATA *server,
+                                   const std::string &host_key) {
+    AppListTaskContext app_list_task_context{server, nullptr, GS_ERROR};
+    const bool app_list_cancelled = run_gui_call(
+        "connection_test.app_list", "Loading host apps", app_list_task,
+        &app_list_task_context);
+    if (app_list_cancelled) {
+        free_connection_test_app_list(app_list_task_context.list);
+        return;
+    }
+    if (app_list_task_context.status != GS_OK) {
+        free_connection_test_app_list(app_list_task_context.list);
+        ConnectionTestMessageScreen message("APP LIST FAILED",
+                                            "Could not load Sunshine apps");
+        MoonlightUi::runScreen(message);
+        restore_bottom_console();
+        return;
+    }
+
+    std::vector<ConnectionTestApp> apps;
+    PAPP_LIST app = app_list_task_context.list;
+    while (app != nullptr) {
+        PAPP_LIST next = app->next;
+        if (app->name != nullptr && app->name[0] != '\0' && app->id > 0) {
+            apps.push_back({app->id, app->name});
+            free(app->name);
+        }
+        free(app);
+        app = next;
+    }
+    if (apps.empty()) {
+        ConnectionTestMessageScreen message("NO HOST APPS",
+                                            "Sunshine returned no apps");
+        MoonlightUi::runScreen(message);
+        restore_bottom_console();
+        return;
+    }
+
+    ConnectionTestAppPickerScreen app_picker(apps);
+    if (!MoonlightUi::runScreen(app_picker) ||
+        app_picker.result() != ConnectionTestAppPickerScreen::Result::Selected) {
+        restore_bottom_console();
+        return;
+    }
+    const ConnectionTestApp selected_app = app_picker.selected_app();
+    restore_bottom_console();
+
+    ConnectionTestQualityScreen quality_picker;
+    if (!MoonlightUi::runScreen(quality_picker) ||
+        quality_picker.result() != ConnectionTestQualityScreen::Result::Selected) {
+        restore_bottom_console();
+        return;
+    }
+    const int resolution_index = quality_picker.resolution_index();
+    restore_bottom_console();
+
+    std::vector<ConnectionTestRung> rungs;
+    ConnectionTestMetrics metrics;
+    bool cancelled = false;
+    for (int fps_index = 0; fps_index < 2 && !cancelled; ++fps_index) {
+        const int fps = fps_index == 0 ? 30 : 60;
+        bool skip_higher = false;
+        for (int bitrate_index = 0; bitrate_index < 3 && !cancelled;
+             ++bitrate_index) {
+            ConnectionTestRung rung;
+            rung.fps = fps;
+            rung.bitrate =
+                CONNECTION_TEST_BITRATES[resolution_index][bitrate_index];
+            if (skip_higher) {
+                rung.skipped = true;
+                rungs.push_back(rung);
+                continue;
+            }
+            cancelled = run_connection_test_rung(
+                config, server, selected_app.id, selected_app.name,
+                resolution_index, fps, rung.bitrate, &rung, &metrics);
+            if (!rung.cancelled && !rung.stable) {
+                skip_higher = true;
+            }
+            rungs.push_back(rung);
+        }
+    }
+
+    ConnectionTestResultsScreen results(host_key, selected_app.name,
+                                        resolution_index, rungs);
+    while (aptMainLoop()) {
+        const bool screen_finished = MoonlightUi::runScreen(results);
+        if (!screen_finished ||
+            results.result() != ConnectionTestResultsScreen::Result::Save) {
+            break;
+        }
+        ConnectionTestProfile profile{
+            resolution_index, results.fps30_recommendation(),
+            results.fps60_recommendation()};
+        if (save_connection_test_profile(host_key, profile)) {
+            results.saved();
+        } else {
+            results.save_failed();
+        }
+        restore_bottom_console();
+    }
+    restore_bottom_console();
+}
+
 struct PairTaskContext {
     SERVER_DATA *server;
     char *pin;
@@ -1441,8 +2733,10 @@ int main_loop(int argc, char *argv[]) {
 
         SERVER_DATA server;
         InitServerCall connect_call{&config, &server, GS_ERROR};
+        diag_http_summary_begin();
         run_monitored_call("connect.server_init", init_server_call,
                            &connect_call);
+        diag_http_summary_flush(connect_call.status, diag_cancel_requested());
         if (diag_cancel_requested()) {
             diag_log("CONNECT_CANCELLED", "returning to host list");
             continue;
@@ -1478,6 +2772,8 @@ int main_loop(int argc, char *argv[]) {
                 prompt_for_stream_settings(&config);
             } else if (strcmp("stream profile", config.action) == 0) {
                 prompt_for_stream_profile(&config, profile_host_key);
+            } else if (strcmp("connection test", config.action) == 0) {
+                action_connection_test(&config, &server, profile_host_key);
             } else if (strcmp("unpair", config.action) == 0) {
                 action_unpair(&config, &server);
                 wait_for_button();

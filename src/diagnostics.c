@@ -15,8 +15,25 @@
 #define DIAG_LOG_PATH "sdmc:/3ds/moonlight/moonlight.log"
 #define UNIX_EPOCH_OFFSET_MS 2208988800000ULL
 #define DIAG_FORMATTED_LINE_MAX 4096
+#define DIAG_STACK_RECORD_CAPACITY 512
 
 static LightLock diag_lock;
+/* Protected by diag_lock, including formatting and file I/O. No logger calls
+ * while holding this lock; it is never held across a network operation. */
+static char diag_detail[3072];
+static char diag_line[DIAG_FORMATTED_LINE_MAX];
+static char diag_wall_time[40];
+#define DIAG_HTTP_FACT_COUNT 8
+typedef struct {
+    char call[DIAG_LOG_LINE_MAX];
+    long status;
+    int transport;
+    bool complete;
+} DiagHttpFact;
+static DiagHttpFact diag_http_facts[DIAG_HTTP_FACT_COUNT];
+static unsigned int diag_http_fact_count;
+static unsigned int diag_http_dropped;
+static bool diag_http_deferred;
 static FILE *diag_file = NULL;
 static bool diag_initialized = false;
 static bool diag_cancel = false;
@@ -34,6 +51,10 @@ static unsigned int diag_recent_count = 0;
 static unsigned int diag_recent_next = 0;
 static u64 diag_start_tick = 0;
 static u64 diag_phase_tick = 0;
+static MemInfo diag_stack_meminfo;
+static PageInfo diag_stack_pageinfo;
+static char diag_stack_record[DIAG_STACK_RECORD_CAPACITY];
+static size_t diag_stack_record_length = 0;
 
 bool diag_cert_fingerprint(X509 *certificate, char *out,
                            unsigned int out_capacity) {
@@ -343,27 +364,24 @@ static void format_wall_time(char *out, size_t capacity) {
 }
 
 void diag_log(const char *event, const char *format, ...) {
-    char detail[3072];
-    char line[DIAG_FORMATTED_LINE_MAX];
-    char wall_time[40];
     va_list args;
+    LightLock_Lock(&diag_lock);
     va_start(args, format);
-    vsnprintf(detail, sizeof(detail), format ? format : "", args);
+    vsnprintf(diag_detail, sizeof(diag_detail), format ? format : "", args);
     va_end(args);
 
-    format_wall_time(wall_time, sizeof(wall_time));
-    snprintf(line, sizeof(line), "%s +%08llums %-18s %s", wall_time,
+    format_wall_time(diag_wall_time, sizeof(diag_wall_time));
+    snprintf(diag_line, sizeof(diag_line), "%s +%08llums %-18s %s", diag_wall_time,
              (unsigned long long)diag_elapsed_ms(), event ? event : "EVENT",
-             detail);
+             diag_detail);
 
-    LightLock_Lock(&diag_lock);
-    snprintf(diag_recent[diag_recent_next], DIAG_LOG_LINE_MAX, "%s", line);
+    snprintf(diag_recent[diag_recent_next], DIAG_LOG_LINE_MAX, "%s", diag_line);
     diag_recent_next = (diag_recent_next + 1) % DIAG_RECENT_LINE_COUNT;
     if (diag_recent_count < DIAG_RECENT_LINE_COUNT) {
         diag_recent_count++;
     }
     if (diag_file != NULL) {
-        fputs(line, diag_file);
+        fputs(diag_line, diag_file);
         fputc('\n', diag_file);
         fflush(diag_file);
         fsync(fileno(diag_file));
@@ -395,6 +413,105 @@ void diag_close(void) {
     LightLock_Unlock(&diag_lock);
 }
 
+static void diag_stack_append_text(const char *text) {
+    while (*text != '\0' &&
+           diag_stack_record_length + 1 < sizeof(diag_stack_record)) {
+        diag_stack_record[diag_stack_record_length++] = *text++;
+    }
+}
+
+static void diag_stack_append_hex(uint32_t value) {
+    static const char digits[] = "0123456789abcdef";
+    int shift;
+    diag_stack_append_text("0x");
+    for (shift = 28; shift >= 0; shift -= 4) {
+        if (diag_stack_record_length + 1 >= sizeof(diag_stack_record)) {
+            return;
+        }
+        diag_stack_record[diag_stack_record_length++] =
+            digits[(value >> shift) & 0x0f];
+    }
+}
+
+void diag_stack_checkpoint(const char *boundary, uintptr_t stack_pointer) {
+    const uint32_t sp = (uint32_t)stack_pointer;
+    Result query_result;
+    uint64_t region_end;
+    bool mapping_contains_sample;
+    size_t written = 0;
+    int fd;
+
+    if (!diag_initialized) {
+        return;
+    }
+
+    LightLock_Lock(&diag_lock);
+    memset(&diag_stack_meminfo, 0, sizeof(diag_stack_meminfo));
+    memset(&diag_stack_pageinfo, 0, sizeof(diag_stack_pageinfo));
+    query_result =
+        svcQueryMemory(&diag_stack_meminfo, &diag_stack_pageinfo, sp);
+    region_end =
+        (uint64_t)diag_stack_meminfo.base_addr + diag_stack_meminfo.size;
+    mapping_contains_sample =
+        R_SUCCEEDED(query_result) &&
+        region_end <= (uint64_t)UINT32_MAX + 1ULL &&
+        sp >= diag_stack_meminfo.base_addr && (uint64_t)sp < region_end;
+    diag_stack_record_length = 0;
+    diag_stack_append_text("STACKDIAG version=");
+    diag_stack_append_text(DIAG_BUILD_VERSION);
+    diag_stack_append_text(" boundary=");
+    diag_stack_append_text(boundary ? boundary : "unknown");
+    diag_stack_append_text(" sp=");
+    diag_stack_append_hex(sp);
+    diag_stack_append_text(
+        " stack_bounds=unavailable reason=svcQueryMemory_not_stack_metadata");
+    diag_stack_append_text(" point_headroom_bytes=unavailable");
+    diag_stack_append_text(
+        " stack_request_source=app.rsf:SystemControlInfo.StackSize stack_request=");
+    diag_stack_append_hex(DIAG_MAIN_STACK_REQUESTED_SIZE);
+    if (R_SUCCEEDED(query_result)) {
+        diag_stack_append_text(" map_base=");
+        diag_stack_append_hex(diag_stack_meminfo.base_addr);
+        diag_stack_append_text(" map_size=");
+        diag_stack_append_hex(diag_stack_meminfo.size);
+        diag_stack_append_text(" map_state=");
+        diag_stack_append_hex(diag_stack_meminfo.state);
+        diag_stack_append_text(" map_perm=");
+        diag_stack_append_hex(diag_stack_meminfo.perm);
+        diag_stack_append_text(" map_offset_bytes=");
+        if (mapping_contains_sample) {
+            diag_stack_append_hex(sp - diag_stack_meminfo.base_addr);
+        } else {
+            diag_stack_append_text("unavailable");
+        }
+    } else {
+        diag_stack_append_text(
+            " map_base=unavailable map_size=unavailable map_state=unavailable");
+        diag_stack_append_text(
+            " map_perm=unavailable map_offset_bytes=unavailable");
+    }
+    diag_stack_append_text(" query_result=");
+    diag_stack_append_hex((uint32_t)query_result);
+    diag_stack_append_text(" high_water=not_measured\n");
+
+    fd = diag_file != NULL ? fileno(diag_file) : -1;
+    if (fd >= 0 && fflush(diag_file) == 0) {
+        while (written < diag_stack_record_length) {
+            const ssize_t result =
+                write(fd, diag_stack_record + written,
+                      diag_stack_record_length - written);
+            if (result <= 0) {
+                break;
+            }
+            written += (size_t)result;
+        }
+        if (written == diag_stack_record_length) {
+            fsync(fd);
+        }
+    }
+    LightLock_Unlock(&diag_lock);
+}
+
 void diag_set_phase(const char *phase) {
     uint32_t free_bytes = osGetMemRegionFree(MEMREGION_APPLICATION);
     LightLock_Lock(&diag_lock);
@@ -413,32 +530,112 @@ void diag_phase_outcome(const char *phase, const char *outcome, int result) {
              (unsigned long)free_bytes);
 }
 
+/* A fixed breadcrumb avoids printf-family formatting on the request stack.
+ * Caller holds diag_lock. No callback into the logger from this helper. */
+static void diag_http_breadcrumb_locked(const char *text) {
+    if (diag_file != NULL) {
+        fputs(text, diag_file);
+        fputc('\n', diag_file);
+        fflush(diag_file);
+        fsync(fileno(diag_file));
+    }
+}
+
+static void diag_copy_text(char *out, size_t capacity, const char *text) {
+    size_t count = 0;
+    if (capacity == 0) return;
+    if (text != NULL) {
+        while (count + 1 < capacity && text[count] != '\0') {
+            out[count] = text[count];
+            count++;
+        }
+    }
+    out[count] = '\0';
+}
+
+void diag_http_summary_begin(void) {
+    LightLock_Lock(&diag_lock);
+    diag_http_fact_count = 0;
+    diag_http_dropped = 0;
+    diag_http_deferred = true;
+    LightLock_Unlock(&diag_lock);
+}
+
+void diag_http_summary_flush(int result, bool cancelled) {
+    /* Snapshot one record at a time. Never invoke diag_log with diag_lock held.
+     * Host init/request producer has returned before this boundary. */
+    DiagHttpFact fact;
+    unsigned int count, dropped, i;
+    LightLock_Lock(&diag_lock);
+    diag_http_deferred = false;
+    count = diag_http_fact_count;
+    dropped = diag_http_dropped;
+    LightLock_Unlock(&diag_lock);
+    diag_log("HOST_INIT_SUMMARY", "result=%d cancelled=%s requests=%u dropped=%u",
+             result, cancelled ? "yes" : "no", count, dropped);
+    for (i = 0; i < count; i++) {
+        LightLock_Lock(&diag_lock);
+        fact = diag_http_facts[i];
+        LightLock_Unlock(&diag_lock);
+        diag_log("HTTP_SUMMARY",
+                 "request=%u call=%s status=%ld transport_result=%d complete=%s",
+                 i + 1, fact.call, fact.status, fact.transport,
+                 fact.complete ? "yes" : "no");
+    }
+}
+
 void diag_http_begin(const char *method, const char *safe_url) {
+    bool deferred;
+    size_t used;
     LightLock_Lock(&diag_lock);
     diag_http_active = true;
-    snprintf(diag_http_method, sizeof(diag_http_method), "%s",
-             method ? method : "?");
-    snprintf(diag_http_call, sizeof(diag_http_call), "%s %s",
-             method ? method : "?", safe_url ? safe_url : "?");
+    diag_copy_text(diag_http_method, sizeof(diag_http_method), method);
+    diag_copy_text(diag_http_call, sizeof(diag_http_call), method);
+    used = strlen(diag_http_call);
+    if (used + 1 < sizeof(diag_http_call)) {
+        diag_http_call[used++] = ' ';
+        diag_copy_text(diag_http_call + used, sizeof(diag_http_call) - used,
+                       safe_url);
+    }
+    deferred = diag_http_deferred;
+    if (deferred) {
+        if (diag_http_fact_count < DIAG_HTTP_FACT_COUNT) {
+            DiagHttpFact *fact = &diag_http_facts[diag_http_fact_count++];
+            diag_copy_text(fact->call, sizeof(fact->call), diag_http_call);
+            fact->status = 0;
+            fact->transport = 0;
+            fact->complete = false;
+        } else {
+            diag_http_dropped++;
+        }
+    }
+    diag_http_breadcrumb_locked("HTTP_BEGIN method=GET details=bounded");
     LightLock_Unlock(&diag_lock);
-    diag_log("HTTP_BEGIN", "method=%s url=%s", method ? method : "?",
-             safe_url ? safe_url : "?");
+    if (!deferred) {
+        diag_log("HTTP_REQUEST", "method=%s url=%s", method ? method : "?",
+                 safe_url ? safe_url : "?");
+    }
 }
 
 void diag_http_end(long status_code, int transport_result) {
-    char active_call[DIAG_LOG_LINE_MAX];
-    char method[sizeof(diag_http_method)];
+    bool deferred;
     LightLock_Lock(&diag_lock);
-    snprintf(method, sizeof(method), "%s", diag_http_method);
-    snprintf(active_call, sizeof(active_call), "%s", diag_http_call);
+    deferred = diag_http_deferred;
+    if (deferred && diag_http_fact_count > 0 && diag_http_dropped == 0) {
+        DiagHttpFact *fact = &diag_http_facts[diag_http_fact_count - 1];
+        fact->status = status_code;
+        fact->transport = transport_result;
+        fact->complete = true;
+    }
     diag_http_active = false;
     diag_http_method[0] = '\0';
     diag_http_call[0] = '\0';
+    diag_http_breadcrumb_locked("HTTP_END details=bounded");
     LightLock_Unlock(&diag_lock);
-    diag_log("HTTP_STATUS", "method=%s status=%ld transport_result=%d",
-             method[0] ? method : "GET", status_code, transport_result);
-    diag_log("HTTP_END", "request=%s status=%ld transport_result=%d",
-             active_call, status_code, transport_result);
+    if (!deferred) {
+        diag_log("HTTP_STATUS", "method=GET status=%ld transport_result=%d",
+                 status_code, transport_result);
+    }
 }
 
 void diag_get_active_http(char *out, unsigned int capacity, bool *active) {
@@ -478,9 +675,12 @@ bool diag_watchdog_poll(void) {
     char phase[sizeof(diag_phase)];
     uint64_t elapsed;
     uint32_t free_bytes = osGetMemRegionFree(MEMREGION_APPLICATION);
-    u64 now = svcGetSystemTick();
+    u64 now;
 
     LightLock_Lock(&diag_lock);
+    /* Sample after locking: a concurrent phase reset must not make now older
+     * than diag_phase_tick and produce an unsigned watchdog underflow. */
+    now = svcGetSystemTick();
     elapsed = ticks_to_ms(now - diag_phase_tick);
     if (elapsed >= DIAG_WATCHDOG_LIMIT_MS && !diag_watchdog_reported) {
         diag_watchdog_reported = true;

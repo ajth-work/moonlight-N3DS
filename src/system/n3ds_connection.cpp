@@ -29,8 +29,9 @@
 std::unique_ptr<N3dsConnectionListener> N3dsConnectionListener::instance =
     nullptr;
 
-void N3dsConnectionListener::connection_terminated(int errorCode) {
-    switch (errorCode) {
+void N3dsConnectionListener::connection_terminated(int errorCode,
+                                                   bool print_message) {
+    if (print_message) switch (errorCode) {
     case ML_ERROR_GRACEFUL_TERMINATION:
         printf("Connection has been terminated gracefully.\n");
         break;
