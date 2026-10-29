@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 280" role="img" aria-label="Display selector states: next, previous and next, previous">
+  <g fill="none" stroke="#171717" stroke-width="14" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="30" y="28" width="280" height="170" rx="24"/>
+    <path d="M170 198v34M112 246h116"/>
+    <path d="M340 84l56 29-56 29z" fill="#171717" stroke="none"/>
+
+    <path d="M434 84l-56 29 56 29z" fill="#171717" stroke="none"/>
+    <rect x="460" y="28" width="280" height="170" rx="24"/>
+    <path d="M600 198v34M542 246h116"/>
+    <path d="M770 84l56 29-56 29z" fill="#171717" stroke="none"/>
+
+    <path d="M864 84l-56 29 56 29z" fill="#171717" stroke="none"/>
+    <rect x="890" y="28" width="280" height="170" rx="24"/>
+    <path d="M1030 198v34M972 246h116"/>
+  </g>
+</svg>
