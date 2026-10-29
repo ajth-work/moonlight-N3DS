@@ -276,7 +276,8 @@ bool poll_input(InputEvent *event) {
 Screen::Screen(gfxScreen_t display)
     : display_(display),
       width_(display == GFX_TOP ? TOP_SCREEN_WIDTH : BOTTOM_SCREEN_WIDTH),
-      height_(SCREEN_HEIGHT), framebuffer_(nullptr) {
+      height_(SCREEN_HEIGHT), framebuffer_(nullptr),
+      double_buffering_enabled_(true) {
     diag_ui_state(display_ == GFX_TOP ? "TOP" : "BOTTOM", "toolkit GUI", true);
     // UI screens render into a hidden back buffer and commit it at VBlank.
     // Stream renderers enable buffering when they take ownership of a screen.
@@ -590,10 +591,24 @@ void Screen::drawAutoRateText(int x, int y, const std::string &text,
 }
 
 void Screen::present(bool wait_for_vblank) {
+    static unsigned int present_sequence = 0;
+    const unsigned int sequence = ++present_sequence;
+    const char *screen = display_ == GFX_TOP ? "TOP" : "BOTTOM";
+    const unsigned long buffer_address =
+        static_cast<unsigned long>(reinterpret_cast<uintptr_t>(framebuffer_));
+    diag_log("UI_PRESENT",
+             "seq=%u screen=%s draw_buffer=0x%08lx buffering=%s order=flush>swap vblank=%s",
+             sequence, screen, buffer_address,
+             double_buffering_enabled_ ? "double" : "single",
+             wait_for_vblank ? "wait_after_swap" : "deferred");
     gfxFlushBuffers();
     gfxScreenSwapBuffers(display_, false);
     if (wait_for_vblank) {
         gspWaitForVBlank();
+        diag_log("UI_PRESENT_VBLANK",
+                 "seq=%u screen=%s draw_buffer=0x%08lx buffering=%s boundary=completed_after_swap",
+                 sequence, screen, buffer_address,
+                 double_buffering_enabled_ ? "double" : "single");
     }
 }
 

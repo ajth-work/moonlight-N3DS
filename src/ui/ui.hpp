@@ -78,6 +78,7 @@ class Screen {
     int width_;
     int height_;
     uint16_t *framebuffer_;
+    bool double_buffering_enabled_;
 
     void setPixel(int x, int y, uint16_t color);
     void blendPixel(int x, int y, Color color, unsigned int coverage);
