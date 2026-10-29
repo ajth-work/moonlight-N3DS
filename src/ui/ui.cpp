@@ -392,6 +392,46 @@ void Screen::drawCircle(int cx, int cy, int radius, Color color) {
             if (x * x + y * y <= radius * radius) setPixel(cx + x, cy + y, pixel);
 }
 
+void Screen::drawMagnifierIcon(int cx, int cy, Color color) {
+    const uint16_t pixel = rgb565(color);
+    for (int y = -9; y <= 9; ++y)
+        for (int x = -9; x <= 9; ++x) {
+            const int d = x * x + y * y;
+            if (d >= 49 && d <= 81) setPixel(cx + x, cy + y, pixel);
+        }
+    for (int i = 0; i < 11; ++i) setPixel(cx + 7 + i, cy + 7 + i, pixel);
+}
+
+void Screen::drawKeyboardIcon(int cx, int cy, Color color) {
+    const uint16_t pixel = rgb565(color);
+    for (int x = -16; x <= 16; ++x) {
+        setPixel(cx + x, cy - 9, pixel); setPixel(cx + x, cy + 8, pixel);
+    }
+    for (int y = -9; y <= 8; ++y) {
+        setPixel(cx - 16, cy + y, pixel); setPixel(cx + 16, cy + y, pixel);
+    }
+    for (int row = 0; row < 2; ++row)
+        for (int col = 0; col < 5; ++col)
+            setPixel(cx - 10 + col * 5, cy - 4 + row * 6, pixel);
+    for (int x = -6; x <= 6; ++x) setPixel(cx + x, cy + 5, pixel);
+}
+
+void Screen::drawSettingsIcon(int cx, int cy, Color color) {
+    const uint16_t pixel = rgb565(color);
+    for (int y = -11; y <= 11; ++y)
+        for (int x = -11; x <= 11; ++x) {
+            const int d = x * x + y * y;
+            if (d >= 49 && d <= 121) setPixel(cx + x, cy + y, pixel);
+        }
+    for (int i = -14; i <= 14; ++i) {
+        setPixel(cx + i, cy - 12, pixel); setPixel(cx + i, cy + 12, pixel);
+        setPixel(cx - 12, cy + i, pixel); setPixel(cx + 12, cy + i, pixel);
+    }
+    for (int y = -3; y <= 3; ++y)
+        for (int x = -3; x <= 3; ++x)
+            if (x * x + y * y <= 9) setPixel(cx + x, cy + y, pixel);
+}
+
 void Screen::drawPanelButton(const Rect &rect, const std::string &label,
                              Color fill, Color text) {
     fillRoundedRect(rect, 8, rgb565(fill));
@@ -500,27 +540,24 @@ void Screen::drawProgressBar(const Rect &rect, unsigned int percent,
 }
 
 void Screen::drawDisplaySelector(int selected, int count, bool configure_count) {
-    const Color ink{38, 43, 48};
-    const Color muted{105, 114, 122};
+    const Color ink{238, 246, 250};
+    const Color muted{151, 166, 178};
     const uint16_t edge = rgb565(ink);
-    // One unnumbered monitor silhouette; the selected display number is live text.
-    fillRoundedRect({144, 60, 176, 75}, 2, edge);
-    fillRoundedRect({146, 62, 174, 72}, 1, rgb565({20, 31, 42}));
-    for (int x = 157; x <= 163; ++x) setPixel(x, 76, edge);
-    for (int x = 153; x <= 167; ++x) setPixel(x, 77, edge);
+    fillRoundedRect({139, 40, 181, 67}, 5, edge);
+    fillRoundedRect({141, 42, 179, 65}, 4, rgb565({20, 31, 42}));
+    for (int x = 155; x <= 165; ++x) setPixel(x, 68, edge);
+    for (int x = 151; x <= 169; ++x) setPixel(x, 69, edge);
     if (count > 1 && selected > 1)
-        drawLiveText(66, 59, "<", TextStyle::Header, ink);
+        drawPanelButton({74, 39, 119, 71}, "<", {37, 65, 78}, ink);
     if (count > 1 && selected < count)
-        drawLiveText(250, 59, ">", TextStyle::Header, ink);
+        drawPanelButton({201, 39, 246, 71}, ">", {37, 65, 78}, ink);
     char value[12];
     snprintf(value, sizeof(value), "%d", selected);
-    drawLiveText(151, 63, value, TextStyle::Small, ink);
+    drawLiveText(153, 47, value, TextStyle::Header, ink);
     if (configure_count) {
         char hint[48];
-        snprintf(hint, sizeof(hint), "COUNT %d  + 1", count);
-        drawLiveText(16, 64, hint, TextStyle::Small, muted);
-    } else {
-        drawLiveText(191, 64, "SUNSHINE", TextStyle::Small, muted);
+        snprintf(hint, sizeof(hint), "HOSTS %d", count);
+        drawLiveText(12, 47, hint, TextStyle::Small, muted);
     }
 }
 

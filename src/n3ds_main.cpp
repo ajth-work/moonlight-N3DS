@@ -2256,7 +2256,9 @@ static void draw_stream_gamepad_panel(uint32_t rtt_ms, bool rtt_available,
                                      unsigned int session_seconds,
                                      int battery_percent,
                                      int touch_buttons,
-                                     int touch_x, int touch_y,
+                                     int left_touch_x, int left_touch_y,
+                                     int right_touch_x, int right_touch_y,
+                                     bool click_mode,
                                      bool settings_open,
                                      const STREAM_CONFIGURATION &stream_config,
                                      int display_count, int default_display) {
@@ -2269,47 +2271,45 @@ static void draw_stream_gamepad_panel(uint32_t rtt_ms, bool rtt_available,
     const Color teal{64, 205, 214};
     const Color dark{17, 25, 34};
     bottom.drawSolidBackground(dark);
-    bottom.drawLiveText(12, 7, "MOONLIGHT", TextStyle::Small, teal);
-    bottom.drawLiveText(12, 22, settings_open ? "STREAM SETTINGS" : "COMPANION PANEL",
-                        TextStyle::Header, ink);
-    bottom.drawLiveText(220, 10, DIAG_BUILD_VERSION, TextStyle::Small, muted);
-
     char status[64];
     if (rtt_available)
         snprintf(status, sizeof(status), "RTT  %lu ms", (unsigned long)rtt_ms);
     else
         snprintf(status, sizeof(status), "RTT  unavailable");
-    bottom.drawLiveText(12, 42, status, TextStyle::Small, teal);
+    bottom.drawLiveText(8, 9, status, TextStyle::Small, teal);
+    bottom.drawFrameTimingGraph({67, 8, 108, 26}, history, 200, teal);
     char battery[32];
     if (battery_percent >= 0)
         snprintf(battery, sizeof(battery), "BATTERY  %d%%", battery_percent);
     else
         snprintf(battery, sizeof(battery), "BATTERY  unavailable");
-    bottom.drawLiveText(103, 42, battery, TextStyle::Small, muted);
+    bottom.drawLiveText(116, 9, battery, TextStyle::Small, muted);
     char session[32];
     snprintf(session, sizeof(session), "SESSION  %02u:%02u",
              session_seconds / 3600, (session_seconds / 60) % 60);
-    bottom.drawLiveText(215, 42, session, TextStyle::Small, muted);
-    bottom.drawFrameTimingGraph({12, 53, 70, 62}, history, 200, teal);
-    bottom.drawLiveText(77, 54, "SUNSHINE", TextStyle::Small, muted);
+    bottom.drawLiveText(211, 9, session, TextStyle::Small, muted);
+    bottom.drawLiveText(257, 25, DIAG_BUILD_VERSION, TextStyle::Small, muted);
     bottom.drawDisplaySelector(default_display, display_count, settings_open);
+    bottom.drawLiveText(123, 69, "SUNSHINE HOTKEY", TextStyle::Small, muted);
 
-    const int lx = 80 + (touch_x * 31 / 32767);
-    const int ly = 128 - (touch_y * 25 / 32767);
-    const int rx = 240 + (touch_x * 31 / 32767);
-    const int ry = 128 - (touch_y * 25 / 32767);
-    bottom.drawCircle(80, 130, 45, {33, 47, 59});
-    bottom.drawCircle(80, 130, 40, {20, 31, 42});
-    bottom.drawCircle(240, 130, 45, {33, 47, 59});
-    bottom.drawCircle(240, 130, 40, {20, 31, 42});
-    if (touch_buttons & LS_CLK_FLAG) bottom.drawCircle(80, 130, 34, {11, 122, 137});
-    if (touch_buttons & RS_CLK_FLAG) bottom.drawCircle(240, 130, 34, {11, 122, 137});
+    const int lx = 78 + (left_touch_x * 31 / 32767);
+    const int ly = 137 - (left_touch_y * 31 / 32767);
+    const int rx = 242 + (right_touch_x * 31 / 32767);
+    const int ry = 137 - (right_touch_y * 31 / 32767);
+    bottom.drawCircle(78, 137, 44, {43, 91, 103});
+    bottom.drawCircle(78, 137, 40, {20, 31, 42});
+    bottom.drawCircle(242, 137, 44, {43, 91, 103});
+    bottom.drawCircle(242, 137, 40, {20, 31, 42});
+    if (touch_buttons & LS_CLK_FLAG) bottom.drawCircle(78, 137, 33, {11, 122, 137});
+    if (touch_buttons & RS_CLK_FLAG) bottom.drawCircle(242, 137, 33, {11, 122, 137});
     bottom.drawCircle(lx, ly, 10, teal);
     bottom.drawCircle(rx, ry, 10, teal);
-    bottom.drawLiveText(12, 88, "L3", TextStyle::Header, ink);
-    bottom.drawLiveText(173, 88, "R3", TextStyle::Header, ink);
-    bottom.drawLiveText(36, 174, "MOVE / HOLD = CLICK", TextStyle::Small, muted);
-    bottom.drawLiveText(196, 174, "MOVE / HOLD = CLICK", TextStyle::Small, muted);
+    bottom.drawLiveText(67, 129, "L3", TextStyle::Header, {91, 247, 155});
+    bottom.drawLiveText(231, 129, "R3", TextStyle::Header, {91, 247, 155});
+    const Color mode_on{29, 176, 98};
+    const Color mode_off{73, 84, 94};
+    bottom.drawPanelButton({111, 81, 159, 105}, "MOVE", click_mode ? mode_off : mode_on, ink);
+    bottom.drawPanelButton({161, 81, 209, 105}, "CLICK", click_mode ? mode_on : mode_off, ink);
     if (settings_open) {
         char settings[64];
         snprintf(settings, sizeof(settings), "%dx%d  %dfps  %dkbps",
@@ -2318,13 +2318,14 @@ static void draw_stream_gamepad_panel(uint32_t rtt_ms, bool rtt_available,
         bottom.drawLiveText(18, 174, settings, TextStyle::Small, muted);
     }
 
-    const Color button_ink{38, 43, 48};
-    const Color button_fill{214, 226, 233};
-    bottom.drawPanelButton({5, 184, 101, 220}, "MAGNIFY", button_fill, button_ink);
-    bottom.drawPanelButton({108, 184, 210, 220}, "KEYBOARD", button_fill, button_ink);
-    bottom.drawPanelButton({217, 184, 315, 220}, "SETTINGS", button_fill, button_ink);
-    if (settings_open)
-        bottom.drawLiveText(12, 226, "HOST COUNT IS USER CONFIGURED", TextStyle::Small, muted);
+    const Color button_ink{231, 241, 246};
+    const Color button_fill{35, 48, 60};
+    bottom.drawPanelButton({12, 184, 102, 225}, "", button_fill, button_ink);
+    bottom.drawPanelButton({115, 184, 205, 225}, "", button_fill, button_ink);
+    bottom.drawPanelButton({218, 184, 308, 225}, "", button_fill, button_ink);
+    bottom.drawMagnifierIcon(57, 204, button_ink);
+    bottom.drawKeyboardIcon(160, 204, button_ink);
+    bottom.drawSettingsIcon(263, 204, button_ink);
     bottom.present(false);
 }
 
@@ -2396,12 +2397,14 @@ static inline void stream_loop(PCONFIGURATION config,
                     const int key = 0x70 + selected - 1; // VK_F1 ... VK_F12
                     const char modifiers = MODIFIER_CTRL | MODIFIER_ALT | MODIFIER_SHIFT;
                     const int down_status = LiSendKeyboardEvent(key, KEY_ACTION_DOWN, modifiers);
-                    diag_log("MONITOR_SHORTCUT", "key=F%d action=down modifiers=ctrl+alt+shift result=%d", selected, down_status);
+                    diag_log("MONITOR_SHORTCUT", "key=F%d action=down modifiers=ctrl+alt+shift send_result=%d", selected, down_status);
                     const int up_status = LiSendKeyboardEvent(key, KEY_ACTION_UP, modifiers);
-                    diag_log("MONITOR_SHORTCUT", "key=F%d action=up modifiers=ctrl+alt+shift result=%d", selected, up_status);
-                    diag_log("MONITOR_SELECTED", "requested=%d configured_count=%d", selected, config->sunshine_display_count);
+                    diag_log("MONITOR_SHORTCUT", "key=F%d action=up modifiers=ctrl+alt+shift send_result=%d", selected, up_status);
+                    diag_log("MONITOR_SELECTED", "requested_display_index=%d configured_display_count=%d", selected, config->sunshine_display_count);
                 }
             }
+            if (display_action != 0)
+                diag_log("MONITOR_SELECTION_STATE", "tap_action=%d selected_display_index=%d configured_display_count=%d", display_action, config->sunshine_default_display, config->sunshine_display_count);
         }
         const u64 now = svcGetSystemTick();
         if (panel_active && now - last_panel_update >= SYSCLOCK_ARM11 / 2) {
@@ -2422,6 +2425,9 @@ static inline void stream_loop(PCONFIGURATION config,
                 input_handler ? input_handler->stream_panel_touch_buttons() : 0,
                 input_handler ? input_handler->stream_panel_touch_x() : 0,
                 input_handler ? input_handler->stream_panel_touch_y() : 0,
+                input_handler ? input_handler->stream_panel_right_touch_x() : 0,
+                input_handler ? input_handler->stream_panel_right_touch_y() : 0,
+                input_handler ? input_handler->stream_panel_click_mode() : false,
                 settings_open, config->stream, config->sunshine_display_count,
                 config->sunshine_default_display);
             last_panel_update = now;

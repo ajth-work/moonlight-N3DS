@@ -58,6 +58,9 @@ class Screen {
     void drawBackground();
     void drawSolidBackground(Color color);
     void drawCircle(int center_x, int center_y, int radius, Color color);
+    void drawMagnifierIcon(int center_x, int center_y, Color color);
+    void drawKeyboardIcon(int center_x, int center_y, Color color);
+    void drawSettingsIcon(int center_x, int center_y, Color color);
     void drawPanelButton(const Rect &rect, const std::string &label,
                          Color fill, Color text);
     void drawFilledTile(const Rect &rect, int number);

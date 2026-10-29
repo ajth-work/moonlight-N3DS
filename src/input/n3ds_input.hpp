@@ -37,6 +37,9 @@ class N3dsInput : public ISubscriber {
     int stream_panel_touch_buttons() { return panel_touch_buttons.load(); }
     int stream_panel_touch_x() { return panel_touch_x.load(); }
     int stream_panel_touch_y() { return panel_touch_y.load(); }
+    int stream_panel_right_touch_x() { return panel_right_touch_x.load(); }
+    int stream_panel_right_touch_y() { return panel_right_touch_y.load(); }
+    bool stream_panel_click_mode() { return panel_click_mode.load(); }
     bool consume_stream_panel_keyboard_request();
     bool consume_stream_panel_settings_request();
     int consume_stream_display_action();
@@ -70,6 +73,9 @@ class N3dsInput : public ISubscriber {
     AtomicVar<int> panel_touch_zone = 0;
     AtomicVar<int> panel_touch_x = 0;
     AtomicVar<int> panel_touch_y = 0;
+    AtomicVar<int> panel_right_touch_x = 0;
+    AtomicVar<int> panel_right_touch_y = 0;
+    AtomicVar<bool> panel_click_mode = false;
     AtomicVar<bool> panel_touch_click = false;
     int panel_touch_start_x = 0;
     int panel_touch_start_y = 0;
