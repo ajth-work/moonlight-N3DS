@@ -258,83 +258,156 @@ static void n3ds_exit_handler(void) {
     acExit();
 }
 
-static int console_selection_prompt(std::string prompt,
-                                    std::vector<std::string> options,
-                                    int default_idx) {
-    int option_idx = default_idx;
-    int last_option_idx = -1;
-    while (aptMainLoop()) {
-        if (option_idx != last_option_idx) {
-            consoleClear();
-            if (!prompt.empty()) {
-                printf("%s\n", prompt.c_str());
-            }
-            printf("Press up/down to select\n");
-            printf("Press A to confirm\n");
-            printf("Press B to go back\n\n");
 
-            for (int i = 0; i < options.size(); i++) {
-                if (i == option_idx) {
-                    printf(">%s\n", options[i].c_str());
-                } else {
-                    printf("%s\n", options[i].c_str());
-                }
-            }
-            last_option_idx = option_idx;
-        }
+struct GuiMenuItem {
+    std::string label;
+    std::string explanation;
+    std::string value;
+};
 
-        n3ds_draw_diag_version_overlay();
-        gfxSwapBuffers();
-        gfxFlushBuffers();
-        gspWaitForVBlank();
+static void restore_consoles_after_dual_screen_ui();
 
-        hidScanInput();
-        u32 kDown = hidKeysDown();
+class GuiMenuScreen : public MoonlightUi::DualScreenModel {
+  public:
+    enum class Result { Back, Selected };
+    GuiMenuScreen(const std::string &title, const std::string &context,
+                  std::vector<GuiMenuItem> items, int initial = 0)
+        : title_(title), context_(context), items_(std::move(items)),
+          selected_(items_.empty() ? 0 : std::max(0, std::min(
+              initial, static_cast<int>(items_.size()) - 1))) {}
 
-        if (kDown & KEY_A) {
-            consoleClear();
-            return option_idx;
+    void draw(MoonlightUi::Screen &top, MoonlightUi::Screen &bottom) override {
+        top.drawHeader("MOONLIGHT", title_);
+        const int first = std::max(0, std::min(selected_ - 4,
+                           static_cast<int>(items_.size()) - VISIBLE_ROWS));
+        const int count = std::min(VISIBLE_ROWS,
+                                   static_cast<int>(items_.size()) - first);
+        for (int row = 0; row < count; ++row) {
+            const int index = first + row;
+            const int y = LIST_TOP + row * ROW_STEP;
+            const MoonlightUi::Rect tile{16, y, top.width() - 16, y + ROW_HEIGHT};
+            top.drawFilledTile(tile, index + 1);
+            top.drawAutoRateText(tile.left + 30, tile.top + 6,
+                                 items_[index].label, tile.right - tile.left - 42,
+                                 {242, 247, 250});
+            if (index == selected_) top.drawHighlight(tile);
         }
-        if (kDown & KEY_B) {
-            consoleClear();
-            return -1;
+        top.drawFooter(DIAG_BUILD_VERSION, "UP/DOWN  A SELECT");
+        bottom.drawHeader(context_, "SELECTED");
+        if (!items_.empty()) {
+            const GuiMenuItem &item = items_[selected_];
+            bottom.drawAutoRateText(20, 65, item.label, bottom.width() - 40,
+                                    {242, 247, 250});
+            if (!item.value.empty())
+                bottom.drawAutoRateText(20, 91, "CURRENT: " + item.value,
+                                        bottom.width() - 40, {113, 240, 207});
+            draw_explanation(bottom, item.explanation);
         }
-        if (kDown & KEY_DOWN) {
-            if (option_idx < options.size() - 1) {
-                option_idx++;
-            }
-        } else if (kDown & KEY_UP) {
-            if (option_idx > 0) {
-                option_idx--;
-            }
-        }
+        bottom.drawFilledTile(ACTION_TILE, 1);
+        bottom.drawLiveText(100, 194, "SELECT", MoonlightUi::TextStyle::Tile,
+                            {242, 247, 250});
+        bottom.drawFooter(DIAG_BUILD_VERSION, "A SELECT  B BACK  TOUCH");
     }
 
-    exit(0);
+    bool handleInput(const MoonlightUi::InputEvent &event, bool *redraw) override {
+        *redraw = false;
+        if (event.type == MoonlightUi::InputEvent::Type::Back) {
+            result_ = Result::Back;
+            return false;
+        }
+        if (event.type == MoonlightUi::InputEvent::Type::Confirm) {
+            result_ = Result::Selected;
+            return false;
+        }
+        if (event.type == MoonlightUi::InputEvent::Type::Touch) {
+            if (event.touch.px >= ACTION_TILE.left && event.touch.px <= ACTION_TILE.right &&
+                event.touch.py >= ACTION_TILE.top && event.touch.py <= ACTION_TILE.bottom) {
+                result_ = Result::Selected;
+                return false;
+            }
+            return true;
+        }
+        if (event.type == MoonlightUi::InputEvent::Type::Direction && !items_.empty()) {
+            const int old = selected_;
+            if (event.direction == MoonlightUi::Direction::Up)
+                selected_ = selected_ == 0 ? static_cast<int>(items_.size()) - 1 : selected_ - 1;
+            else if (event.direction == MoonlightUi::Direction::Down)
+                selected_ = (selected_ + 1) % static_cast<int>(items_.size());
+            *redraw = old != selected_;
+        }
+        return true;
+    }
+    Result result() const { return result_; }
+    int selected_index() const { return selected_; }
+
+  private:
+    static constexpr int VISIBLE_ROWS = 5;
+    static constexpr int LIST_TOP = 61;
+    static constexpr int ROW_HEIGHT = 27;
+    static constexpr int ROW_STEP = 31;
+    static constexpr MoonlightUi::Rect ACTION_TILE{14, 190, 306, 218};
+    std::string title_;
+    std::string context_;
+    std::vector<GuiMenuItem> items_;
+    int selected_;
+    Result result_ = Result::Back;
+
+    static void draw_explanation(MoonlightUi::Screen &screen, const std::string &text) {
+        std::istringstream words(text);
+        std::string word, line;
+        int y = 121;
+        while (words >> word && y <= 177) {
+            const std::string candidate = line.empty() ? word : line + " " + word;
+            if (!line.empty() && screen.measureLiveText(candidate, MoonlightUi::TextStyle::Small) > screen.width() - 40) {
+                screen.drawLiveText(20, y, line, MoonlightUi::TextStyle::Small, {170, 191, 208});
+                y += 16;
+                line = word;
+            } else line = candidate;
+        }
+        if (!line.empty() && y <= 177)
+            screen.drawLiveText(20, y, line, MoonlightUi::TextStyle::Small, {170, 191, 208});
+    }
+};
+
+static bool run_gui_menu(const std::string &title, const std::string &context,
+                         const std::vector<GuiMenuItem> &items, int *selected) {
+    GuiMenuScreen screen(title, context, items, selected ? *selected : 0);
+    if (!MoonlightUi::runDualScreen(screen)) exit(0);
+    restore_consoles_after_dual_screen_ui();
+    if (screen.result() != GuiMenuScreen::Result::Selected) return false;
+    if (selected) *selected = screen.selected_index();
+    return true;
 }
 
 static std::string prompt_for_action(PSERVER_DATA server) {
+    std::vector<GuiMenuItem> actions;
     if (server->paired) {
-        std::vector<std::string> actions = {
-            "stream",
-            "stream profile",
-            "connection test",
-            "quit stream",
-            "stream settings",
-            "unpair",
+        actions = {
+            {"Stream", "Start streaming from the selected host. The host app list opens next.", "Ready"},
+            {"Stream Profile", "Choose a saved resolution and bitrate profile for this host.", "Host-specific"},
+            {"Connection Test", "Measure frame timing and staged bitrate stability without changing saved settings.", "Diagnostic"},
+            {"Quit Stream", "Ask the host to close its currently active streaming app.", "Host request"},
+            {"Stream Settings", "Edit video, audio, input, decoder, and diagnostic log options.", "Preferences"},
+            {"Unpair", "Remove this device's pairing from the selected host.", "Destructive host change"},
+            {"Exit to 3DS HOME", "Close Moonlight cleanly and return to the Nintendo 3DS HOME Menu.", "Exit app"},
         };
-        int idx = console_selection_prompt("Select an action", actions, 0);
-        if (idx < 0) {
-            return "";
-        }
-        return actions[idx];
+    } else {
+        actions = {
+            {"Pair", "Pair this 3DS with the selected host using the displayed PIN.", "Not paired"},
+            {"Exit to 3DS HOME", "Close Moonlight cleanly and return to the Nintendo 3DS HOME Menu.", "Exit app"},
+        };
     }
-    std::vector<std::string> actions = {"pair"};
-    int idx = console_selection_prompt("Select an action", actions, 0);
-    if (idx < 0) {
-        return "";
-    }
-    return actions[idx];
+    int selected = 0;
+    if (!run_gui_menu("HOST ACTIONS", "HOST", actions, &selected)) return "";
+    const std::string &label = actions[selected].label;
+    if (label == "Stream") return "stream";
+    if (label == "Stream Profile") return "stream profile";
+    if (label == "Connection Test") return "connection test";
+    if (label == "Quit Stream") return "quit stream";
+    if (label == "Stream Settings") return "stream settings";
+    if (label == "Unpair") return "unpair";
+    if (label == "Pair") return "pair";
+    return "exit to 3ds home";
 }
 
 class HostPickerScreen : public MoonlightUi::DualScreenModel {
@@ -343,6 +416,7 @@ class HostPickerScreen : public MoonlightUi::DualScreenModel {
         Back,
         AddHost,
         SelectedHost,
+        ExitToHome,
     };
 
     explicit HostPickerScreen(std::vector<std::string> addresses)
@@ -354,7 +428,7 @@ class HostPickerScreen : public MoonlightUi::DualScreenModel {
     void draw(MoonlightUi::Screen &top,
               MoonlightUi::Screen &bottom) override {
         top.drawHeader("MOONLIGHT", "SELECT A HOST");
-        const int total_items = static_cast<int>(addresses_.size()) + 1;
+        const int total_items = static_cast<int>(addresses_.size()) + 2;
         const int first_item = first_visible_item(total_items);
         const int visible_items =
             std::min(HOST_VISIBLE_ROWS, total_items - first_item);
@@ -365,9 +439,11 @@ class HostPickerScreen : public MoonlightUi::DualScreenModel {
                                              y + HOST_LIST_ROW_HEIGHT};
             top.drawFilledTile(tile, item_index + 1);
             const std::string label =
-                item_index == static_cast<int>(addresses_.size())
-                    ? "Add a new host address"
-                    : addresses_[item_index];
+                item_index < static_cast<int>(addresses_.size())
+                    ? addresses_[item_index]
+                    : (item_index == static_cast<int>(addresses_.size())
+                           ? "Add a new host address"
+                           : "Exit to 3DS HOME");
             top.drawAutoRateText(
                 tile.left + 28, tile.top + 6, label,
                 tile.right - tile.left - 40, {242, 247, 250});
@@ -379,28 +455,32 @@ class HostPickerScreen : public MoonlightUi::DualScreenModel {
             DIAG_BUILD_VERSION,
             selected_index_ == static_cast<int>(addresses_.size())
                 ? "UP/DOWN  A ADD HOST"
-                : "UP/DOWN  A CONNECT");
+                : selected_index_ == static_cast<int>(addresses_.size()) + 1
+                    ? "UP/DOWN  A EXIT HOME"
+                    : "UP/DOWN  A CONNECT");
 
         bottom.drawHeader("CONNECTION", "SELECTED HOST");
         bottom.drawLiveText(18, 67, "HOST", MoonlightUi::TextStyle::Small,
                             {113, 240, 207});
+        const bool add_host_selected =
+            selected_index_ == static_cast<int>(addresses_.size());
+        const bool exit_selected =
+            selected_index_ == static_cast<int>(addresses_.size()) + 1;
         const std::string selected_label =
-            selected_index_ == static_cast<int>(addresses_.size())
-                ? "Add a new host address"
-                : addresses_[selected_index_];
+            add_host_selected ? "Add a new host address"
+            : exit_selected ? "Exit to 3DS HOME"
+                            : addresses_[selected_index_];
         bottom.drawAutoRateText(18, 82, selected_label, bottom.width() - 36,
                                 {242, 247, 250});
 
         bottom.drawFilledTile(CONNECT_TILE, 1);
-        const bool add_host_selected =
-            selected_index_ == static_cast<int>(addresses_.size());
-        const std::string connect_label =
-            addresses_.empty() ? "NO SAVED HOSTS"
-                               : (add_host_selected ? "SELECT A HOST"
-                                                    : "CONNECT");
+        const std::string connect_label = exit_selected ? "EXIT TO HOME"
+            : addresses_.empty() ? "NO SAVED HOSTS"
+            : add_host_selected ? "SELECT A HOST" : "CONNECT";
         const MoonlightUi::Color connect_color =
-            addresses_.empty() ? MoonlightUi::Color{119, 144, 167}
-                               : MoonlightUi::Color{242, 247, 250};
+            addresses_.empty() && !exit_selected
+                ? MoonlightUi::Color{119, 144, 167}
+                : MoonlightUi::Color{242, 247, 250};
         const int connect_label_width = bottom.measureLiveText(
             connect_label, MoonlightUi::TextStyle::Tile);
         bottom.drawLiveText((bottom.width() - connect_label_width) / 2, 134,
@@ -413,7 +493,8 @@ class HostPickerScreen : public MoonlightUi::DualScreenModel {
         bottom.drawFooter(
             DIAG_BUILD_VERSION,
             add_host_selected ? "A ADD HOST  B BACK  TOUCH"
-                              : "A CONNECT  B BACK  TOUCH");
+            : exit_selected ? "A EXIT HOME  B BACK  TOUCH"
+                            : "A CONNECT  B BACK  TOUCH");
     }
 
     bool handleInput(const MoonlightUi::InputEvent &event,
@@ -428,7 +509,13 @@ class HostPickerScreen : public MoonlightUi::DualScreenModel {
             return false;
         }
         if (event.type == MoonlightUi::InputEvent::Type::Touch) {
+            const bool exit_selected =
+                selected_index_ == static_cast<int>(addresses_.size()) + 1;
             if (touch_in_rect(event.touch, CONNECT_TILE)) {
+                if (exit_selected) {
+                    result_ = Result::ExitToHome;
+                    return false;
+                }
                 if (!addresses_.empty() &&
                     selected_index_ < static_cast<int>(addresses_.size())) {
                     result_ = Result::SelectedHost;
@@ -444,7 +531,7 @@ class HostPickerScreen : public MoonlightUi::DualScreenModel {
             return true;
         }
 
-        const int last_item = static_cast<int>(addresses_.size());
+        const int last_item = static_cast<int>(addresses_.size()) + 1;
         const int previous = selected_index_;
         if (event.direction == MoonlightUi::Direction::Up) {
             selected_index_ = selected_index_ == 0 ? last_item
@@ -491,9 +578,12 @@ class HostPickerScreen : public MoonlightUi::DualScreenModel {
     }
 
     void activate_selected() {
-        result_ = selected_index_ == static_cast<int>(addresses_.size())
-                      ? Result::AddHost
-                      : Result::SelectedHost;
+        if (selected_index_ == static_cast<int>(addresses_.size()) + 1)
+            result_ = Result::ExitToHome;
+        else if (selected_index_ == static_cast<int>(addresses_.size()))
+            result_ = Result::AddHost;
+        else
+            result_ = Result::SelectedHost;
     }
 };
 
@@ -525,6 +615,8 @@ static std::string prompt_for_address() {
     if (screen.result() == HostPickerScreen::Result::SelectedHost) {
         return screen.selected_address();
     }
+    if (screen.result() == HostPickerScreen::Result::ExitToHome)
+        return "__EXIT_TO_HOME__";
 
     // Prompt users for a custom address
     SwkbdState swkbd;
@@ -537,139 +629,112 @@ static std::string prompt_for_address() {
     trim(addr_string);
     return addr_string;
 }
-static VIDEO_DECODER_TYPE
-prompt_for_video_decoder(VIDEO_DECODER_TYPE default_val) {
-    std::vector<std::string> decoders = {
-        "hardware (fast, *new* 3DS only)",
-        "software (slow)",
-        "disable video",
-    };
-    int idx = console_selection_prompt("Select a video option", decoders,
-                                       (int)default_val);
-    if (idx < 0) {
-        return default_val;
-    }
-    return (VIDEO_DECODER_TYPE)idx;
-}
-
-static bool prompt_for_boolean(std::string prompt, bool default_val) {
-    std::vector<std::string> options = {
-        "true",
-        "false",
-    };
-    int idx = console_selection_prompt(prompt, options, default_val ? 0 : 1);
-    if (idx < 0) {
-        idx = default_val ? 0 : 1;
-    }
-    return idx == 0;
-}
-
 static int prompt_for_int(std::string initial_text) {
     const int previous = std::stoi(initial_text);
     char setting_buff[MAX_INPUT_CHAR] = {};
-
     SwkbdState swkbd;
     swkbdInit(&swkbd, SWKBD_TYPE_NUMPAD, 2, 8);
     swkbdSetInitialText(&swkbd, initial_text.c_str());
     SwkbdButton button = swkbdInputText(&swkbd, setting_buff, MAX_INPUT_CHAR);
     std::string setting_str = std::string(setting_buff);
     trim(setting_str);
-    if (button != SWKBD_BUTTON_CONFIRM || setting_str.empty()) {
-        return previous;
-    }
+    if (button != SWKBD_BUTTON_CONFIRM || setting_str.empty()) return previous;
     errno = 0;
     char *end = NULL;
     long value = strtol(setting_str.c_str(), &end, 10);
     if (errno == ERANGE || end == setting_str.c_str() || *end != '\0' ||
-        value < INT_MIN || value > INT_MAX) {
-        return previous;
-    }
+        value < INT_MIN || value > INT_MAX) return previous;
     return static_cast<int>(value);
 }
 
+static bool prompt_for_choice(const std::string &title,
+                              const std::vector<GuiMenuItem> &options,
+                              int initial, int *chosen) {
+    int selected = initial;
+    if (!run_gui_menu(title, "CHOOSE OPTION", options, &selected)) return false;
+    *chosen = selected;
+    return true;
+}
+
 static void prompt_for_stream_settings(PCONFIGURATION config) {
-    std::vector<std::string> setting_names = {
-        "width",
-        "height",
-        "fps",
-        "motion_controls",
-        "bitrate",
-        "packetsize",
-        "sops",
-        "localaudio",
-        "quitappafter",
-        "viewonly",
-        "video_decoder",
-        "swapfacebuttons",
-        "swaptriggersandshoulders",
-        "usetriggersformouse",
+    struct SettingInfo { const char *name; const char *explanation; };
+    static const SettingInfo settings[] = {
+        {"width", "Requested host video width in pixels. Unsupported widths may be rejected or scaled."},
+        {"height", "Requested host video height in pixels. 3DS-friendly heights are multiples of 240."},
+        {"fps", "Target stream frame rate. Higher rates need more host and network capacity."},
+        {"motion_controls", "Allow motion sensor data to be sent when the host requests it; this does not map tilt to the right stick."},
+        {"bitrate", "Maximum video bitrate in kilobits per second. Higher values use more network bandwidth."},
+        {"packetsize", "Maximum network packet size in bytes. Lower values can help some networks avoid fragmentation."},
+        {"sops", "Ask the host to optimize game settings for streaming when supported."},
+        {"localaudio", "Play audio locally on the PC instead of sending it to the 3DS."},
+        {"quitappafter", "Ask the host to close the selected app after the stream ends."},
+        {"viewonly", "Disable controller input sent from the 3DS while streaming."},
+        {"video_decoder", "Select hardware decoding, slower software decoding, or disable video."},
+        {"swapfacebuttons", "Swap A/B and X/Y to match the alternate controller layout."},
+        {"swaptriggersandshoulders", "Swap L with ZL and R with ZR for the alternate shoulder mapping."},
+        {"usetriggersformouse", "Use ZL and ZR as left and right mouse buttons."},
+        {"diagnostic_logging", "Write Moonlight diagnostic events to sd:/3ds/moonlight/moonlight.log. Changes apply immediately and save when you leave this settings menu."},
     };
     int idx = 0;
-    while (1) {
-        std::string prompt = "Select a setting";
-        if (config->stream.width % GSP_SCREEN_HEIGHT_TOP &&
-            config->stream.width % GSP_SCREEN_HEIGHT_BOTTOM) {
-            prompt += "\n\nWARNING: Using an unsupported width may "
-                      "cause issues (3DS supports multiples of 400 or 320)\n";
+    while (true) {
+        std::vector<GuiMenuItem> items;
+        for (const SettingInfo &info : settings) {
+            std::string value;
+            if (!strcmp(info.name, "width")) value = std::to_string(config->stream.width);
+            else if (!strcmp(info.name, "height")) value = std::to_string(config->stream.height);
+            else if (!strcmp(info.name, "fps")) value = std::to_string(config->stream.fps);
+            else if (!strcmp(info.name, "motion_controls")) value = config->motion_controls ? "On" : "Off";
+            else if (!strcmp(info.name, "bitrate")) value = std::to_string(config->stream.bitrate) + " kbps";
+            else if (!strcmp(info.name, "packetsize")) value = std::to_string(config->stream.packetSize) + " bytes";
+            else if (!strcmp(info.name, "sops")) value = config->sops ? "On" : "Off";
+            else if (!strcmp(info.name, "localaudio")) value = config->localaudio ? "On" : "Off";
+            else if (!strcmp(info.name, "quitappafter")) value = config->quitappafter ? "On" : "Off";
+            else if (!strcmp(info.name, "viewonly")) value = config->viewonly ? "On" : "Off";
+            else if (!strcmp(info.name, "video_decoder")) value = config->video_decoder == HARDWARE_VIDEO_DECODER ? "Hardware" : config->video_decoder == SOFTWARE_VIDEO_DECODER ? "Software" : "Disabled";
+            else if (!strcmp(info.name, "swapfacebuttons")) value = config->swap_face_buttons ? "On" : "Off";
+            else if (!strcmp(info.name, "swaptriggersandshoulders")) value = config->swap_triggers_and_shoulders ? "On" : "Off";
+            else if (!strcmp(info.name, "usetriggersformouse")) value = config->use_triggers_for_mouse ? "On" : "Off";
+            else value = config->diagnostic_logging ? "On" : "Off";
+            items.push_back({info.name, info.explanation, value});
         }
-        if (config->stream.height % GSP_SCREEN_WIDTH) {
-            prompt += "\n\nWARNING: Using an unsupported height may "
-                      "cause issues (3DS supports multiples of 240)\n";
-        }
-        idx = console_selection_prompt(prompt, setting_names, idx);
-        if (idx < 0) {
-            break;
-        }
-
-        if ("width" == setting_names[idx]) {
-            config->stream.width =
-                prompt_for_int(std::to_string(config->stream.width));
-        } else if ("height" == setting_names[idx]) {
-            config->stream.height =
-                prompt_for_int(std::to_string(config->stream.height));
-        } else if ("motion_controls" == setting_names[idx]) {
-            config->motion_controls = prompt_for_boolean(
-                "Enable Motion Controls", config->motion_controls);
-        } else if ("fps" == setting_names[idx]) {
-            config->stream.fps =
-                prompt_for_int(std::to_string(config->stream.fps));
-        } else if ("bitrate" == setting_names[idx]) {
-            config->stream.bitrate =
-                prompt_for_int(std::to_string(config->stream.bitrate));
-        } else if ("packetsize" == setting_names[idx]) {
-            config->stream.packetSize =
-                prompt_for_int(std::to_string(config->stream.packetSize));
-        } else if ("sops" == setting_names[idx]) {
-            config->sops = prompt_for_boolean(
-                "Optimize Game settings for streaming", config->sops);
-        } else if ("localaudio" == setting_names[idx]) {
-            config->localaudio =
-                prompt_for_boolean("Enable local audio", config->localaudio);
-        } else if ("quitappafter" == setting_names[idx]) {
-            config->quitappafter = prompt_for_boolean(
-                "Quit app after streaming", config->quitappafter);
-        } else if ("viewonly" == setting_names[idx]) {
-            config->viewonly = prompt_for_boolean("Disable controller input",
-                                                  config->viewonly);
-        } else if ("video_decoder" == setting_names[idx]) {
-            config->video_decoder =
-                prompt_for_video_decoder(config->video_decoder);
-        } else if ("swapfacebuttons" == setting_names[idx]) {
-            config->swap_face_buttons = prompt_for_boolean(
-                "Swaps A/B and X/Y to match Xbox controller layout",
-                config->swap_face_buttons);
-        } else if ("swaptriggersandshoulders" == setting_names[idx]) {
-            config->swap_triggers_and_shoulders = prompt_for_boolean(
-                "Swaps L/ZL and R/ZR for a more natural feel",
-                config->swap_triggers_and_shoulders);
-        } else if ("usetriggersformouse" == setting_names[idx]) {
-            config->use_triggers_for_mouse =
-                prompt_for_boolean("Use ZL/ZR as left/right mouse buttons",
-                                   config->use_triggers_for_mouse);
+        if (!run_gui_menu("STREAM SETTINGS", "SETTINGS", items, &idx)) break;
+        const char *name = settings[idx].name;
+        if (!strcmp(name, "width")) config->stream.width = prompt_for_int(std::to_string(config->stream.width));
+        else if (!strcmp(name, "height")) config->stream.height = prompt_for_int(std::to_string(config->stream.height));
+        else if (!strcmp(name, "fps")) config->stream.fps = prompt_for_int(std::to_string(config->stream.fps));
+        else if (!strcmp(name, "bitrate")) config->stream.bitrate = prompt_for_int(std::to_string(config->stream.bitrate));
+        else if (!strcmp(name, "packetsize")) config->stream.packetSize = prompt_for_int(std::to_string(config->stream.packetSize));
+        else if (!strcmp(name, "video_decoder")) {
+            int choice = static_cast<int>(config->video_decoder);
+            std::vector<GuiMenuItem> opts = {
+                {"Hardware", "Fast hardware decoder, available on New 3DS models.", "Fast"},
+                {"Software", "CPU decoder; may be too slow for high-resolution streams.", "Slow"},
+                {"Disable video", "Do not decode or display the video stream.", "Audio/input only"},
+            };
+            if (prompt_for_choice("VIDEO DECODER", opts, choice, &choice)) config->video_decoder = static_cast<VIDEO_DECODER_TYPE>(choice);
+        } else {
+            bool *value = nullptr;
+            if (!strcmp(name, "motion_controls")) value = &config->motion_controls;
+            else if (!strcmp(name, "sops")) value = &config->sops;
+            else if (!strcmp(name, "localaudio")) value = &config->localaudio;
+            else if (!strcmp(name, "quitappafter")) value = &config->quitappafter;
+            else if (!strcmp(name, "viewonly")) value = &config->viewonly;
+            else if (!strcmp(name, "swapfacebuttons")) value = &config->swap_face_buttons;
+            else if (!strcmp(name, "swaptriggersandshoulders")) value = &config->swap_triggers_and_shoulders;
+            else if (!strcmp(name, "usetriggersformouse")) value = &config->use_triggers_for_mouse;
+            if (!strcmp(name, "diagnostic_logging")) {
+                config->diagnostic_logging = !config->diagnostic_logging;
+                diag_set_enabled(config->diagnostic_logging);
+            } else if (value != nullptr) {
+                int choice = *value ? 0 : 1;
+                std::vector<GuiMenuItem> opts = {
+                    {"On", settings[idx].explanation, "Enabled"},
+                    {"Off", settings[idx].explanation, "Disabled"},
+                };
+                if (prompt_for_choice(name, opts, choice, &choice)) *value = choice == 0;
+            }
         }
     }
-
-    // Update the config file
     char *config_file_path = (char *)MOONLIGHT_3DS_PATH "/moonlight.conf";
     config_save(config_file_path, config);
 }
@@ -1192,10 +1257,11 @@ static int prompt_for_app_id(PSERVER_DATA server) {
         list = list->next;
     }
 
-    int id_idx = console_selection_prompt("Select an app", app_names, 0);
-    if (id_idx == -1) {
-        return -1;
-    }
+    std::vector<GuiMenuItem> app_items;
+    for (const std::string &name : app_names)
+        app_items.push_back({name, "Launch this application on the selected Sunshine host.", "Host app"});
+    int id_idx = 0;
+    if (!run_gui_menu("SELECT AN APP", "SUNSHINE", app_items, &id_idx)) return -1;
     return app_ids[id_idx];
 }
 
@@ -2710,10 +2776,15 @@ int main_loop(int argc, char *argv[]) {
 
     CONFIGURATION config;
     config_parse(argc, argv, &config);
+    diag_set_enabled(config.diagnostic_logging);
     diag_log("APP_START", "version=%s", DIAG_BUILD_VERSION);
 
     while (aptMainLoop()) {
         auto address_string = prompt_for_address();
+        if (address_string == "__EXIT_TO_HOME__") {
+            diag_log("APP_EXIT_REQUEST", "route=host_picker");
+            return 0;
+        }
         if (address_string.empty()) {
             continue;
         }
@@ -2759,7 +2830,10 @@ int main_loop(int argc, char *argv[]) {
             }
             config.action = (char *)action.c_str();
 
-            if (strcmp("stream", config.action) == 0) {
+            if (strcmp("exit to 3ds home", config.action) == 0) {
+                diag_log("APP_EXIT_REQUEST", "route=host_action_menu");
+                return 0;
+            } else if (strcmp("stream", config.action) == 0) {
                 action_stream(&config, &server);
                 break;
             } else if (strcmp("pair", config.action) == 0) {

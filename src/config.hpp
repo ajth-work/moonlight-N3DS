@@ -56,6 +56,7 @@ typedef struct _CONFIGURATION {
     bool swap_face_buttons;
     bool swap_triggers_and_shoulders;
     bool use_triggers_for_mouse;
+    bool diagnostic_logging;
 } CONFIGURATION, *PCONFIGURATION;
 
 bool config_file_parse(char *filename, PCONFIGURATION config);

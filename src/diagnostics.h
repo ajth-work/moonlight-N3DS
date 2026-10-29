@@ -11,7 +11,7 @@ extern "C" {
 #endif
 
 #define DIAG_WATCHDOG_LIMIT_MS 30000ULL
-#define DIAG_BUILD_VERSION "3.3.0-gui3-stackdiag3"
+#define DIAG_BUILD_VERSION "3.4.0-gui4"
 #define DIAG_MAIN_STACK_REQUESTED_SIZE 0x40000U
 /* app.rsf SystemControlInfo.StackSize */
 #define DIAG_LOG_LINE_MAX 512
@@ -28,6 +28,8 @@ typedef enum {
 
 void diag_init(void);
 void diag_close(void);
+void diag_set_enabled(bool enabled);
+bool diag_is_enabled(void);
 void diag_log(const char *event, const char *format, ...);
 void diag_stack_checkpoint(const char *boundary, uintptr_t stack_pointer);
 void diag_set_phase(const char *phase);

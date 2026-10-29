@@ -36,6 +36,7 @@ static unsigned int diag_http_dropped;
 static bool diag_http_deferred;
 static FILE *diag_file = NULL;
 static bool diag_initialized = false;
+static volatile bool diag_logging_enabled = true;
 static bool diag_cancel = false;
 static bool diag_watchdog_reported = false;
 static bool diag_http_active = false;
@@ -380,7 +381,8 @@ void diag_log(const char *event, const char *format, ...) {
     if (diag_recent_count < DIAG_RECENT_LINE_COUNT) {
         diag_recent_count++;
     }
-    if (diag_file != NULL) {
+    if (__atomic_load_n(&diag_logging_enabled, __ATOMIC_ACQUIRE) &&
+        diag_file != NULL) {
         fputs(diag_line, diag_file);
         fputc('\n', diag_file);
         fflush(diag_file);
@@ -400,6 +402,14 @@ void diag_init(void) {
     diag_log("LOGGER_OPEN", "path=sd:/3ds/moonlight/moonlight.log opened=%s flush=fflush+fsync",
              diag_file != NULL ? "yes" : "no");
     diag_set_phase("app.startup");
+}
+
+void diag_set_enabled(bool enabled) {
+    __atomic_store_n(&diag_logging_enabled, enabled, __ATOMIC_RELEASE);
+}
+
+bool diag_is_enabled(void) {
+    return __atomic_load_n(&diag_logging_enabled, __ATOMIC_ACQUIRE);
 }
 
 void diag_close(void) {
@@ -494,7 +504,8 @@ void diag_stack_checkpoint(const char *boundary, uintptr_t stack_pointer) {
     diag_stack_append_hex((uint32_t)query_result);
     diag_stack_append_text(" high_water=not_measured\n");
 
-    fd = diag_file != NULL ? fileno(diag_file) : -1;
+    fd = (__atomic_load_n(&diag_logging_enabled, __ATOMIC_ACQUIRE) &&
+          diag_file != NULL) ? fileno(diag_file) : -1;
     if (fd >= 0 && fflush(diag_file) == 0) {
         while (written < diag_stack_record_length) {
             const ssize_t result =
@@ -533,7 +544,8 @@ void diag_phase_outcome(const char *phase, const char *outcome, int result) {
 /* A fixed breadcrumb avoids printf-family formatting on the request stack.
  * Caller holds diag_lock. No callback into the logger from this helper. */
 static void diag_http_breadcrumb_locked(const char *text) {
-    if (diag_file != NULL) {
+    if (__atomic_load_n(&diag_logging_enabled, __ATOMIC_ACQUIRE) &&
+        diag_file != NULL) {
         fputs(text, diag_file);
         fputc('\n', diag_file);
         fflush(diag_file);
