@@ -117,3 +117,37 @@ git push origin --delete diag/cert-fingerprints diag/moonlight-logging diag/tls-
 - [ ] INTENT.md documents the branch map and §3 rules
 - [ ] Phase 3: both GUI identities build from `product/gui` with TMD-verified Title IDs
 - [ ] Feed untouched by Phases 1–2 (still rev 46 lineage, all routes hash-verified)
+
+## Appendix C — Codex prompts (added 2026-10-29)
+
+### C1. Discussion opener — paste into a fresh PC Codex chat
+
+Discuss-first: Codex reads this spec, runs the Phase 0 verification against the PC clone, and returns a discussion brief. It executes nothing until AJ says go in that chat.
+
+```
+You are the PC-side architect for AJ's Moonlight-N3DS fork (local clone: C:\code\moonlight-N3DS; GitHub: ajth-work/moonlight-N3DS). AJ is opening this chat to DISCUSS a branch-consolidation spec before anything is executed. Start immediately: read and inspect first, discuss second. Do not ask permission to read or inspect — that is already approved. Do NOT create, delete, or merge any branch, and do not build or publish anything in this session unless AJ explicitly says go in this chat.
+
+Step 1 — Read the spec in full: docs/branch-consolidation/SPEC.md on branch n3ds-main (filed at commit 0db88517). Also read INTENT.md on n3ds-main for project context.
+
+Step 2 — Verify the spec against local reality (read-only):
+- git fetch, then compare every branch tip in the spec's section 1 table against origin, and flag any local-only branches or commits in this clone that GitHub doesn't have.
+- Inspect branch codex/moonlight-build-publish-skills (tip bee03599): what it contains, what it branched from, and whether its .agents/skills content already exists on feature/gui-stream-gamepad or feature/moonlight-3d.
+- Report the local worktree state: current branch and dirty files. Untracked build-* dirs and docs/GUI_MENU_AUDIT.md are expected and are not source.
+
+Step 3 — Give AJ a discussion brief covering:
+- Where the spec matches local reality and where it doesn't — every discrepancy named, with evidence.
+- Your assessment of the target topology (product/gui created at the gamepad tip 82667f1a, product/3d at 85455a50) — especially whether the spec's claim holds that the GUI stack gui-toolkit -> gui-stream-moonlight-theme -> gui-stream-gamepad is truly linear in the actual history.
+- Phase 3: your honest recommendation between parameterizing the Moonlight UI / GamePad identity as a build-time choice on product/gui, versus the spec's Option B (product/gui-ui and product/gui-gamepad leaf branches). Reasons, not just a pick.
+- Risks or steps the spec missed.
+- A short list of the decisions AJ needs to make before Phase 1 can run.
+
+Standing facts: published identities are Moonlight UI 0x0004000000554900, Moonlight GamePad 0x00040000004D1100, Moonlight 3D 0x0004000000003D00, all sharing config at sd:/3ds/moonlight/; the UniStore feed is at revision 46 and nothing in this discussion touches the feed or the relay; if any of this later becomes a Codex Bridge job, it dispatches only into a fully drained queue.
+```
+
+### C2. Phase 1 starter — paste in the same chat once the discussion has settled
+
+Paste = go: this executes Phase 1 immediately. Do not paste until the C1 discussion has closed the open questions.
+
+```
+Discussion concluded. Execute Phase 1 of docs/branch-consolidation/SPEC.md (n3ds-main) exactly as written: create the archive tags and the product/gui and product/3d branches at the spec's SHAs (or the verified successor tips from your Phase 0 inspection — if a tip moved, say so in the report and use the verified tip). You are authorized to push the tags and the two new branches to origin of https://github.com/ajth-work/moonlight-N3DS.git with a normal (non-force) push. No builds, no publishes, no deletions — Phase 2 stays gated. Report back with the created refs and their SHAs verified against the table, then stop.
+```
