@@ -56,6 +56,8 @@ static MemInfo diag_stack_meminfo;
 static PageInfo diag_stack_pageinfo;
 static char diag_stack_record[DIAG_STACK_RECORD_CAPACITY];
 static size_t diag_stack_record_length = 0;
+static char diag_ui_top_state[32];
+static char diag_ui_bottom_state[32];
 
 bool diag_cert_fingerprint(X509 *certificate, char *out,
                            unsigned int out_capacity) {
@@ -389,6 +391,18 @@ void diag_log(const char *event, const char *format, ...) {
         fsync(fileno(diag_file));
     }
     LightLock_Unlock(&diag_lock);
+}
+
+void diag_ui_state(const char *screen, const char *state, bool graphical) {
+    char *previous;
+    if (screen == NULL || state == NULL) return;
+    if (strcmp(screen, "TOP") == 0) previous = diag_ui_top_state;
+    else if (strcmp(screen, "BOTTOM") == 0) previous = diag_ui_bottom_state;
+    else return;
+    if (strcmp(previous, state) == 0) return;
+    snprintf(previous, 32, "%s", state);
+    diag_log("UI_STATE", "screen=%s state=%s graphical=%d", screen, state,
+             graphical ? 1 : 0);
 }
 
 void diag_init(void) {

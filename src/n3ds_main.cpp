@@ -588,6 +588,8 @@ class HostPickerScreen : public MoonlightUi::DualScreenModel {
 };
 
 static void restore_consoles_after_dual_screen_ui() {
+    diag_ui_state("TOP", "terminal text", false);
+    diag_ui_state("BOTTOM", "terminal text", false);
     consoleSelect(&DebugTouchHandler::topScreen);
     DebugTouchHandler::topScreen.frameBuffer =
         (u16 *)gfxGetFramebuffer(GFX_TOP, GFX_LEFT, NULL, NULL);
@@ -619,6 +621,8 @@ static std::string prompt_for_address() {
         return "__EXIT_TO_HOME__";
 
     // Prompt users for a custom address
+    diag_ui_state("TOP", "native system UI", true);
+    diag_ui_state("BOTTOM", "native system UI", true);
     SwkbdState swkbd;
     char *addr_buff = (char *)malloc(MAX_INPUT_CHAR);
     swkbdInit(&swkbd, SWKBD_TYPE_NORMAL, 3, -1);
@@ -626,6 +630,8 @@ static std::string prompt_for_address() {
     swkbdInputText(&swkbd, addr_buff, MAX_INPUT_CHAR);
     std::string addr_string = std::string(addr_buff);
     free(addr_buff);
+    diag_ui_state("TOP", "toolkit GUI", true);
+    diag_ui_state("BOTTOM", "toolkit GUI", true);
     trim(addr_string);
     return addr_string;
 }
@@ -633,9 +639,13 @@ static int prompt_for_int(std::string initial_text) {
     const int previous = std::stoi(initial_text);
     char setting_buff[MAX_INPUT_CHAR] = {};
     SwkbdState swkbd;
+    diag_ui_state("TOP", "native system UI", true);
+    diag_ui_state("BOTTOM", "native system UI", true);
     swkbdInit(&swkbd, SWKBD_TYPE_NUMPAD, 2, 8);
     swkbdSetInitialText(&swkbd, initial_text.c_str());
     SwkbdButton button = swkbdInputText(&swkbd, setting_buff, MAX_INPUT_CHAR);
+    diag_ui_state("TOP", "toolkit GUI", true);
+    diag_ui_state("BOTTOM", "toolkit GUI", true);
     std::string setting_str = std::string(setting_buff);
     trim(setting_str);
     if (button != SWKBD_BUTTON_CONFIRM || setting_str.empty()) return previous;
@@ -943,6 +953,7 @@ static int stream_profile_rate_for_config(PCONFIGURATION config,
 }
 
 static void restore_bottom_console() {
+    diag_ui_state("BOTTOM", "terminal text", false);
     PrintConsole *previous_console =
         consoleSelect(&DebugTouchHandler::bottomScreen);
     DebugTouchHandler::bottomScreen.frameBuffer =
@@ -1229,6 +1240,46 @@ struct AppListTaskContext {
     int status;
 };
 
+class GuiMessageScreen : public MoonlightUi::DualScreenModel {
+  public:
+    GuiMessageScreen(std::string title, std::string message, std::string hint)
+        : title_(std::move(title)), message_(std::move(message)),
+          hint_(std::move(hint)) {}
+    void draw(MoonlightUi::Screen &top, MoonlightUi::Screen &bottom) override {
+        top.drawHeader("MOONLIGHT", title_);
+        top.drawLiveText(20, 91, "Something needs attention", MoonlightUi::TextStyle::Header,
+                         {242, 247, 250});
+        top.drawFooter(DIAG_BUILD_VERSION, "RETURN TO HOST MENU");
+        bottom.drawHeader("NEXT STEP", "YOU CAN GO BACK");
+        bottom.drawAutoRateText(20, 82, message_, bottom.width() - 40,
+                                {242, 247, 250});
+        bottom.drawAutoRateText(20, 116, hint_, bottom.width() - 40,
+                                {170, 191, 208});
+        bottom.drawFooter(DIAG_BUILD_VERSION, "A OR B BACK");
+    }
+    bool handleInput(const MoonlightUi::InputEvent &event, bool *redraw) override {
+        *redraw = false;
+        if (event.type == MoonlightUi::InputEvent::Type::Back ||
+            event.type == MoonlightUi::InputEvent::Type::Confirm) return false;
+        return true;
+    }
+  private:
+    std::string title_, message_, hint_;
+};
+
+static void show_gui_message(const std::string &title, const std::string &message,
+                             const std::string &hint) {
+    GuiMessageScreen screen(title, message, hint);
+    MoonlightUi::runDualScreen(screen);
+    restore_consoles_after_dual_screen_ui();
+}
+
+static bool run_gui_call(const char *phase, const std::string &title,
+                         DiagnosticTaskFunction function, void *context,
+                         bool cancellable_http = true,
+                         bool interrupt_connection = false,
+                         const std::string &detail = std::string());
+
 static void app_list_task(void *opaque) {
     AppListTaskContext *task = static_cast<AppListTaskContext *>(opaque);
     task->status = gs_applist(task->server, &task->list);
@@ -1237,24 +1288,33 @@ static void app_list_task(void *opaque) {
 static int prompt_for_app_id(PSERVER_DATA server) {
     PAPP_LIST list = NULL;
     AppListTaskContext task{server, NULL, GS_ERROR};
-    run_monitored_call("connect.app_list", app_list_task, &task);
+    run_gui_call("connect.app_list", "Loading host app list", app_list_task,
+                 &task, true, false, "Requesting available apps");
     if (diag_cancel_requested()) {
         diag_log("CONNECT_CANCELLED", "phase=connect.applist");
         return -1;
     }
     list = task.list;
     if (task.status != GS_OK) {
-        printf("Can't get app list\n");
+        diag_log("APP_LIST_ERROR", "status=%d detail=%s", task.status, gs_error);
+        show_gui_message("APP LIST UNAVAILABLE",
+                         "Moonlight could not load apps from this host.",
+                         "Check the host, then try again.");
         return -1;
     }
 
     std::vector<std::string> app_names;
     std::vector<int> app_ids;
     while (list != NULL) {
-        printf("%d. %s\n", list->id, list->name);
         app_names.push_back(std::string(list->name));
         app_ids.push_back(list->id);
         list = list->next;
+    }
+    if (app_names.empty()) {
+        show_gui_message("NO APPS AVAILABLE",
+                         "The host returned an empty app list.",
+                         "Add an app on the host, then try again.");
+        return -1;
     }
 
     std::vector<GuiMenuItem> app_items;
@@ -1281,18 +1341,19 @@ static void gui_call_entry(void *opaque) {
 
 class GuiCallProgressScreen : public MoonlightUi::ScreenModel {
   public:
-    GuiCallProgressScreen(GuiCallTask *task, const std::string &title)
-        : task_(task), title_(title) {}
+    GuiCallProgressScreen(GuiCallTask *task, const std::string &title,
+                          const std::string &detail = std::string())
+        : task_(task), title_(title), detail_(detail) {}
 
     void draw(MoonlightUi::Screen &screen) override {
-        screen.drawHeader("CONNECTION TEST", title_);
+        screen.drawHeader("CONNECTING", title_);
         screen.drawLiveText(20, 98,
                             cancelling_ ? "Cancelling request..."
                                         : "Waiting for the host...",
                             MoonlightUi::TextStyle::Header, {242, 247, 250});
         screen.drawLiveText(20, 137,
                             cancelling_ ? "Waiting for cleanup"
-                                        : "This screen can be cancelled",
+                                        : detail_.empty() ? "Waiting for host response" : detail_,
                             MoonlightUi::TextStyle::Small, {130, 160, 184});
         screen.drawFooter(DIAG_BUILD_VERSION,
                           task_->cancellable_http || task_->interrupt_connection
@@ -1328,14 +1389,16 @@ class GuiCallProgressScreen : public MoonlightUi::ScreenModel {
   private:
     GuiCallTask *task_;
     std::string title_;
+    std::string detail_;
     unsigned int frames_ = 0;
     bool cancelling_ = false;
 };
 
 static bool run_gui_call(const char *phase, const std::string &title,
                          DiagnosticTaskFunction function, void *context,
-                         bool cancellable_http = true,
-                         bool interrupt_connection = false) {
+                         bool cancellable_http,
+                         bool interrupt_connection,
+                         const std::string &detail) {
     GuiCallTask task{function, context, {false}, cancellable_http,
                      interrupt_connection};
     s32 priority = 0x30;
@@ -1349,7 +1412,7 @@ static bool run_gui_call(const char *phase, const std::string &title,
                  phase);
         return false;
     }
-    GuiCallProgressScreen screen(&task, title);
+    GuiCallProgressScreen screen(&task, title, detail);
     const bool screen_finished = MoonlightUi::runScreen(screen);
     if (!screen_finished && !task.done.load()) {
         if (interrupt_connection) {
@@ -2182,6 +2245,7 @@ static inline void input_loop(void *input_handler_in) {
     N3dsInput *input_handler = static_cast<N3dsInput *>(input_handler_in);
     auto connection_listener = N3dsConnectionListener::get_instance();
     input_handler->force_touchscreen_menu();
+    diag_ui_state("BOTTOM", "stream controls", true);
     while (!connection_listener->is_connection_closed()) {
         gspWaitForAnyEvent();
         input_handler->n3dsinput_handle_event();
@@ -2245,7 +2309,8 @@ static void stream(PSERVER_DATA server, PCONFIGURATION config, int appId,
                                     call->app_id, call->config->sops,
                                     call->config->localaudio, call->gamepad_mask);
     };
-    run_monitored_call("stream.start_app", start_app_call, &start_call);
+    run_gui_call("stream.start_app", "Starting selected app", start_app_call,
+                 &start_call, true, false, "Requesting stream startup");
     if (diag_cancel_requested()) {
         diag_log("STREAM_STOP", "app_id=%d reason=watchdog_cancelled", appId);
         return;
@@ -2254,23 +2319,10 @@ static void stream(PSERVER_DATA server, PCONFIGURATION config, int appId,
     if (ret < 0) {
         diag_log("STREAM_STOP", "app_id=%d reason=start_app_failed result=%d",
                  appId, ret);
-        if (ret == GS_NOT_SUPPORTED_4K)
-            printf("Server doesn't support 4K\n");
-        else if (ret == GS_NOT_SUPPORTED_MODE)
-            printf("Server doesn't support %dx%d (%d fps) or remove "
-                   "--nounsupported option\n",
-                   config->stream.width, config->stream.height,
-                   config->stream.fps);
-        else if (ret == GS_NOT_SUPPORTED_SOPS_RESOLUTION)
-            printf(
-                "Optimal Playable Settings isn't supported for the resolution "
-                "%dx%d, use supported resolution or disable 'sops' option\n",
-                config->stream.width, config->stream.height);
-        else if (ret == GS_ERROR)
-            printf("Gamestream error: %s\n", gs_error);
-        else
-            printf("Errorcode starting app: %d\n", ret);
-        wait_for_button();
+        diag_log("START_APP_ERROR", "result=%d detail=%s", ret, gs_error);
+        show_gui_message("APP COULD NOT START",
+                         "The host did not start the selected app.",
+                         "Check host support and stream settings, then retry.");
         return;
     }
 
@@ -2289,16 +2341,9 @@ static void stream(PSERVER_DATA server, PCONFIGURATION config, int appId,
         break;
     }
 
-    printf(
-        "Loading...\nStream %dx%d, %dfps, %dkbps, sops=%d, localaudio=%d, quitappafter=%d,\
- viewonly=%d, encryption=%x, video_decoder=%d, swapfacebuttons=%d, swaptriggersandshoulders=%d,\
- usetriggersformouse=%d, motion_controls=%d\n",
-        config->stream.width, config->stream.height, config->stream.fps,
-        config->stream.bitrate, config->sops, config->localaudio,
-        config->quitappafter, config->viewonly, config->stream.encryptionFlags,
-        config->video_decoder, config->swap_face_buttons,
-        config->swap_triggers_and_shoulders, config->use_triggers_for_mouse,
-        config->motion_controls);
+    diag_log("STREAM_CONFIG", "resolution=%dx%d fps=%d bitrate=%d",
+             config->stream.width, config->stream.height, config->stream.fps,
+             config->stream.bitrate);
 
     auto connection_listener =
         N3dsConnectionListener::create_instance(config->motion_controls);
@@ -2306,8 +2351,9 @@ static void stream(PSERVER_DATA server, PCONFIGURATION config, int appId,
                                        &n3ds_connection_callbacks,
                                        video_callbacks, audio_callbacks,
                                        GS_ERROR};
-    run_monitored_call("stream.limelight_start", limelight_start_call,
-                       &connection_call, false);
+    run_gui_call("stream.limelight_start", "Starting stream connection",
+                 limelight_start_call, &connection_call, false, true,
+                 "Waiting for video and input channels");
     int status = connection_call.status;
     diag_phase_outcome("stream.limelight_start",
                        status == 0 ? "success" : "failed", status);
@@ -2316,14 +2362,16 @@ static void stream(PSERVER_DATA server, PCONFIGURATION config, int appId,
         diag_log("STREAM_STOP", "app_id=%d reason=connection_start_failed status=%d",
                  appId, status);
         n3ds_connection_callbacks.connectionTerminated(status);
-        printf("Connection failed with error: %d\n", status);
-        wait_for_button();
+        show_gui_message("STREAM CONNECTION FAILED",
+                         "Moonlight could not establish the stream.",
+                         "Return to the host menu and try again.");
         return;
     }
 
-    printf("Connected!\n");
     diag_log("STREAM_STARTED", "app_id=%d", appId);
     diag_set_phase("stream.active");
+    diag_ui_state("TOP", "stream video", true);
+    diag_ui_state("BOTTOM", "legacy graphical UI", true);
     stream_loop(config, connection_listener, input_handler);
 
     diag_set_phase("stream.stopping");
@@ -2372,16 +2420,15 @@ static void init_server_call(void *opaque) {
 
 static void print_init_server_error(CONFIGURATION *config, int status) {
     if (status == GS_OUT_OF_MEMORY) {
-        printf("Not enough memory\n");
+        diag_log("HOST_INIT_ERROR", "status=%d reason=out_of_memory", status);
     } else if (status == GS_ERROR) {
-        printf("Gamestream error: %s\n", gs_error);
+        diag_log("HOST_INIT_ERROR", "status=%d detail=%s", status, gs_error);
     } else if (status == GS_INVALID) {
-        printf("Invalid data received from server: %s\n", gs_error);
+        diag_log("HOST_INIT_ERROR", "status=%d invalid_host_response=%s", status, gs_error);
     } else if (status == GS_UNSUPPORTED_VERSION) {
-        printf("Unsupported version: %s\n", gs_error);
+        diag_log("HOST_INIT_ERROR", "status=%d unsupported_version=%s", status, gs_error);
     } else {
-        printf("Can't connect to server %s:%d\n", config->address,
-               config->port);
+        diag_log("HOST_INIT_ERROR", "status=%d connection_failed", status);
     }
 }
 
@@ -2726,29 +2773,21 @@ static bool action_pair(CONFIGURATION *config, SERVER_DATA *server) {
     char pin[5];
     sprintf(pin, "%d%d%d%d", (unsigned)random() % 10, (unsigned)random() % 10,
             (unsigned)random() % 10, (unsigned)random() % 10);
-    printf("Please enter the following PIN on the target PC:\n%s\n", pin);
-
-    // Actually display the PIN on screen by swapping buffers
-    n3ds_draw_diag_version_overlay();
-    gfxSwapBuffers();
-    gfxFlushBuffers();
-    gspWaitForVBlank();
-
     PairTaskContext task{server, &pin[0], GS_ERROR};
-    run_monitored_call("pair", pair_task, &task);
+    run_gui_call("pair", "Pairing with host", pair_task, &task, true, false,
+                 "Enter the PIN shown on this screen: " + std::string(pin));
     bool cancelled = diag_cancel_requested();
     if (cancelled) {
         diag_log("PAIR_CANCELLED", "returning to host list after watchdog cancellation");
     } else if (task.status != GS_OK) {
-        printf("Failed to pair to server: %s\n", gs_error);
+        diag_log("PAIR_ERROR", "status=%d detail=%s", task.status, gs_error);
+        show_gui_message("PAIRING FAILED", "Moonlight could not pair with this host.",
+                         "Check the PIN and host, then try again.");
     } else {
-        printf("Succesfully paired\n");
-        // Display success message before breaking
-        n3ds_draw_diag_version_overlay();
-        gfxSwapBuffers();
-        gfxFlushBuffers();
-        gspWaitForVBlank();
+        diag_log("PAIR_SUCCESS", "host pairing completed");
         add_pair_address(config->address, config->port);
+        show_gui_message("PAIRING COMPLETE", "This 3DS is paired with the host.",
+                         "Return to the host menu to continue.");
     }
 
     // Revert to default HTTP timeout
@@ -2758,17 +2797,28 @@ static bool action_pair(CONFIGURATION *config, SERVER_DATA *server) {
 
 static void action_unpair(CONFIGURATION *config, SERVER_DATA *server) {
     if (gs_unpair(server) != GS_OK) {
-        printf("Failed to unpair from server: %s\n", gs_error);
+        diag_log("UNPAIR_ERROR", "detail=%s", gs_error);
+        show_gui_message("UNPAIR FAILED", "Moonlight could not remove pairing.",
+                         "Check the host connection, then try again.");
     } else {
-        printf("Succesfully unpaired\n");
+        diag_log("UNPAIR_SUCCESS", "host unpaired");
         remove_pair_address(config->address, config->port);
+        show_gui_message("UNPAIRED", "This 3DS is no longer paired with the host.",
+                         "Return to the host list to continue.");
     }
 }
 
 static void action_quit_stream(SERVER_DATA *server) {
-    printf("Sending app quit request ...\n");
-    gs_quit_app(server);
-    printf("Request completed\n");
+    const int status = gs_quit_app(server);
+    if (status != GS_OK) {
+        diag_log("QUIT_APP_ERROR", "status=%d detail=%s", status, gs_error);
+        show_gui_message("QUIT REQUEST FAILED", "The host did not close its app.",
+                         "Check the host connection, then try again.");
+    } else {
+        diag_log("QUIT_APP_SUCCESS", "host app quit requested");
+        show_gui_message("QUIT REQUEST SENT", "The host accepted the quit request.",
+                         "Return to the host menu to continue.");
+    }
 }
 
 int main_loop(int argc, char *argv[]) {
@@ -2800,13 +2850,12 @@ int main_loop(int argc, char *argv[]) {
             std::string(config.address) + ":" + std::to_string(config.port);
         diag_log("HOST_SELECTION", "host=%s port=%d", config.address,
                  config.port);
-        printf("Connecting to %s:%d...\n", config.address, config.port);
-
         SERVER_DATA server;
         InitServerCall connect_call{&config, &server, GS_ERROR};
         diag_http_summary_begin();
-        run_monitored_call("connect.server_init", init_server_call,
-                           &connect_call);
+        run_gui_call("connect.server_init", "Checking host status",
+                     init_server_call, &connect_call, true, false,
+                     "Checking host status and pairing state");
         diag_http_summary_flush(connect_call.status, diag_cancel_requested());
         if (diag_cancel_requested()) {
             diag_log("CONNECT_CANCELLED", "returning to host list");
@@ -2814,14 +2863,13 @@ int main_loop(int argc, char *argv[]) {
         }
         if (connect_call.status != GS_OK) {
             print_init_server_error(&config, connect_call.status);
-            wait_for_button();
+            show_gui_message("HOST CONNECTION FAILED",
+                             "Moonlight could not connect to this host.",
+                             "Check that the host is online, then try again.");
             continue;
         }
-        printf("GPU: %s, GFE: %s (%s, %s)\n", server.gpuType,
-               server.serverInfo.serverInfoGfeVersion, server.gsVersion,
-               server.serverInfo.serverInfoAppVersion);
-        printf("Server codec flags: 0x%x\n",
-               server.serverInfo.serverCodecModeSupport);
+        diag_log("HOST_INFO", "host connection initialized codec_flags=0x%x",
+                 server.serverInfo.serverCodecModeSupport);
 
         while (aptMainLoop()) {
             std::string action = prompt_for_action(&server);
@@ -2838,9 +2886,7 @@ int main_loop(int argc, char *argv[]) {
                 break;
             } else if (strcmp("pair", config.action) == 0) {
                 bool cancelled = action_pair(&config, &server);
-                if (!cancelled) {
-                    wait_for_button();
-                }
+                (void)cancelled;
                 break;
             } else if (strcmp("stream settings", config.action) == 0) {
                 prompt_for_stream_settings(&config);

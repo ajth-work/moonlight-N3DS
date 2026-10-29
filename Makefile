@@ -78,7 +78,7 @@ ICON_FLAGS		:=	nosavebackups,visible
 
 # Version
 VERSION_MAJOR	:=	3
-VERSION_MINOR	:=	4
+VERSION_MINOR := 5
 VERSION_MICRO	:=	0
 
 #---------------------------------------------------------------------------------

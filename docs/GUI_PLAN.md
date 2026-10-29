@@ -7,7 +7,7 @@ the stream-profile picker (3.1.0-ui1/ui2). The picker is the design seed,
 not the finish.
 
 **Base:** `feature/stream-profile-picker` tip (3.1.0-ui2, 90c2c34).
-**GUI line versioning:** `3.3.0-guiN`, version always on the bottom screen.
+**GUI line versioning:** `3.5.0-guiN`, version always on the bottom screen.
 
 ## Where the UI stands today (verified by code read, 2026-10-26)
 
@@ -132,6 +132,19 @@ perfect LAN, and only a real stream sees both.
   a confirm page like Unpair.
 
 ## Rules that hold across all phases
+
+### GUI5 completion (2026-10-28)
+
+- Pairing, host initialization, app-list retrieval, app launch, and stream
+  connection startup use toolkit progress screens with the real operation
+  named. B cancels cancellable requests; stream startup interrupts Limelight.
+- Pairing PIN, app selection, and recoverable errors remain graphical. Errors
+  use plain language and return to the host menu; detailed results stay in
+  `moonlight.log`.
+- Transition-only `UI_STATE` log records identify TOP/BOTTOM as toolkit GUI,
+  legacy graphical UI, terminal text (`graphical=0`), native system UI,
+  stream video, or stream controls. Records contain no host address or secret.
+- Phase 4 remains separate and requires AJ's hardware retest before dispatch.
 
 - Version string on the bottom screen at all times (standing rule).
 - Config semantics unchanged: `moonlight.conf` and

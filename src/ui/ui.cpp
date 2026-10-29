@@ -1,4 +1,5 @@
 #include "ui.hpp"
+#include "../diagnostics.h"
 
 #include "ui_font_bin.h"
 
@@ -276,6 +277,7 @@ Screen::Screen(gfxScreen_t display)
     : display_(display),
       width_(display == GFX_TOP ? TOP_SCREEN_WIDTH : BOTTOM_SCREEN_WIDTH),
       height_(SCREEN_HEIGHT), framebuffer_(nullptr) {
+    diag_ui_state(display_ == GFX_TOP ? "TOP" : "BOTTOM", "toolkit GUI", true);
     // UI screens render into a hidden back buffer and commit it at VBlank.
     // Stream renderers remain single-buffered after the UI session ends.
     gfxSetDoubleBuffering(display_, true);
@@ -652,6 +654,7 @@ void Screen::present(bool wait_for_vblank) {
 
 bool runScreen(ScreenModel &model) {
     Screen screen;
+    Screen top(GFX_TOP);
     bool redraw = true;
     while (aptMainLoop()) {
         bool updated = false;
@@ -660,8 +663,14 @@ bool runScreen(ScreenModel &model) {
         }
         redraw = redraw || updated;
         if (redraw) {
+            top.drawBackground();
+            top.drawHeader("MOONLIGHT", "IN PROGRESS");
+            top.drawLiveText(20, 91, "Connection task", TextStyle::Header,
+                             {242, 247, 250});
+            top.drawFooter(DIAG_BUILD_VERSION, "PLEASE WAIT");
             screen.drawBackground();
             model.draw(screen);
+            top.present(false);
             screen.present();
             redraw = false;
         }
