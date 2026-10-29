@@ -32,6 +32,12 @@ class N3dsInput : public ISubscriber {
     void accept(IMessage *msg) override;
     void n3dsinput_handle_event();
     void force_touchscreen_menu();
+    bool quit_to_menu_requested() { return quit_to_menu.load(); }
+    void set_stream_panel_enabled(bool enabled);
+    int stream_panel_touch_buttons() { return panel_touch_buttons.load(); }
+    bool consume_stream_panel_keyboard_request();
+    bool consume_stream_panel_settings_request();
+    void open_stream_keyboard();
 
   private:
     void _add_gamepad();
@@ -53,6 +59,14 @@ class N3dsInput : public ISubscriber {
     AtomicVar<bool> enable_accel = false;
     bool use_triggers_for_mouse = false;
     bool menu_active = false;
+    u64 quit_combo_start_ticks = 0;
+    bool quit_combo_suppressed = false;
+    AtomicVar<bool> quit_to_menu = false;
+    AtomicVar<bool> stream_panel_enabled = false;
+    AtomicVar<int> panel_touch_buttons = 0;
+    AtomicVar<int> panel_touch_zone = 0;
+    AtomicVar<bool> panel_keyboard_requested = false;
+    AtomicVar<bool> panel_settings_requested = false;
 
     uint32_t CUSTOM_KEY_A;
     uint32_t CUSTOM_KEY_B;

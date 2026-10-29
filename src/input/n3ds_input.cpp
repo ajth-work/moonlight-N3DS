@@ -42,6 +42,10 @@
 #define CONTROLLER_NUMBER 0
 #define ACTIVE_GAMEPAD_MASK 1
 
+static constexpr u32 QUIT_TO_MENU_CHORD = KEY_L | KEY_R | KEY_START;
+static constexpr u64 QUIT_HOLD_SUPPRESS_TICKS = SYSCLOCK_ARM11 / 2;
+static constexpr u64 QUIT_HOLD_TRIGGER_TICKS = SYSCLOCK_ARM11 * 2;
+
 N3dsInput::N3dsInput(int image_width, int image_height, bool swap_face_buttons,
                      bool swap_triggers_and_shoulders,
                      bool use_triggers_for_mouse_in) {
@@ -175,13 +179,79 @@ void N3dsInput::force_touchscreen_menu() {
     MessageDispatcher::get_instance()->post(message);
 }
 
+void N3dsInput::set_stream_panel_enabled(bool enabled) {
+    stream_panel_enabled.store(enabled);
+    if (enabled) {
+        quit_combo_start_ticks = 0;
+        quit_combo_suppressed = false;
+        quit_to_menu.store(false);
+    } else {
+        panel_touch_zone.store(0);
+        panel_touch_buttons.store(0);
+        panel_keyboard_requested.store(false);
+        panel_settings_requested.store(false);
+    }
+}
+
+bool N3dsInput::consume_stream_panel_keyboard_request() {
+    const bool requested = panel_keyboard_requested.load();
+    panel_keyboard_requested.store(false);
+    return requested;
+}
+
+bool N3dsInput::consume_stream_panel_settings_request() {
+    const bool requested = panel_settings_requested.load();
+    panel_settings_requested.store(false);
+    return requested;
+}
+
+void N3dsInput::open_stream_keyboard() {
+    stream_panel_enabled.store(false);
+    auto message = std::make_shared<TouchStateChangedMsg>(N3dsTouchType::KEYBOARD);
+    MessageDispatcher::get_instance()->post(message);
+}
+
 void N3dsInput::n3dsinput_handle_event() {
     hidScanInput();
     u32 kDown = hidKeysDown();
     u32 kUp = hidKeysUp();
+    u32 kHeld = hidKeysHeld();
     previous_state = gamepad_state;
 
-    touch_handler->n3dsinput_handle_touch(kDown, kUp);
+    if (stream_panel_enabled.load()) {
+        if (kDown & KEY_TOUCH) {
+            touchPosition touch;
+            hidTouchRead(&touch);
+            if (touch.py >= 62 && touch.py < 178) {
+                const int zone = touch.px < 160 ? 1 : 2;
+                panel_touch_zone.store(zone);
+                const int touch_buttons = zone == 1 ? LS_CLK_FLAG : RS_CLK_FLAG;
+                panel_touch_buttons.store(touch_buttons);
+            } else if (touch.py >= 184 && touch.py < 222) {
+                if (touch.px < 160) panel_keyboard_requested.store(true);
+                else panel_settings_requested.store(true);
+            }
+        }
+        if (kHeld & KEY_TOUCH) {
+            const int zone = panel_touch_zone.load();
+            if (zone != 0) {
+                touchPosition touch;
+                hidTouchRead(&touch);
+                if (touch.py < 62 || touch.py >= 178 ||
+                    (zone == 1 && touch.px >= 160) ||
+                    (zone == 2 && touch.px < 160)) {
+                    panel_touch_zone.store(0);
+                    panel_touch_buttons.store(0);
+                }
+            }
+        }
+        if (kUp & KEY_TOUCH) {
+            panel_touch_zone.store(0);
+            panel_touch_buttons.store(0);
+        }
+    } else {
+        touch_handler->n3dsinput_handle_touch(kDown, kUp);
+    }
 
     if (kDown & ~KEY_TOUCH) {
         gamepad_state.buttons |= _n3ds_to_li_buttons(kDown);
@@ -193,6 +263,26 @@ void N3dsInput::n3dsinput_handle_event() {
         gamepad_state.leftTrigger &= ~n3ds_to_li_trigger(kUp, CUSTOM_KEY_ZL);
         gamepad_state.rightTrigger &= ~n3ds_to_li_trigger(kUp, CUSTOM_KEY_ZR);
     }
+
+    const bool chord_held = (kHeld & QUIT_TO_MENU_CHORD) == QUIT_TO_MENU_CHORD;
+    if (chord_held && !quit_to_menu.load()) {
+        if (quit_combo_start_ticks == 0)
+            quit_combo_start_ticks = svcGetSystemTick();
+        const u64 held = svcGetSystemTick() - quit_combo_start_ticks;
+        if (held >= QUIT_HOLD_SUPPRESS_TICKS)
+            quit_combo_suppressed = true;
+        if (held >= QUIT_HOLD_TRIGGER_TICKS)
+            quit_to_menu.store(true);
+    } else if (!chord_held) {
+        quit_combo_start_ticks = 0;
+        quit_combo_suppressed = false;
+    }
+    if (quit_combo_suppressed) {
+        gamepad_state.buttons &= ~_n3ds_to_li_buttons(QUIT_TO_MENU_CHORD);
+        if (QUIT_TO_MENU_CHORD & CUSTOM_KEY_ZL) gamepad_state.leftTrigger = 0;
+        if (QUIT_TO_MENU_CHORD & CUSTOM_KEY_ZR) gamepad_state.rightTrigger = 0;
+    }
+    gamepad_state.buttons |= panel_touch_buttons.load();
 
     // Use the HOME button to open the menu
     if (aptCheckHomePressRejected()) {

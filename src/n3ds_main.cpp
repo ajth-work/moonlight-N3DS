@@ -2244,12 +2244,71 @@ static inline void dispatch_loop(void *_unused_) {
 static inline void input_loop(void *input_handler_in) {
     N3dsInput *input_handler = static_cast<N3dsInput *>(input_handler_in);
     auto connection_listener = N3dsConnectionListener::get_instance();
-    input_handler->force_touchscreen_menu();
-    diag_ui_state("BOTTOM", "stream controls", true);
+    diag_ui_state("BOTTOM", "stream companion panel", true);
     while (!connection_listener->is_connection_closed()) {
         gspWaitForAnyEvent();
         input_handler->n3dsinput_handle_event();
     }
+}
+
+static void draw_stream_gamepad_panel(uint32_t rtt_ms, bool rtt_available,
+                                     const std::vector<uint16_t> &history,
+                                     unsigned int session_seconds,
+                                     int battery_percent,
+                                     int touch_buttons,
+                                     bool settings_open,
+                                     const STREAM_CONFIGURATION &stream_config) {
+    static MoonlightUi::Screen bottom(GFX_BOTTOM);
+    using MoonlightUi::Color;
+    using MoonlightUi::Rect;
+    using MoonlightUi::TextStyle;
+    const Color ink{38, 43, 48};
+    const Color muted{105, 114, 122};
+    const Color teal{0, 137, 153};
+    bottom.drawBackground();
+    bottom.drawHeader("MOONLIGHT",
+                      settings_open ? "STREAM SETTINGS" : "IN-STREAM GAMEPAD");
+
+    char status[64];
+    if (rtt_available)
+        snprintf(status, sizeof(status), "RTT  %lu ms", (unsigned long)rtt_ms);
+    else
+        snprintf(status, sizeof(status), "RTT  unavailable");
+    bottom.drawLiveText(18, 43, status, TextStyle::Small, teal);
+    char battery[32];
+    if (battery_percent >= 0)
+        snprintf(battery, sizeof(battery), "BATTERY  %d%%", battery_percent);
+    else
+        snprintf(battery, sizeof(battery), "BATTERY  unavailable");
+    bottom.drawLiveText(112, 43, battery, TextStyle::Small, muted);
+    char session[32];
+    snprintf(session, sizeof(session), "SESSION  %02u:%02u",
+             session_seconds / 3600, (session_seconds / 60) % 60);
+    bottom.drawLiveText(224, 43, session, TextStyle::Small, muted);
+
+    bottom.drawFilledTile({8, 66, 156, 174}, 1);
+    bottom.drawFilledTile({164, 66, 312, 174}, 2);
+    if (touch_buttons & LS_CLK_FLAG) bottom.drawHighlight({8, 66, 156, 174});
+    if (touch_buttons & RS_CLK_FLAG) bottom.drawHighlight({164, 66, 312, 174});
+    bottom.drawLiveText(31, 92, "L3", TextStyle::Tile, ink);
+    bottom.drawLiveText(31, 125, "TOUCH AND HOLD", TextStyle::Small, muted);
+    bottom.drawLiveText(187, 92, "R3", TextStyle::Tile, ink);
+    bottom.drawLiveText(187, 125, "TOUCH AND HOLD", TextStyle::Small, muted);
+    bottom.drawFrameTimingGraph({45, 146, 275, 169}, history, 200, teal);
+    if (settings_open) {
+        char settings[64];
+        snprintf(settings, sizeof(settings), "%dx%d  %dfps  %dkbps",
+                 stream_config.width, stream_config.height, stream_config.fps,
+                 stream_config.bitrate);
+        bottom.drawLiveText(90, 174, settings, TextStyle::Small, muted);
+    }
+
+    bottom.drawFilledTile({8, 182, 156, 218}, 3);
+    bottom.drawFilledTile({164, 182, 312, 218}, 4);
+    bottom.drawLiveText(35, 194, "KEYBOARD", TextStyle::Header, ink);
+    bottom.drawLiveText(202, 194, "SETTINGS", TextStyle::Header, ink);
+    bottom.drawFooter(DIAG_BUILD_VERSION, "TOUCH L3/R3  HOLD");
+    bottom.present(false);
 }
 
 static inline void stream_loop(PCONFIGURATION config,
@@ -2259,6 +2318,19 @@ static inline void stream_loop(PCONFIGURATION config,
     size_t stack_size = 0x20000;
     s32 priority = 0x30;
     svcGetThreadPriority(&priority, CUR_THREAD_HANDLE);
+    bool panel_active = true;
+    bool settings_open = false;
+    bool rtt_available = false;
+    bool battery_available = false;
+    uint32_t latest_rtt_ms = 0;
+    uint8_t battery_level = 0;
+    std::vector<uint16_t> rtt_history;
+    const u64 session_started = svcGetSystemTick();
+    u64 last_panel_update = 0;
+    const bool ptmu_ready = R_SUCCEEDED(ptmuInit());
+    MessageDispatcher::get_instance()->post_immediate(
+        std::make_shared<TouchStateChangedMsg>(N3dsTouchType::GAMEPAD));
+    if (input_handler) input_handler->set_stream_panel_enabled(true);
     if (!config->viewonly) {
         threadCreate(input_loop, input_handler.get(), stack_size, priority, -1,
                      true);
@@ -2271,7 +2343,37 @@ static inline void stream_loop(PCONFIGURATION config,
         if (aptShouldClose()) {
             connection_listener->connection_terminated(0);
         }
+        if (input_handler && input_handler->quit_to_menu_requested())
+            connection_listener->connection_terminated(ML_ERROR_GRACEFUL_TERMINATION);
+        if (input_handler && input_handler->consume_stream_panel_keyboard_request()) {
+            input_handler->open_stream_keyboard();
+            panel_active = false;
+        }
+        if (input_handler && input_handler->consume_stream_panel_settings_request())
+            settings_open = !settings_open;
+        const u64 now = svcGetSystemTick();
+        if (panel_active && now - last_panel_update >= SYSCLOCK_ARM11 / 2) {
+            uint32_t rtt_variance = 0;
+            rtt_available = LiGetEstimatedRttInfo(&latest_rtt_ms, &rtt_variance);
+            if (rtt_available) {
+                rtt_history.push_back(static_cast<uint16_t>(
+                    std::min<uint32_t>(latest_rtt_ms, 65535)));
+                if (rtt_history.size() > 110) rtt_history.erase(rtt_history.begin());
+            }
+            battery_available = ptmu_ready &&
+                                R_SUCCEEDED(PTMU_GetBatteryLevel(&battery_level));
+            const unsigned int session_seconds = static_cast<unsigned int>(
+                (now - session_started) / SYSCLOCK_ARM11);
+            draw_stream_gamepad_panel(
+                latest_rtt_ms, rtt_available, rtt_history, session_seconds,
+                battery_available ? static_cast<int>(battery_level) * 20 : -1,
+                input_handler ? input_handler->stream_panel_touch_buttons() : 0,
+                settings_open, config->stream);
+            last_panel_update = now;
+        }
     }
+    if (input_handler) input_handler->set_stream_panel_enabled(false);
+    if (ptmu_ready) ptmuExit();
 }
 
 struct LimelightStartCall {
