@@ -2896,11 +2896,9 @@ int main_loop(int argc, char *argv[]) {
                 action_connection_test(&config, &server, profile_host_key);
             } else if (strcmp("unpair", config.action) == 0) {
                 action_unpair(&config, &server);
-                wait_for_button();
                 break;
             } else if (strcmp("quit stream", config.action) == 0) {
                 action_quit_stream(&server);
-                wait_for_button();
                 break;
             } else {
                 printf("%s is not a valid action\n", config.action);
