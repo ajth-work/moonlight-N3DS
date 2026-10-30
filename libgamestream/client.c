@@ -788,7 +788,63 @@ int gs_applist(PSERVER_DATA server, PAPP_LIST *list) {
   return ret;
 }
 
-int gs_start_app(PSERVER_DATA server, STREAM_CONFIGURATION *config, int appId, bool sops, bool localaudio, int gamepad_mask) {
+int gs_display_list(PSERVER_DATA server, PDISPLAY_INFO *list) {
+  char url[4096];
+  char uuid_str[UUID_STRLEN];
+  uuid_t uuid;
+  PHTTP_DATA data = http_create_data();
+  if (data == NULL)
+    return GS_OUT_OF_MEMORY;
+
+  *list = NULL;
+  uuid_generate_random(uuid);
+  uuid_unparse(uuid, uuid_str);
+  snprintf(url, sizeof(url), "https://%s:%u/displayinfo?uniqueid=%s&uuid=%s", server->serverInfo.address, server->httpsPort, unique_id, uuid_str);
+  int ret = http_request(url, data);
+  if (ret == GS_OK) {
+    ret = xml_status(data->memory, data->size);
+    if (ret == GS_OK)
+      ret = xml_display_list(data->memory, data->size, list);
+  }
+
+  http_free_data(data);
+  return ret;
+}
+
+void gs_free_display_list(PDISPLAY_INFO display_list) {
+  while (display_list != NULL) {
+    PDISPLAY_INFO next = display_list->next;
+    free(display_list->id);
+    free(display_list->name);
+    free(display_list);
+    display_list = next;
+  }
+}
+
+static void url_encode_component(const char *input, char *output, size_t output_size) {
+  static const char hex[] = "0123456789ABCDEF";
+  size_t used = 0;
+  for (const unsigned char *p = (const unsigned char *) input; *p != 0; ++p) {
+    unsigned char ch = *p;
+    int safe = (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') ||
+               (ch >= '0' && ch <= '9') || ch == '-' || ch == '_' || ch == '.' || ch == '~';
+    size_t needed = safe ? 1 : 3;
+    if (used + needed >= output_size) {
+      output[0] = 0;
+      return;
+    }
+    if (safe) {
+      output[used++] = (char) ch;
+    } else {
+      output[used++] = '%';
+      output[used++] = hex[ch >> 4];
+      output[used++] = hex[ch & 0x0F];
+    }
+  }
+  output[used] = 0;
+}
+
+int gs_start_app(PSERVER_DATA server, STREAM_CONFIGURATION *config, int appId, bool sops, bool localaudio, int gamepad_mask, const char *display_id) {
   int ret = GS_OK;
   uuid_t uuid;
   char* result = NULL;
@@ -818,6 +874,13 @@ int gs_start_app(PSERVER_DATA server, STREAM_CONFIGURATION *config, int appId, b
   memset(config->remoteInputAesIv, 0, sizeof(config->remoteInputAesIv));
 
   char url[4096];
+  char display_id_encoded[1024] = {0};
+  char display_id_arg[1040] = {0};
+  if (display_id != NULL && display_id[0] != 0) {
+    url_encode_component(display_id, display_id_encoded, sizeof(display_id_encoded));
+    if (display_id_encoded[0] != 0)
+      snprintf(display_id_arg, sizeof(display_id_arg), "&display_id=%s", display_id_encoded);
+  }
   u_int32_t rikeyid = 0;
   RAND_bytes(config->remoteInputAesIv, sizeof(rikeyid));
   memcpy(&rikeyid, config->remoteInputAesIv, sizeof(rikeyid));
@@ -840,8 +903,9 @@ int gs_start_app(PSERVER_DATA server, STREAM_CONFIGURATION *config, int appId, b
   uuid_generate_random(uuid);
   uuid_unparse(uuid, uuid_str);
   int surround_info = SURROUNDAUDIOINFO_FROM_AUDIO_CONFIGURATION(config->audioConfiguration);
-  snprintf(url, sizeof(url), "https://%s:%u/%s?uniqueid=%s&uuid=%s&appid=%d&mode=%dx%dx%d&additionalStates=1&sops=%d&rikey=%s&rikeyid=%d&localAudioPlayMode=%d&surroundAudioInfo=%d&remoteControllersBitmap=%d&gcmap=%d%s%s",
+  snprintf(url, sizeof(url), "https://%s:%u/%s?uniqueid=%s&uuid=%s&appid=%d&mode=%dx%dx%d&additionalStates=1&sops=%d&rikey=%s&rikeyid=%d&localAudioPlayMode=%d&surroundAudioInfo=%d&remoteControllersBitmap=%d&gcmap=%d%s%s%s",
            server->serverInfo.address, server->httpsPort, server->currentGame ? "resume" : "launch", unique_id, uuid_str, appId, config->width, config->height, fps, sops, rikey_hex, rikeyid, localaudio, surround_info, gamepad_mask, gamepad_mask,
+           display_id_arg,
            (config->supportedVideoFormats & VIDEO_FORMAT_MASK_10BIT) ? "&hdrMode=1&clientHdrCapVersion=0&clientHdrCapSupportedFlagsInUint32=0&clientHdrCapMetaDataId=NV_STATIC_METADATA_TYPE_1&clientHdrCapDisplayData=0x0x0x0x0x0x0x0x0x0x0" : "",
            LiGetLaunchUrlQueryParameters());
   current_phase = "stream.start_app_request";

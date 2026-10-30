@@ -1285,6 +1285,17 @@ static void app_list_task(void *opaque) {
     task->status = gs_applist(task->server, &task->list);
 }
 
+struct DisplayListTaskContext {
+    PSERVER_DATA server;
+    PDISPLAY_INFO list;
+    int status;
+};
+
+static void display_list_task(void *opaque) {
+    DisplayListTaskContext *task = static_cast<DisplayListTaskContext *>(opaque);
+    task->status = gs_display_list(task->server, &task->list);
+}
+
 static int prompt_for_app_id(PSERVER_DATA server) {
     PAPP_LIST list = NULL;
     AppListTaskContext task{server, NULL, GS_ERROR};
@@ -1323,6 +1334,43 @@ static int prompt_for_app_id(PSERVER_DATA server) {
     int id_idx = 0;
     if (!run_gui_menu("SELECT AN APP", "SUNSHINE", app_items, &id_idx)) return -1;
     return app_ids[id_idx];
+}
+
+static bool prompt_for_display_id(PSERVER_DATA server, std::string *display_id) {
+    DisplayListTaskContext task{server, NULL, GS_ERROR};
+    run_gui_call("connect.display_list", "Loading host displays", display_list_task,
+                 &task, true, false, "Requesting capture-supported displays");
+    if (diag_cancel_requested()) {
+        gs_free_display_list(task.list);
+        diag_log("CONNECT_CANCELLED", "phase=connect.displayinfo");
+        return false;
+    }
+
+    std::vector<GuiMenuItem> items;
+    std::vector<std::string> ids;
+    items.push_back({"Sunshine default", "Use the display configured on the host.", "Host default"});
+    ids.emplace_back();
+    if (task.status == GS_OK) {
+        for (PDISPLAY_INFO item = task.list; item != NULL; item = item->next) {
+            if (item->id == NULL || item->name == NULL || item->id[0] == 0 || item->name[0] == 0)
+                continue;
+            items.push_back({item->name, "Capture this available host display.", "Host display"});
+            ids.emplace_back(item->id);
+        }
+    } else {
+        diag_log("DISPLAY_ENUM_FALLBACK", "status=%d detail=%s", task.status, gs_error);
+    }
+    gs_free_display_list(task.list);
+
+    int selected = 0;
+    if (!run_gui_menu("SELECT A DISPLAY", "SUNSHINE", items, &selected))
+        return false;
+    if (selected >= 0 && selected < static_cast<int>(ids.size()))
+        *display_id = ids[selected];
+    else
+        display_id->clear();
+    diag_log("DISPLAY_SELECTION", "selected=%s", display_id->empty() ? "host_default" : "host_display_id");
+    return true;
 }
 
 struct GuiCallTask {
@@ -2456,7 +2504,8 @@ static void limelight_start_call(void *opaque) {
 }
 
 static void stream(PSERVER_DATA server, PCONFIGURATION config, int appId,
-                   std::shared_ptr<N3dsInput> input_handler) {
+                   std::shared_ptr<N3dsInput> input_handler,
+                   const std::string &display_id) {
     int gamepad_mask = 1;
     diag_log("STREAM_START_REQUESTED", "app_id=%d", appId);
     struct StartAppCall {
@@ -2464,13 +2513,16 @@ static void stream(PSERVER_DATA server, PCONFIGURATION config, int appId,
         PCONFIGURATION config;
         int app_id;
         int gamepad_mask;
+        const char *display_id;
         int status;
-    } start_call{server, config, appId, gamepad_mask, GS_ERROR};
+    } start_call{server, config, appId, gamepad_mask,
+                 display_id.empty() ? NULL : display_id.c_str(), GS_ERROR};
     auto start_app_call = [](void *opaque) {
         StartAppCall *call = static_cast<StartAppCall *>(opaque);
         call->status = gs_start_app(call->server, &call->config->stream,
                                     call->app_id, call->config->sops,
-                                    call->config->localaudio, call->gamepad_mask);
+                                    call->config->localaudio, call->gamepad_mask,
+                                    call->display_id);
     };
     run_gui_call("stream.start_app", "Starting selected app", start_app_call,
                  &start_call, true, false, "Requesting stream startup");
@@ -2601,6 +2653,10 @@ static void action_stream(CONFIGURATION *config, SERVER_DATA *server) {
         return;
     }
 
+    std::string display_id;
+    if (!prompt_for_display_id(server, &display_id))
+        return;
+
     config->stream.supportedVideoFormats = VIDEO_FORMAT_H264;
 
     consoleClear();
@@ -2615,7 +2671,7 @@ static void action_stream(CONFIGURATION *config, SERVER_DATA *server) {
             config->swap_face_buttons, config->swap_triggers_and_shoulders,
             config->use_triggers_for_mouse);
     }
-    stream(server, config, appId, input_handler);
+    stream(server, config, appId, input_handler, display_id);
 }
 
 class ConnectionTestMessageScreen : public MoonlightUi::ScreenModel {
@@ -2654,7 +2710,7 @@ static void connection_test_start_app_task(void *opaque) {
         static_cast<ConnectionTestStartAppCall *>(opaque);
     call->status = gs_start_app(call->server, &call->config->stream,
                                 call->app_id, call->config->sops,
-                                call->config->localaudio, 1);
+                                call->config->localaudio, 1, NULL);
 }
 
 struct ConnectionTestQuitAppCall {

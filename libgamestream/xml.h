@@ -33,7 +33,14 @@ typedef struct _DISPLAY_MODE {
   struct _DISPLAY_MODE *next;
 } DISPLAY_MODE, *PDISPLAY_MODE;
 
+typedef struct _DISPLAY_INFO {
+  char *id;
+  char *name;
+  struct _DISPLAY_INFO *next;
+} DISPLAY_INFO, *PDISPLAY_INFO;
+
 int xml_search(char* data, size_t len, char* node, char** result);
 int xml_applist(char* data, size_t len, PAPP_LIST *app_list);
 int xml_modelist(char* data, size_t len, PDISPLAY_MODE *mode_list);
+int xml_display_list(char* data, size_t len, PDISPLAY_INFO *display_list);
 int xml_status(char* data, size_t len);

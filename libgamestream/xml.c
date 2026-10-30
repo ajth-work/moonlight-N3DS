@@ -187,6 +187,68 @@ int xml_applist(char* data, size_t len, PAPP_LIST *app_list) {
   return GS_OK;
 }
 
+static void XMLCALL _xml_start_display_element(void *userData, const char *name, const char **atts) {
+  struct xml_query *search = (struct xml_query*) userData;
+  if (strcmp("display", name) == 0) {
+    PDISPLAY_INFO display = calloc(1, sizeof(DISPLAY_INFO));
+    if (display != NULL) {
+      display->next = (PDISPLAY_INFO) search->data;
+      search->data = display;
+    }
+  } else if (search->data != NULL && (strcmp("id", name) == 0 || strcmp("name", name) == 0)) {
+    free(search->memory);
+    search->memory = calloc(1, 1);
+    search->size = 0;
+    search->start = 1;
+  }
+}
+
+static void XMLCALL _xml_end_display_element(void *userData, const char *name) {
+  struct xml_query *search = (struct xml_query*) userData;
+  if (search->data == NULL || !search->start)
+    return;
+
+  PDISPLAY_INFO display = (PDISPLAY_INFO) search->data;
+  if (strcmp("id", name) == 0)
+    display->id = search->memory;
+  else if (strcmp("name", name) == 0)
+    display->name = search->memory;
+  else
+    return;
+
+  search->memory = calloc(1, 1);
+  search->size = 0;
+  search->start = 0;
+}
+
+int xml_display_list(char* data, size_t len, PDISPLAY_INFO *display_list) {
+  struct xml_query query = {0};
+  query.memory = calloc(1, 1);
+  if (query.memory == NULL)
+    return GS_OUT_OF_MEMORY;
+
+  XML_Parser parser = XML_ParserCreate("UTF-8");
+  if (parser == NULL) {
+    free(query.memory);
+    return GS_OUT_OF_MEMORY;
+  }
+  XML_SetUserData(parser, &query);
+  XML_SetElementHandler(parser, _xml_start_display_element, _xml_end_display_element);
+  XML_SetCharacterDataHandler(parser, _xml_write_data);
+  if (!XML_Parse(parser, data, len, 1)) {
+    int code = XML_GetErrorCode(parser);
+    gs_error = XML_ErrorString(code);
+    XML_ParserFree(parser);
+    free(query.memory);
+    return GS_INVALID;
+  }
+
+  XML_ParserFree(parser);
+  free(query.memory);
+  *display_list = (PDISPLAY_INFO) query.data;
+  return GS_OK;
+}
+
 int xml_modelist(char* data, size_t len, PDISPLAY_MODE *mode_list) {
   struct xml_query query = {0};
   query.memory = calloc(1, 1);
