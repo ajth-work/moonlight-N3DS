@@ -802,9 +802,30 @@ int gs_display_list(PSERVER_DATA server, PDISPLAY_INFO *list) {
   snprintf(url, sizeof(url), "https://%s:%u/displayinfo?uniqueid=%s&uuid=%s", server->serverInfo.address, server->httpsPort, unique_id, uuid_str);
   int ret = http_request(url, data);
   if (ret == GS_OK) {
-    ret = xml_status(data->memory, data->size);
-    if (ret == GS_OK)
+    int status_code = 0;
+    int has_status_code = 0;
+    char status_message[96] = {0};
+    ret = xml_status_details(data->memory, data->size, &status_code,
+                             &has_status_code, status_message, sizeof(status_message));
+    if (ret == GS_OK) {
       ret = xml_display_list(data->memory, data->size, list);
+    } else if (ret == GS_ERROR && !has_status_code) {
+      // Some GameStream-compatible hosts omit status_code on this optional endpoint.
+      // Accept only a well-formed display list; explicit non-200 statuses still fail.
+      ret = xml_display_list(data->memory, data->size, list);
+      if (ret == GS_OK) {
+        int display_count = 0;
+        for (PDISPLAY_INFO display = *list; display != NULL; display = display->next)
+          display_count++;
+        diag_log("DISPLAY_ENUM_COMPAT", "status_code=missing response=valid_xml display_count=%d", display_count);
+      }
+    } else if (ret == GS_ERROR) {
+      static char display_status_error[160];
+      snprintf(display_status_error, sizeof(display_status_error),
+               "GameStream status_code=%d message=%s", status_code,
+               status_message[0] ? status_message : "(missing)");
+      gs_error = display_status_error;
+    }
   }
 
   http_free_data(data);

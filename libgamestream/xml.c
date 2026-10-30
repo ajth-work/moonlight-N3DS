@@ -110,14 +110,23 @@ static void XMLCALL _xml_end_mode_element(void *userData, const char *name) {
   }
 }
 
+struct xml_status_info {
+  int status_code;
+  int has_status_code;
+  char *status_message;
+  size_t status_message_size;
+};
+
 static void XMLCALL _xml_start_status_element(void *userData, const char *name, const char **atts) {
   if (strcmp("root", name) == 0) {
-    int* status = (int*) userData;
+    struct xml_status_info *status = (struct xml_status_info*) userData;
     for (int i = 0; atts[i]; i += 2) {
-      if (strcmp("status_code", atts[i]) == 0)
-        *status = atoi(atts[i + 1]);
-      else if (*status != STATUS_OK && strcmp("status_message", atts[i]) == 0)
-        gs_error = strdup(atts[i + 1]);
+      if (strcmp("status_code", atts[i]) == 0) {
+        status->status_code = atoi(atts[i + 1]);
+        status->has_status_code = 1;
+      } else if (strcmp("status_message", atts[i]) == 0 && status->status_message != NULL && status->status_message_size > 0) {
+        snprintf(status->status_message, status->status_message_size, "%s", atts[i + 1]);
+      }
     }
   }
 }
@@ -270,9 +279,21 @@ int xml_modelist(char* data, size_t len, PDISPLAY_MODE *mode_list) {
 
 }
 
-int xml_status(char* data, size_t len) {
-  int status = 0;
+int xml_status_details(char* data, size_t len, int *status_code, int *has_status_code,
+                       char *status_message, size_t status_message_size) {
+  struct xml_status_info status = {0};
+  if (status_code != NULL)
+    *status_code = 0;
+  if (has_status_code != NULL)
+    *has_status_code = 0;
+  status.status_message = status_message;
+  status.status_message_size = status_message_size;
+  if (status_message != NULL && status_message_size > 0)
+    status_message[0] = '\0';
+
   XML_Parser parser = XML_ParserCreate("UTF-8");
+  if (parser == NULL)
+    return GS_OUT_OF_MEMORY;
   XML_SetUserData(parser, &status);
   XML_SetElementHandler(parser, _xml_start_status_element, _xml_end_status_element);
   if (!XML_Parse(parser, data, len, 1)) {
@@ -283,5 +304,13 @@ int xml_status(char* data, size_t len) {
   }
 
   XML_ParserFree(parser);
-  return status == STATUS_OK ? GS_OK : GS_ERROR;
+  if (status_code != NULL)
+    *status_code = status.status_code;
+  if (has_status_code != NULL)
+    *has_status_code = status.has_status_code;
+  return status.status_code == STATUS_OK ? GS_OK : GS_ERROR;
+}
+
+int xml_status(char* data, size_t len) {
+  return xml_status_details(data, len, NULL, NULL, NULL, 0);
 }

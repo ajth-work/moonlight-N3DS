@@ -70,7 +70,7 @@ ICON		:=	3ds/res/ic_moonlight_ui.png
 
 # CIA
 BANNER_AUDIO	:=	3ds/res/banner.wav
-BANNER_IMAGE	:=	3ds/res/banner.png
+BANNER_IMAGE	:=	3ds/res/banner-gui15.png
 RSF_PATH		:=	3ds/res/app.rsf
 UNIQUE_ID		:=	0x4D12
 PRODUCT_CODE	:=	CTR-P-MLMN
