@@ -47,6 +47,13 @@ static constexpr u32 QUIT_TO_MENU_CHORD = KEY_L | KEY_R | KEY_START;
 static constexpr u64 QUIT_HOLD_SUPPRESS_TICKS = SYSCLOCK_ARM11 / 2;
 static constexpr u64 QUIT_HOLD_TRIGGER_TICKS = SYSCLOCK_ARM11 * 2;
 
+static bool inside_virtual_stick_start(const touchPosition &touch,
+                                       int center_x, int center_y) {
+    const int dx = static_cast<int>(touch.px) - center_x;
+    const int dy = static_cast<int>(touch.py) - center_y;
+    return dx * dx + dy * dy <= 46 * 46;
+}
+
 N3dsInput::N3dsInput(int image_width, int image_height, bool swap_face_buttons,
                      bool swap_triggers_and_shoulders,
                      bool use_triggers_for_mouse_in) {
@@ -235,21 +242,20 @@ void N3dsInput::n3dsinput_handle_event() {
         if (kDown & KEY_TOUCH) {
             touchPosition touch;
             hidTouchRead(&touch);
-            if (touch.py >= 78 && touch.py < 109 && touch.px >= 108 && touch.px < 212) {
+            if (touch.py >= 80 && touch.py < 107 &&
+                touch.px >= 130 && touch.px < 190) {
+                panel_click_mode.store(false);
+                diag_log("PANEL_MODE", "mode=move");
+            } else if (touch.py >= 117 && touch.py < 145 &&
+                       touch.px >= 130 && touch.px < 190) {
+                panel_click_mode.store(true);
+                diag_log("PANEL_MODE", "mode=click");
+            } else if (touch.py >= 107 && touch.py < 118 &&
+                       touch.px >= 130 && touch.px < 190) {
                 const bool click_mode = !panel_click_mode.load();
                 panel_click_mode.store(click_mode);
-                diag_log("PANEL_MODE", "mode=%s", click_mode ? "click" : "move");
-            } else if (touch.py >= 76 && touch.py < 179 &&
-                       (touch.px < 140 || touch.px >= 180)) {
-                const int zone = touch.px < 160 ? 1 : 2;
-                panel_touch_zone.store(zone);
-                panel_touch_start_x = touch.px;
-                panel_touch_start_y = touch.py;
-                panel_touch_start_ticks = svcGetSystemTick();
-                panel_touch_click.store(false);
-                panel_touch_buttons.store(0);
-                panel_touch_x.store(0);
-                panel_touch_y.store(0);
+                diag_log("PANEL_MODE", "mode=%s",
+                         click_mode ? "click" : "move");
             } else if (touch.py >= 184 && touch.py < 228) {
                 if (touch.px < 106) panel_display_action.store(3);
                 else if (touch.px < 214) panel_keyboard_requested.store(true);
@@ -261,6 +267,28 @@ void N3dsInput::n3dsinput_handle_event() {
                 else action = 2;
                 panel_display_action.store(action);
                 diag_log("MONITOR_TAP", "x=%u y=%u action=%d", touch.px, touch.py, action);
+            } else if (inside_virtual_stick_start(touch, 78, 137)) {
+                panel_touch_zone.store(1);
+                panel_touch_start_x = touch.px;
+                panel_touch_start_y = touch.py;
+                panel_touch_start_ticks = svcGetSystemTick();
+                panel_touch_click.store(false);
+                panel_touch_buttons.store(0);
+                panel_touch_x.store(0);
+                panel_touch_y.store(0);
+                panel_right_touch_x.store(0);
+                panel_right_touch_y.store(0);
+            } else if (inside_virtual_stick_start(touch, 242, 137)) {
+                panel_touch_zone.store(2);
+                panel_touch_start_x = touch.px;
+                panel_touch_start_y = touch.py;
+                panel_touch_start_ticks = svcGetSystemTick();
+                panel_touch_click.store(false);
+                panel_touch_buttons.store(0);
+                panel_touch_x.store(0);
+                panel_touch_y.store(0);
+                panel_right_touch_x.store(0);
+                panel_right_touch_y.store(0);
             }
         }
         if (kHeld & KEY_TOUCH) {
@@ -268,33 +296,29 @@ void N3dsInput::n3dsinput_handle_event() {
             if (zone != 0) {
                 touchPosition touch;
                 hidTouchRead(&touch);
-                if (touch.py < 72 || touch.py >= 178 ||
-                    (zone == 1 && touch.px >= 160) ||
-                    (zone == 2 && touch.px < 160)) {
-                    panel_touch_zone.store(0);
-                    panel_touch_buttons.store(0);
-                    panel_touch_x.store(0);
-                    panel_touch_y.store(0);
-                    panel_right_touch_x.store(0);
-                    panel_right_touch_y.store(0);
-                } else {
-                    int dx = (touch.px - (zone == 1 ? 78 : 242)) * 32767 / 46;
-                    int dy = (137 - touch.py) * 32767 / 40;
-                    if (dx < -32767) dx = -32767;
-                    if (dx > 32767) dx = 32767;
-                    if (dy < -32767) dy = -32767;
-                    if (dy > 32767) dy = 32767;
-                    const bool click_mode = panel_click_mode.load();
-                    panel_touch_x.store(zone == 1 && !click_mode ? dx : 0);
-                    panel_touch_y.store(zone == 1 && !click_mode ? dy : 0);
-                    panel_right_touch_x.store(zone == 2 && !click_mode ? dx : 0);
-                    panel_right_touch_y.store(zone == 2 && !click_mode ? dy : 0);
-                    const int moved = abs(touch.px - panel_touch_start_x) +
-                                      abs(touch.py - panel_touch_start_y);
-                    if (panel_click_mode.load() && moved < 8 && svcGetSystemTick() - panel_touch_start_ticks > SYSCLOCK_ARM11 / 3) {
-                        panel_touch_click.store(true);
-                        panel_touch_buttons.store(zone == 1 ? LS_CLK_FLAG : RS_CLK_FLAG);
-                    }
+                // Capture the stick selected on touch-down until touch-up.
+                // The virtual knob clamps to the ring edge, while the input
+                // retains the full drag direction outside the visible ring.
+                int dx = (static_cast<int>(touch.px) -
+                          (zone == 1 ? 78 : 242)) * 32767 / 46;
+                int dy = (137 - static_cast<int>(touch.py)) * 32767 / 46;
+                const float magnitude = sqrtf(static_cast<float>(dx) * dx +
+                                              static_cast<float>(dy) * dy);
+                if (magnitude > 32767.0f) {
+                    const float scale = 32767.0f / magnitude;
+                    dx = static_cast<int>(dx * scale);
+                    dy = static_cast<int>(dy * scale);
+                }
+                const bool click_mode = panel_click_mode.load();
+                panel_touch_x.store(zone == 1 && !click_mode ? dx : 0);
+                panel_touch_y.store(zone == 1 && !click_mode ? dy : 0);
+                panel_right_touch_x.store(zone == 2 && !click_mode ? dx : 0);
+                panel_right_touch_y.store(zone == 2 && !click_mode ? dy : 0);
+                const int moved = abs(touch.px - panel_touch_start_x) +
+                                  abs(touch.py - panel_touch_start_y);
+                if (click_mode && moved < 8 && svcGetSystemTick() - panel_touch_start_ticks > SYSCLOCK_ARM11 / 3) {
+                    panel_touch_click.store(true);
+                    panel_touch_buttons.store(zone == 1 ? LS_CLK_FLAG : RS_CLK_FLAG);
                 }
             }
         }

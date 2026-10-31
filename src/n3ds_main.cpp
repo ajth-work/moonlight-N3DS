@@ -2290,26 +2290,55 @@ static void draw_stream_gamepad_panel(uint32_t rtt_ms, bool rtt_available,
     bottom.drawLiveText(211, 9, session, TextStyle::Small, muted);
     bottom.drawLiveText(257, 25, DIAG_BUILD_VERSION, TextStyle::Small, muted);
     bottom.drawDisplaySelector(default_display, display_count, settings_open);
-    bottom.drawLiveText(123, 69, "SUNSHINE HOTKEY", TextStyle::Small, muted);
+    const Color mint{78, 232, 174};
+    const Color ring{61, 202, 178};
+    const Color ring_shadow{23, 75, 75};
+    const int left_center_x = 78;
+    const int right_center_x = 242;
+    const int stick_center_y = 137;
+    const int left_knob_x = left_center_x + (left_touch_x * 22 / 32767);
+    const int left_knob_y = stick_center_y - (left_touch_y * 22 / 32767);
+    const int right_knob_x = right_center_x + (right_touch_x * 22 / 32767);
+    const int right_knob_y = stick_center_y - (right_touch_y * 22 / 32767);
 
-    const int lx = 78 + (left_touch_x * 31 / 32767);
-    const int ly = 137 - (left_touch_y * 31 / 32767);
-    const int rx = 242 + (right_touch_x * 31 / 32767);
-    const int ry = 137 - (right_touch_y * 31 / 32767);
-    bottom.drawCircle(78, 137, 44, {43, 91, 103});
-    bottom.drawCircle(78, 137, 40, {20, 31, 42});
-    bottom.drawCircle(242, 137, 44, {43, 91, 103});
-    bottom.drawCircle(242, 137, 40, {20, 31, 42});
-    if (touch_buttons & LS_CLK_FLAG) bottom.drawCircle(78, 137, 33, {11, 122, 137});
-    if (touch_buttons & RS_CLK_FLAG) bottom.drawCircle(242, 137, 33, {11, 122, 137});
-    bottom.drawCircle(lx, ly, 10, teal);
-    bottom.drawCircle(rx, ry, 10, teal);
-    bottom.drawLiveText(67, 129, "L3", TextStyle::Header, {91, 247, 155});
-    bottom.drawLiveText(231, 129, "R3", TextStyle::Header, {91, 247, 155});
+    // The paired rings and cardinal ticks mirror the mockup. Keep the
+    // independent L3/R3 pucks inside their own touch zones.
+    for (const int center_x : {left_center_x, right_center_x}) {
+        bottom.drawCircle(center_x, stick_center_y, 43, ring_shadow);
+        bottom.drawCircle(center_x, stick_center_y, 40, dark);
+        bottom.drawCircleOutline(center_x, stick_center_y, 42, 2, ring);
+        bottom.drawLine(center_x, stick_center_y - 51,
+                        center_x, stick_center_y - 44, mint);
+        bottom.drawLine(center_x + 44, stick_center_y,
+                        center_x + 51, stick_center_y, mint);
+        bottom.drawLine(center_x, stick_center_y + 44,
+                        center_x, stick_center_y + 46, mint);
+        bottom.drawLine(center_x - 51, stick_center_y,
+                        center_x - 44, stick_center_y, mint);
+    }
+    if (touch_buttons & LS_CLK_FLAG)
+        bottom.drawCircleOutline(left_center_x, stick_center_y, 43, 4, mint);
+    if (touch_buttons & RS_CLK_FLAG)
+        bottom.drawCircleOutline(right_center_x, stick_center_y, 43, 4, mint);
+
+    const auto draw_stick = [&](int knob_x, int knob_y, const char *label) {
+        bottom.drawCircle(knob_x, knob_y, 21, {45, 58, 67});
+        bottom.drawCircle(knob_x, knob_y, 18, {25, 34, 42});
+        bottom.drawCircleOutline(knob_x, knob_y, 20, 1, ring);
+        const int label_width = bottom.measureLiveText(label, TextStyle::Header);
+        bottom.drawLiveText(knob_x - label_width / 2, knob_y - 7, label,
+                            TextStyle::Header, mint);
+    };
+    draw_stick(left_knob_x, left_knob_y, "L3");
+    draw_stick(right_knob_x, right_knob_y, "R3");
+
     const Color mode_on{29, 176, 98};
-    const Color mode_off{73, 84, 94};
-    bottom.drawPanelButton({111, 81, 159, 105}, "MOVE", click_mode ? mode_off : mode_on, ink);
-    bottom.drawPanelButton({161, 81, 209, 105}, "CLICK", click_mode ? mode_on : mode_off, ink);
+    const Color mode_off{55, 67, 75};
+    bottom.drawPanelButton({132, 83, 188, 103}, "MOVE",
+                           click_mode ? mode_off : mode_on, ink);
+    bottom.drawSwapIcon(160, 112, ring);
+    bottom.drawPanelButton({132, 121, 188, 141}, "CLICK",
+                           click_mode ? mode_on : mode_off, ink);
     if (settings_open) {
         char settings[64];
         snprintf(settings, sizeof(settings), "%dx%d  %dfps  %dkbps",

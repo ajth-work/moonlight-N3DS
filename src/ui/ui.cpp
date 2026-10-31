@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 
 namespace MoonlightUi {
 namespace {
@@ -390,6 +391,54 @@ void Screen::drawCircle(int cx, int cy, int radius, Color color) {
     for (int y = -radius; y <= radius; ++y)
         for (int x = -radius; x <= radius; ++x)
             if (x * x + y * y <= radius * radius) setPixel(cx + x, cy + y, pixel);
+}
+
+void Screen::drawCircleOutline(int cx, int cy, int radius, int thickness,
+                               Color color) {
+    if (radius <= 0 || thickness <= 0) return;
+    const int inner_radius = std::max(0, radius - thickness);
+    const int outer_squared = radius * radius;
+    const int inner_squared = inner_radius * inner_radius;
+    const uint16_t pixel = rgb565(color);
+    for (int y = -radius; y <= radius; ++y) {
+        for (int x = -radius; x <= radius; ++x) {
+            const int distance_squared = x * x + y * y;
+            if (distance_squared <= outer_squared &&
+                distance_squared >= inner_squared)
+                setPixel(cx + x, cy + y, pixel);
+        }
+    }
+}
+
+void Screen::drawLine(int x0, int y0, int x1, int y1, Color color) {
+    const int dx = std::abs(x1 - x0);
+    const int sx = x0 < x1 ? 1 : -1;
+    const int dy = -std::abs(y1 - y0);
+    const int sy = y0 < y1 ? 1 : -1;
+    int error = dx + dy;
+    const uint16_t pixel = rgb565(color);
+    while (true) {
+        setPixel(x0, y0, pixel);
+        if (x0 == x1 && y0 == y1) break;
+        const int twice_error = 2 * error;
+        if (twice_error >= dy) {
+            error += dy;
+            x0 += sx;
+        }
+        if (twice_error <= dx) {
+            error += dx;
+            y0 += sy;
+        }
+    }
+}
+
+void Screen::drawSwapIcon(int cx, int cy, Color color) {
+    drawLine(cx - 8, cy - 3, cx + 7, cy - 3, color);
+    drawLine(cx + 3, cy - 7, cx + 7, cy - 3, color);
+    drawLine(cx + 3, cy + 1, cx + 7, cy - 3, color);
+    drawLine(cx + 8, cy + 3, cx - 7, cy + 3, color);
+    drawLine(cx - 3, cy - 1, cx - 7, cy + 3, color);
+    drawLine(cx - 3, cy + 7, cx - 7, cy + 3, color);
 }
 
 void Screen::drawMagnifierIcon(int cx, int cy, Color color) {

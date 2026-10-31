@@ -58,6 +58,10 @@ class Screen {
     void drawBackground();
     void drawSolidBackground(Color color);
     void drawCircle(int center_x, int center_y, int radius, Color color);
+    void drawCircleOutline(int center_x, int center_y, int radius,
+                           int thickness, Color color);
+    void drawLine(int x0, int y0, int x1, int y1, Color color);
+    void drawSwapIcon(int center_x, int center_y, Color color);
     void drawMagnifierIcon(int center_x, int center_y, Color color);
     void drawKeyboardIcon(int center_x, int center_y, Color color);
     void drawSettingsIcon(int center_x, int center_y, Color color);
