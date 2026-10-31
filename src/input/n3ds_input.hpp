@@ -42,8 +42,10 @@ class N3dsInput : public ISubscriber {
     bool stream_panel_click_mode() { return panel_click_mode.load(); }
     bool consume_stream_panel_keyboard_request();
     bool consume_stream_panel_settings_request();
+    bool consume_stream_panel_restore_request();
     int consume_stream_display_action();
     void open_stream_keyboard();
+    void open_stream_mode_menu();
 
   private:
     void _add_gamepad();
@@ -82,6 +84,8 @@ class N3dsInput : public ISubscriber {
     u64 panel_touch_start_ticks = 0;
     AtomicVar<bool> panel_keyboard_requested = false;
     AtomicVar<bool> panel_settings_requested = false;
+    AtomicVar<bool> stream_mode_menu_active = false;
+    AtomicVar<bool> stream_panel_restore_requested = false;
     AtomicVar<int> panel_display_action = 0;
 
     uint32_t CUSTOM_KEY_A;

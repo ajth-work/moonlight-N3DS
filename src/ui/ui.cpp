@@ -466,19 +466,15 @@ void Screen::drawKeyboardIcon(int cx, int cy, Color color) {
 }
 
 void Screen::drawSettingsIcon(int cx, int cy, Color color) {
-    const uint16_t pixel = rgb565(color);
-    for (int y = -11; y <= 11; ++y)
-        for (int x = -11; x <= 11; ++x) {
-            const int d = x * x + y * y;
-            if (d >= 49 && d <= 121) setPixel(cx + x, cy + y, pixel);
-        }
-    for (int i = -14; i <= 14; ++i) {
-        setPixel(cx + i, cy - 12, pixel); setPixel(cx + i, cy + 12, pixel);
-        setPixel(cx - 12, cy + i, pixel); setPixel(cx + 12, cy + i, pixel);
-    }
-    for (int y = -3; y <= 3; ++y)
-        for (int x = -3; x <= 3; ++x)
-            if (x * x + y * y <= 9) setPixel(cx + x, cy + y, pixel);
+    drawCircleOutline(cx, cy, 9, 3, color);
+    drawLine(cx, cy - 14, cx, cy - 10, color);
+    drawLine(cx, cy + 10, cx, cy + 14, color);
+    drawLine(cx - 14, cy, cx - 10, cy, color);
+    drawLine(cx + 10, cy, cx + 14, cy, color);
+    drawLine(cx - 10, cy - 10, cx - 7, cy - 7, color);
+    drawLine(cx + 7, cy - 7, cx + 10, cy - 10, color);
+    drawLine(cx - 10, cy + 10, cx - 7, cy + 7, color);
+    drawLine(cx + 7, cy + 7, cx + 10, cy + 10, color);
 }
 
 void Screen::drawPanelButton(const Rect &rect, const std::string &label,

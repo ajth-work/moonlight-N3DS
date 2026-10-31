@@ -81,12 +81,14 @@ N3dsInput::N3dsInput(int image_width, int image_height, bool swap_face_buttons,
     auto pDispatcher = MessageDispatcher::get_instance();
     pDispatcher->subscribe(MessageType::ENABLE_ACCEL, this);
     pDispatcher->subscribe(MessageType::ENABLE_GYRO, this);
+    pDispatcher->subscribe(MessageType::TOUCH_STATE_CHANGED, this);
 }
 
 N3dsInput::~N3dsInput() {
     auto pDispatcher = MessageDispatcher::get_instance();
     pDispatcher->unsubscribe(MessageType::ENABLE_ACCEL, this);
     pDispatcher->unsubscribe(MessageType::ENABLE_GYRO, this);
+    pDispatcher->unsubscribe(MessageType::TOUCH_STATE_CHANGED, this);
 
     _remove_gamepad();
     gamepad_state = GAMEPAD_STATE();
@@ -101,6 +103,14 @@ void N3dsInput::accept(IMessage *msg) {
         enable_accel.store(true);
     } else if (msg->getMessageType() == MessageType::ENABLE_GYRO) {
         enable_gyro.store(true);
+    } else if (msg->getMessageType() == MessageType::TOUCH_STATE_CHANGED &&
+               stream_mode_menu_active.load()) {
+        auto *touch_msg = static_cast<TouchStateChangedMsg *>(msg);
+        if (touch_msg->ttype != N3dsTouchType::MENU_TOUCH) {
+            stream_mode_menu_active.store(false);
+            if (touch_msg->ttype == N3dsTouchType::GAMEPAD)
+                stream_panel_restore_requested.store(true);
+        }
     }
 }
 
@@ -219,6 +229,12 @@ bool N3dsInput::consume_stream_panel_settings_request() {
     return requested;
 }
 
+bool N3dsInput::consume_stream_panel_restore_request() {
+    const bool requested = stream_panel_restore_requested.load();
+    stream_panel_restore_requested.store(false);
+    return requested;
+}
+
 int N3dsInput::consume_stream_display_action() {
     const int action = panel_display_action.load();
     panel_display_action.store(0);
@@ -228,6 +244,13 @@ int N3dsInput::consume_stream_display_action() {
 void N3dsInput::open_stream_keyboard() {
     stream_panel_enabled.store(false);
     auto message = std::make_shared<TouchStateChangedMsg>(N3dsTouchType::KEYBOARD);
+    MessageDispatcher::get_instance()->post(message);
+}
+
+void N3dsInput::open_stream_mode_menu() {
+    stream_panel_enabled.store(false);
+    stream_mode_menu_active.store(true);
+    auto message = std::make_shared<TouchStateChangedMsg>(N3dsTouchType::MENU_TOUCH);
     MessageDispatcher::get_instance()->post(message);
 }
 
