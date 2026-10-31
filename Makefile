@@ -63,14 +63,14 @@ GFXBUILD	:=	$(BUILD)
 
 
 # 3dsx
-APP_TITLE	:=	Moonlight Monitor
-APP_DESCRIPTION	:=	Moonlight Monitor Streaming Client
+APP_TITLE := Moonlight Monitor GUI16
+APP_DESCRIPTION := Moonlight Game Streaming Monitor GUI16
 APP_AUTHOR	:=	zoeyjodon
 ICON		:=	3ds/res/ic_moonlight_ui.png
 
 # CIA
 BANNER_AUDIO	:=	3ds/res/banner.wav
-BANNER_IMAGE	:=	3ds/res/banner-gui15.png
+BANNER_IMAGE := 3ds/res/banner-gui16.png
 RSF_PATH		:=	3ds/res/app.rsf
 UNIQUE_ID		:=	0x4D12
 PRODUCT_CODE	:=	CTR-P-MLMN

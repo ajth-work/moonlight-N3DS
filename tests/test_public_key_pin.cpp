@@ -69,6 +69,12 @@ int main() {
     char loaded[53];
     assert(host_pin_store_load("192.0.2.10", 47989, loaded, sizeof(loaded)));
     assert(strcmp(loaded, pin_a) == 0);
+    bool consent_known = true, consent_enabled = false;
+    assert(host_upload_consent_get("192.0.2.10", 47989, &consent_known, &consent_enabled));
+    assert(!consent_known && !consent_enabled);
+    assert(host_upload_consent_set("192.0.2.10", 47989, true));
+    assert(host_upload_consent_get("192.0.2.10", 47989, &consent_known, &consent_enabled));
+    assert(consent_known && consent_enabled);
     assert(!host_pin_store_load("192.0.2.10", 47990, loaded, sizeof(loaded)));
     assert(!host_pin_store_load("192.0.2.11", 47989, loaded, sizeof(loaded)));
     assert(!host_pin_store_load("192.0.2.12", 47989, loaded, sizeof(loaded))); // absent pin
@@ -79,6 +85,8 @@ int main() {
     assert(host_pin_store_save_after_pairing("192.0.2.10", 47989, pin_b, true));
     assert(host_pin_store_load("192.0.2.10", 47989, loaded, sizeof(loaded)));
     assert(strcmp(loaded, pin_b) == 0);
+    assert(host_upload_consent_get("192.0.2.10", 47989, &consent_known, &consent_enabled));
+    assert(!consent_known && !consent_enabled); // a changed server key requires new consent
     remove_host_public_key_pin("192.0.2.10", 47989);
     assert(!host_pin_store_load("192.0.2.10", 47989, loaded, sizeof(loaded)));
 

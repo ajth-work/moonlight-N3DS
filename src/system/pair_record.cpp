@@ -198,3 +198,52 @@ extern "C" bool host_pin_store_load(const char *address, uint16_t port,
 extern "C" void host_pin_store_remove(const char *address, uint16_t port) {
     if (address != NULL) remove_host_public_key_pin(address, port);
 }
+
+extern "C" bool host_upload_consent_get(const char *address, uint16_t port,
+                                         bool *known, bool *enabled) {
+    char pin[53];
+    if (known == NULL || enabled == NULL || address == NULL ||
+        !host_pin_store_load(address, port, pin, sizeof(pin))) return false;
+    *known = false;
+    *enabled = false;
+    std::ifstream input(pin_file_path() + "-upload-consent");
+    std::string stored_pin;
+    int stored_value;
+    while (input >> stored_pin >> stored_value) {
+        if (stored_pin == pin && (stored_value == 0 || stored_value == 1)) {
+            *known = true;
+            *enabled = stored_value == 1;
+            return true;
+        }
+    }
+    return true;
+}
+
+extern "C" bool host_upload_consent_set(const char *address, uint16_t port,
+                                         bool enabled) {
+    char pin[53];
+    if (address == NULL || !host_pin_store_load(address, port, pin, sizeof(pin))) return false;
+    const std::string path = pin_file_path() + "-upload-consent";
+    const std::string temporary = path + ".tmp";
+    std::vector<std::pair<std::string, int>> entries;
+    std::ifstream input(path);
+    std::string old_pin;
+    int old_value;
+    while (input >> old_pin >> old_value) {
+        if (old_pin != pin && (old_value == 0 || old_value == 1))
+            entries.emplace_back(old_pin, old_value);
+    }
+    entries.emplace_back(pin, enabled ? 1 : 0);
+    FILE *output = fopen(temporary.c_str(), "w");
+    if (output == NULL) return false;
+    bool ok = true;
+    for (const auto &entry : entries) {
+        if (fprintf(output, "%s %d\n", entry.first.c_str(), entry.second) < 0) ok = false;
+    }
+    if (fclose(output) != 0) ok = false;
+    if (!ok || rename(temporary.c_str(), path.c_str()) != 0) {
+        remove(temporary.c_str());
+        return false;
+    }
+    return true;
+}

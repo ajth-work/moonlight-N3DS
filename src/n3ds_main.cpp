@@ -26,6 +26,7 @@
 #include "system/dispatcher.hpp"
 #include "system/n3ds_connection.hpp"
 #include "system/pair_record.hpp"
+#include "pin_store.h"
 #include "ui/ui.hpp"
 #include "video/video.hpp"
 
@@ -39,6 +40,8 @@
 #include <arpa/inet.h>
 #include <algorithm>
 #include <cerrno>
+#include <cctype>
+#include <ctime>
 #include <climits>
 #include <cstdlib>
 #include <exception>
@@ -382,10 +385,16 @@ static bool run_gui_menu(const std::string &title, const std::string &context,
 static std::string prompt_for_action(PSERVER_DATA server) {
     std::vector<GuiMenuItem> actions;
     if (server->paired) {
+        bool known = false;
+        bool enabled = false;
+        host_upload_consent_get(server->serverInfo.address, server->httpPort,
+                                &known, &enabled);
         actions = {
             {"Stream", "Start streaming from the selected host. The host app list opens next.", "Ready"},
             {"Stream Profile", "Choose a saved resolution and bitrate profile for this host.", "Host-specific"},
             {"Connection Test", "Measure frame timing and staged bitrate stability without changing saved settings.", "Diagnostic"},
+            {"Send Logs to this PC", "Send only this host session's diagnostics to this paired Sunshine host.", "Manual upload"},
+            {"Automatic Log Upload", "Upload separate host and stream session snapshots after they finish.", known ? (enabled ? "Enabled" : "Disabled") : "Consent required"},
             {"Quit Stream", "Ask the host to close its currently active streaming app.", "Host request"},
             {"Stream Settings", "Edit video, audio, input, decoder, and diagnostic log options.", "Preferences"},
             {"Unpair", "Remove this device's pairing from the selected host.", "Destructive host change"},
@@ -403,6 +412,8 @@ static std::string prompt_for_action(PSERVER_DATA server) {
     if (label == "Stream") return "stream";
     if (label == "Stream Profile") return "stream profile";
     if (label == "Connection Test") return "connection test";
+    if (label == "Send Logs to this PC") return "send logs";
+    if (label == "Automatic Log Upload") return "toggle automatic logs";
     if (label == "Quit Stream") return "quit stream";
     if (label == "Stream Settings") return "stream settings";
     if (label == "Unpair") return "unpair";
@@ -1272,6 +1283,121 @@ static void show_gui_message(const std::string &title, const std::string &messag
     GuiMessageScreen screen(title, message, hint);
     MoonlightUi::runDualScreen(screen);
     restore_consoles_after_dual_screen_ui();
+}
+
+static bool ensure_upload_consent(PSERVER_DATA server) {
+    bool known = false;
+    bool enabled = false;
+    if (!host_upload_consent_get(server->serverInfo.address, server->httpPort,
+                                 &known, &enabled)) {
+        show_gui_message("UPLOAD TRUST UNAVAILABLE",
+                         "No saved paired Sunshine certificate pin is available.",
+                         "Logs stay on the SD card until this host is paired again.");
+        return false;
+    }
+    if (known) return enabled;
+    std::vector<GuiMenuItem> choices = {
+        {"Allow Automatic Uploads", "Diagnostic events can include host addresses, app IDs/names, display IDs, and timings. The SD copy is always kept.", server->serverInfo.address},
+        {"Keep Logs Local", "Do not send session logs automatically. You can still choose a manual send later.", "No uploads"},
+    };
+    int selected = 1;
+    run_gui_menu("DIAGNOSTIC UPLOAD CONSENT", "PAIRED SUNSHINE HOST",
+                 choices, &selected);
+    enabled = selected == 0;
+    if (!host_upload_consent_set(server->serverInfo.address, server->httpPort,
+                                 enabled)) {
+        show_gui_message("CONSENT NOT SAVED",
+                         "Moonlight could not save this host's upload choice.",
+                         "Automatic uploads remain disabled.");
+        return false;
+    }
+    return enabled;
+}
+
+static bool auto_upload_enabled(PSERVER_DATA server) {
+    bool known = false;
+    bool enabled = false;
+    return host_upload_consent_get(server->serverInfo.address, server->httpPort,
+                                   &known, &enabled) && known && enabled;
+}
+
+static std::string json_quote(const std::string &value) {
+    std::string result = "\"";
+    for (unsigned char c : value) {
+        if (c == '"' || c == '\\') { result.push_back('\\'); result.push_back((char)c); }
+        else if (c == '\n') result += "\\n";
+        else if (c == '\r') result += "\\r";
+        else if (c == '\t') result += "\\t";
+        else if (c >= 0x20) result.push_back((char)c);
+    }
+    result.push_back('"');
+    return result;
+}
+
+static bool sensitive_diagnostic_line(const std::string &line) {
+    std::string lower = line;
+    std::transform(lower.begin(), lower.end(), lower.begin(),
+                   [](unsigned char c) { return (char)std::tolower(c); });
+    static const char *blocked[] = {"pin", "secret", "private", "credential",
+        "auth", "cert", "key", "pairing", "uniqueid", "uuid=", "?"};
+    for (const char *needle : blocked) if (lower.find(needle) != std::string::npos) return true;
+    return false;
+}
+
+static bool build_upload_json(const DIAG_SESSION &session, const std::string &path,
+                              const char *outcome, std::string &body) {
+    std::ifstream input(path, std::ios::binary);
+    if (!input) return false;
+    std::string content, line;
+    bool truncated = false;
+    constexpr size_t content_limit = 240 * 1024;
+    while (std::getline(input, line)) {
+        line.push_back('\n');
+        if (sensitive_diagnostic_line(line)) continue;
+        std::string encoded_line = json_quote(line);
+        const size_t encoded_size = encoded_line.size() - 2;
+        if (content.size() + encoded_size > content_limit) { truncated = true; break; }
+        content += line;
+    }
+    if (truncated) content += "[TRUNCATED AT LINE BOUNDARY]\n";
+    unsigned char raw_id[16];
+    if (RAND_bytes(raw_id, sizeof(raw_id)) != 1) return false;
+    static const char hex[] = "0123456789abcdef";
+    std::string upload_id(32, '0');
+    for (size_t i = 0; i < sizeof(raw_id); ++i) {
+        upload_id[i * 2] = hex[raw_id[i] >> 4];
+        upload_id[i * 2 + 1] = hex[raw_id[i] & 0xf];
+    }
+    const unsigned long long end_epoch = (unsigned long long)time(NULL);
+    body = "{\"version\":1,\"scope\":" + json_quote(session.scope) +
+        ",\"upload_id\":" + json_quote(upload_id) +
+        ",\"session_id\":" + json_quote(session.id) +
+        ",\"parent_id\":" + json_quote(session.parent_id) +
+        ",\"begin\":" + json_quote(std::to_string(session.begin_epoch)) +
+        ",\"end\":" + json_quote(std::to_string(end_epoch)) +
+        ",\"build\":" + json_quote(DIAG_BUILD_VERSION) +
+        ",\"outcome\":" + json_quote(outcome) +
+        ",\"truncated\":" + (truncated ? "true" : "false") +
+        ",\"content\":" + json_quote(content) + "}";
+    return body.size() <= 256 * 1024;
+}
+
+static bool upload_session(PSERVER_DATA server, const DIAG_SESSION &session,
+                           const std::string &path, const char *outcome) {
+    std::string body;
+    if (!build_upload_json(session, path, outcome, body)) return false;
+    char url[1024];
+    const int url_length = snprintf(url, sizeof(url), "https://%s:%u/client-diagnostics",
+                                    server->serverInfo.address, server->httpsPort);
+    if (url_length < 0 || (size_t)url_length >= sizeof(url)) return false;
+    PHTTP_DATA response = http_create_data();
+    if (response == NULL) return false;
+    http_set_timeout_s(5);
+    int result = gs_request_pinned(server, url, response, body.c_str(), body.size());
+    if (result != GS_OK) result = gs_request_pinned(server, url, response, body.c_str(), body.size());
+    http_set_timeout_s(60);
+    http_free_data(response);
+    return result == GS_OK;
 }
 
 static bool run_gui_call(const char *phase, const std::string &title,
@@ -3070,6 +3196,17 @@ int main_loop(int argc, char *argv[]) {
         diag_log("HOST_SELECTION", "host=%s port=%d", config.address,
                  config.port);
         SERVER_DATA server;
+        DIAG_SESSION host_session{};
+        bool host_session_active = diag_session_begin(&host_session, "host", NULL);
+        char session_pin[53] = "unavailable";
+        if (host_session_active) {
+            char saved_pin[53];
+            if (host_pin_store_load(config.address, config.port, saved_pin,
+                                    sizeof(saved_pin))) {
+                snprintf(session_pin, sizeof(session_pin), "%s", saved_pin);
+            }
+            diag_session_set_host_identity(&host_session, session_pin);
+        }
         InitServerCall connect_call{&config, &server, GS_ERROR};
         diag_http_summary_begin();
         run_gui_call("connect.server_init", "Checking host status",
@@ -3081,6 +3218,11 @@ int main_loop(int argc, char *argv[]) {
             continue;
         }
         if (connect_call.status != GS_OK) {
+            if (host_session_active) {
+                char local_path[256];
+                diag_session_finish(&host_session, "host_init_failed", local_path,
+                                    sizeof(local_path));
+            }
             print_init_server_error(&config, connect_call.status);
             show_gui_message("HOST CONNECTION FAILED",
                              "Moonlight could not connect to this host.",
@@ -3089,21 +3231,99 @@ int main_loop(int argc, char *argv[]) {
         }
         diag_log("HOST_INFO", "host connection initialized codec_flags=0x%x",
                  server.serverInfo.serverCodecModeSupport);
+        if (server.paired) ensure_upload_consent(&server);
 
         while (aptMainLoop()) {
             std::string action = prompt_for_action(&server);
             if (action.empty()) {
+                if (host_session_active) {
+                    char local_path[256];
+                    if (diag_session_finish(&host_session, "user_left_host",
+                                            local_path, sizeof(local_path)) &&
+                        server.paired && auto_upload_enabled(&server)) {
+                        const bool sent = upload_session(&server, host_session,
+                                                         local_path, "user_left_host");
+                        show_gui_message(sent ? "LOGS SENT" : "LOG UPLOAD FAILED",
+                            sent ? "Sunshine saved this host session." : "This host session is still saved on the SD card.",
+                            sent ? "See Sunshine's moonlight-client-logs folder." : "Check the saved certificate pin, pairing, and host reachability.");
+                    }
+                }
                 break;
             }
             config.action = (char *)action.c_str();
 
             if (strcmp("exit to 3ds home", config.action) == 0) {
                 diag_log("APP_EXIT_REQUEST", "route=host_action_menu");
+                if (host_session_active) {
+                    char local_path[256];
+                    if (diag_session_finish(&host_session, "app_exit",
+                                            local_path, sizeof(local_path)) &&
+                        server.paired && auto_upload_enabled(&server)) {
+                        const bool sent = upload_session(&server, host_session,
+                                                         local_path, "app_exit");
+                        show_gui_message(sent ? "LOGS SENT" : "LOG UPLOAD FAILED",
+                            sent ? "Sunshine saved this host session." : "This host session remains on the SD card.",
+                            sent ? "See Sunshine's moonlight-client-logs folder." : "Check the saved certificate pin, pairing, and host reachability.");
+                    }
+                }
                 return 0;
             } else if (strcmp("stream", config.action) == 0) {
+                DIAG_SESSION stream_session{};
+                bool stream_active = diag_session_begin(&stream_session, "stream",
+                                                        host_session.id);
+                if (stream_active)
+                    diag_session_set_host_identity(&stream_session, session_pin);
                 action_stream(&config, &server);
-                break;
+                if (stream_active) {
+                    char local_path[256];
+                    if (diag_session_finish(&stream_session, "stream_returned",
+                                            local_path, sizeof(local_path)) &&
+                        auto_upload_enabled(&server)) {
+                        const bool sent = upload_session(&server, stream_session,
+                                                         local_path, "stream_returned");
+                        show_gui_message(sent ? "LOGS SENT" : "LOG UPLOAD FAILED",
+                            sent ? "Sunshine saved this stream session." : "The stream diagnostics remain on the SD card.",
+                            sent ? "See Sunshine's moonlight-client-logs folder." : "Retry from HOST ACTIONS when this host is reachable.");
+                    }
+                }
+                continue;
+            } else if (strcmp("send logs", config.action) == 0) {
+                char local_path[256];
+                if (host_session_active &&
+                    diag_session_snapshot(&host_session, local_path, sizeof(local_path))) {
+                    std::vector<GuiMenuItem> confirm = {
+                        {"Send Current Host Session", "Send the selected paired host's current diagnostics over pinned HTTPS.", server.serverInfo.address},
+                        {"Cancel", "Keep this session local on the SD card.", "No upload"},
+                    };
+                    int selected = 1;
+                    if (run_gui_menu("CONFIRM LOG UPLOAD", "THIS HOST ONLY",
+                                     confirm, &selected) && selected == 0) {
+                        const bool sent = upload_session(&server, host_session,
+                                                         local_path, "manual_current_host");
+                        show_gui_message(sent ? "LOGS SENT" : "LOG UPLOAD FAILED",
+                            sent ? "Sunshine saved this host session." : "The local session copy is preserved.",
+                            sent ? "See Sunshine's moonlight-client-logs folder." : "Check pairing, pin, and host availability.");
+                    }
+                }
+            } else if (strcmp("toggle automatic logs", config.action) == 0) {
+                bool known = false;
+                bool enabled = false;
+                if (!host_upload_consent_get(server.serverInfo.address, server.httpPort,
+                                             &known, &enabled) || !known) {
+                    ensure_upload_consent(&server);
+                } else if (host_upload_consent_set(server.serverInfo.address,
+                                                   server.httpPort, !enabled)) {
+                    show_gui_message("AUTOMATIC UPLOADS",
+                        !enabled ? "Automatic diagnostic uploads are enabled for this paired host." : "Automatic diagnostic uploads are disabled for this paired host.",
+                        "The append-only SD log is always retained.");
+                }
             } else if (strcmp("pair", config.action) == 0) {
+                if (host_session_active) {
+                    char local_path[256];
+                    diag_session_finish(&host_session, "pair_action", local_path,
+                                        sizeof(local_path));
+                    host_session_active = false;
+                }
                 bool cancelled = action_pair(&config, &server);
                 (void)cancelled;
                 break;
@@ -3114,10 +3334,23 @@ int main_loop(int argc, char *argv[]) {
             } else if (strcmp("connection test", config.action) == 0) {
                 action_connection_test(&config, &server, profile_host_key);
             } else if (strcmp("unpair", config.action) == 0) {
+                if (host_session_active) {
+                    char local_path[256];
+                    if (diag_session_finish(&host_session, "unpair", local_path,
+                                            sizeof(local_path)) && auto_upload_enabled(&server))
+                        upload_session(&server, host_session, local_path, "unpair");
+                    host_session_active = false;
+                }
                 action_unpair(&config, &server);
                 break;
             } else if (strcmp("quit stream", config.action) == 0) {
                 action_quit_stream(&server);
+                if (host_session_active) {
+                    char local_path[256];
+                    diag_session_finish(&host_session, "quit_stream", local_path,
+                                        sizeof(local_path));
+                    host_session_active = false;
+                }
                 break;
             } else {
                 printf("%s is not a valid action\n", config.action);

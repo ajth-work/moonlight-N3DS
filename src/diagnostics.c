@@ -4,6 +4,7 @@
 #include <openssl/bio.h>
 #include <openssl/bn.h>
 #include <openssl/sha.h>
+#include <openssl/rand.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -16,6 +17,7 @@
 #define UNIX_EPOCH_OFFSET_MS 2208988800000ULL
 #define DIAG_FORMATTED_LINE_MAX 4096
 #define DIAG_STACK_RECORD_CAPACITY 512
+#define DIAG_SESSION_DIRECTORY "sdmc:/3ds/moonlight/sessions"
 
 static LightLock diag_lock;
 /* Protected by diag_lock, including formatting and file I/O. No logger calls
@@ -58,6 +60,89 @@ static char diag_stack_record[DIAG_STACK_RECORD_CAPACITY];
 static size_t diag_stack_record_length = 0;
 static char diag_ui_top_state[32];
 static char diag_ui_bottom_state[32];
+
+static void format_session_id(const unsigned char raw[16], char out[33]) {
+    static const char hex[] = "0123456789abcdef";
+    for (unsigned int i = 0; i < 16; ++i) {
+        out[i * 2] = hex[raw[i] >> 4];
+        out[i * 2 + 1] = hex[raw[i] & 0xf];
+    }
+    out[32] = '\0';
+}
+
+bool diag_session_begin(DIAG_SESSION *session, const char *scope,
+                        const char *parent_id) {
+    if (session == NULL || (strcmp(scope, "host") != 0 && strcmp(scope, "stream") != 0)) return false;
+    memset(session, 0, sizeof(*session));
+    unsigned char random_id[16];
+    if (RAND_bytes(random_id, sizeof(random_id)) != 1) return false;
+    format_session_id(random_id, session->id);
+    snprintf(session->scope, sizeof(session->scope), "%s", scope);
+    if (parent_id != NULL) snprintf(session->parent_id, sizeof(session->parent_id), "%s", parent_id);
+    session->begin_epoch = (unsigned long long)time(NULL);
+    FILE *file = fopen(DIAG_LOG_PATH, "ab");
+    if (file == NULL) return false;
+    fflush(file);
+    session->log_offset = ftell(file);
+    fclose(file);
+    if (session->log_offset < 0) return false;
+    session->active = true;
+    diag_log("SESSION_BEGIN", "scope=%s id=%s parent=%s begin=%llu build=%s",
+             session->scope, session->id, session->parent_id[0] ? session->parent_id : "-",
+             session->begin_epoch, DIAG_BUILD_VERSION);
+    return true;
+}
+
+void diag_session_set_host_identity(DIAG_SESSION *session,
+                                    const char *identity_pin) {
+    if (session == NULL || identity_pin == NULL || !session->active) return;
+    snprintf(session->host_identity, sizeof(session->host_identity), "%s",
+             identity_pin);
+    diag_log("SESSION_TARGET", "scope=%s id=%s pin_fingerprint=%s",
+             session->scope, session->id, session->host_identity);
+}
+
+bool diag_session_snapshot(DIAG_SESSION *session, char *path_out,
+                           size_t path_capacity) {
+    if (session == NULL || !session->active || path_out == NULL || path_capacity == 0) return false;
+    mkdir("sdmc:/3ds/moonlight", 0777);
+    mkdir(DIAG_SESSION_DIRECTORY, 0777);
+    char path[256];
+    snprintf(path, sizeof(path), "%s/%s-%s.log", DIAG_SESSION_DIRECTORY,
+             session->scope, session->id);
+    FILE *source = fopen(DIAG_LOG_PATH, "rb");
+    FILE *target = fopen(path, "wb");
+    if (source == NULL || target == NULL || fseek(source, session->log_offset, SEEK_SET) != 0) {
+        if (source != NULL) fclose(source);
+        if (target != NULL) fclose(target);
+        return false;
+    }
+    char line[DIAG_FORMATTED_LINE_MAX];
+    bool inside_stream = false;
+    while (fgets(line, sizeof(line), source) != NULL) {
+        if (strcmp(session->scope, "host") == 0 &&
+            strstr(line, "SESSION_BEGIN scope=stream") != NULL) inside_stream = true;
+        if (!inside_stream) fputs(line, target);
+        if (strcmp(session->scope, "host") == 0 &&
+            strstr(line, "SESSION_END scope=stream") != NULL) inside_stream = false;
+    }
+    bool ok = !ferror(source) && !ferror(target);
+    if (fclose(source) != 0) ok = false;
+    if (fclose(target) != 0) ok = false;
+    if (ok && strlen(path) < path_capacity) snprintf(path_out, path_capacity, "%s", path);
+    else ok = false;
+    return ok;
+}
+
+bool diag_session_finish(DIAG_SESSION *session, const char *outcome,
+                         char *path_out, size_t path_capacity) {
+    if (session == NULL || !session->active || outcome == NULL) return false;
+    diag_log("SESSION_END", "scope=%s id=%s outcome=%s end=%llu",
+             session->scope, session->id, outcome, (unsigned long long)time(NULL));
+    bool ok = diag_session_snapshot(session, path_out, path_capacity);
+    session->active = false;
+    return ok;
+}
 
 bool diag_cert_fingerprint(X509 *certificate, char *out,
                            unsigned int out_capacity) {

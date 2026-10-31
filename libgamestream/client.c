@@ -461,12 +461,14 @@ int gs_unpair(PSERVER_DATA server) {
   return gs_unpair_internal(server, true);
 }
 
-int gs_request_pinned(PSERVER_DATA server, char *url, PHTTP_DATA data) {
+int gs_request_pinned(PSERVER_DATA server, char *url, PHTTP_DATA data,
+                      const char *request_body, size_t body_size) {
   char expected_prefix[1024];
   char pin[53];
   int prefix_length;
   if (server == NULL || !server->paired || server->serverInfo.address == NULL ||
-      url == NULL || data == NULL) return GS_FAILED;
+      url == NULL || data == NULL ||
+      (request_body == NULL && body_size != 0) || body_size > 256U * 1024U) return GS_FAILED;
   prefix_length = snprintf(expected_prefix, sizeof(expected_prefix),
                            "https://%s:%u/", server->serverInfo.address,
                            server->httpsPort);
@@ -477,7 +479,9 @@ int gs_request_pinned(PSERVER_DATA server, char *url, PHTTP_DATA data) {
     gs_error = "No valid paired host public-key pin for this endpoint";
     return GS_FAILED;
   }
-  return http_request_pinned(url, data, pin);
+  return request_body != NULL
+      ? http_request_post_pinned(url, data, pin, request_body, body_size)
+      : http_request_pinned(url, data, pin);
 }
 
 int gs_pair(PSERVER_DATA server, char* pin) {

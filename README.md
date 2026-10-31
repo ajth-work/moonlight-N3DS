@@ -36,7 +36,15 @@ After a successful GameStream pairing, Moonlight derives a SHA-256 pin from the 
 
 The pin-aware request API is intended for future sensitive requests. It requires a saved, well-formed pin, targets the paired host's HTTPS port, sets libcurl's public-key pin before transfer, and does not follow redirects. Missing pins and changed server keys fail closed. If the address or HTTP port changes, there is no automatic pin migration; pair with the host again at the new endpoint. Successful unpair removes that endpoint's saved pin.
 
-This prerequisite alone does not enable automatic or manual log transfer. No logs are uploaded by this change, and Sunshine has not changed.
+The paired-host pin is mandatory for the diagnostic transfer described below; ordinary HTTPS responses never create or update it.
+
+### Diagnostic logs and paired-host transfer
+
+The complete append-only 3DS log is `sdmc:/3ds/moonlight/moonlight.log`. Separate local host and stream snapshots are retained in `sdmc:/3ds/moonlight/sessions/`; these files remain on the SD card whether transfer succeeds or fails. In HOST ACTIONS, **Send Logs to this PC** sends only the current host-session snapshot after confirmation. **Automatic Log Upload** is a per-paired-host setting. Moonlight asks once for consent; the prompt explains that diagnostics can contain host addresses, app IDs/names, display IDs, and timings.
+
+Uploads go directly to the selected paired Sunshine host using HTTPS and the saved paired server-certificate public-key pin. A missing or mismatched pin fails closed; pair with that host again to establish a new pin. Moonlight never sends logs through a relay or third party. Automatic host and stream snapshots are capped at 256 KiB, truncated on a line boundary when needed, and redacted before transfer. Sunshine retains the newest 20 uploads for each paired client.
+
+For troubleshooting, first read the Moonlight and Sunshine README log sections. On the Sunshine computer, check `<Sunshine appdata>/moonlight-client-logs/<paired-client-id>/` for the newest upload and correlate its host-session/stream-session IDs and timestamps with `<Sunshine appdata>/sunshine.log`. If automatic upload was off, failed, or the host session did not authenticate, retrieve `sdmc:/3ds/moonlight/moonlight.log` and the relevant files from `sdmc:/3ds/moonlight/sessions/`.
 
 ## Configuration
 

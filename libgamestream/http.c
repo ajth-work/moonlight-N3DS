@@ -631,7 +631,8 @@ static CURLcode _perform_https_attempt(const char *url, PHTTP_DATA data,
     return result;
 }
 
-static int _http_request(char *url, PHTTP_DATA data, const char *pin) {
+static int _http_request(char *url, PHTTP_DATA data, const char *pin,
+                         const char *post_body, size_t post_size) {
     /* Diagnostic-only truncation; CURLOPT_URL still receives the original URL.
      * Per-call storage avoids races without holding a lock across curl. */
     char safe_url[384];
@@ -641,8 +642,10 @@ static int _http_request(char *url, PHTTP_DATA data, const char *pin) {
     bool attempted_ctx = false;
     bool performed_ctx = false;
     CURLcode result;
+    struct curl_slist *post_headers = NULL;
     if (pin != NULL) {
         if (curl == NULL || url == NULL || data == NULL || !_is_https(url) ||
+            (post_body != NULL && post_size > 256U * 1024U) ||
             !valid_public_key_pin(pin)) return GS_FAILED;
         if (curl_easy_setopt(curl, CURLOPT_PINNEDPUBLICKEY, pin) != CURLE_OK ||
             curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 0L) != CURLE_OK) {
@@ -651,10 +654,30 @@ static int _http_request(char *url, PHTTP_DATA data, const char *pin) {
         }
     }
     _redact_url(url, safe_url, sizeof(safe_url));
-    diag_http_begin("GET", safe_url);
+    diag_http_begin(post_body != NULL ? "POST" : "GET", safe_url);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, data);
     curl_easy_setopt(curl, CURLOPT_URL, url);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, connection_timeout_s);
+    curl_easy_setopt(curl, CURLOPT_HTTPGET, 1L);
+    if (post_body != NULL) {
+        post_headers = curl_slist_append(NULL, "Content-Type: application/json");
+        if (post_headers == NULL ||
+            curl_easy_setopt(curl, CURLOPT_HTTPHEADER, post_headers) != CURLE_OK) {
+            curl_slist_free_all(post_headers);
+            curl_easy_setopt(curl, CURLOPT_PINNEDPUBLICKEY, NULL);
+            return GS_FAILED;
+        }
+        if (curl_easy_setopt(curl, CURLOPT_POST, 1L) != CURLE_OK ||
+            curl_easy_setopt(curl, CURLOPT_POSTFIELDS, post_body) != CURLE_OK ||
+            curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE_LARGE, (curl_off_t)post_size) != CURLE_OK) {
+            curl_easy_setopt(curl, CURLOPT_POST, 0L);
+            curl_easy_setopt(curl, CURLOPT_POSTFIELDS, NULL);
+            curl_easy_setopt(curl, CURLOPT_HTTPHEADER, NULL);
+            curl_slist_free_all(post_headers);
+            curl_easy_setopt(curl, CURLOPT_PINNEDPUBLICKEY, NULL);
+            return GS_FAILED;
+        }
+    }
     if (!capture_tls) {
         curl_easy_setopt(curl, CURLOPT_VERBOSE, log_level > 0 ? 1L : 0);
     }
@@ -738,6 +761,13 @@ static int _http_request(char *url, PHTTP_DATA data, const char *pin) {
                         log_level > 0 ? "1" : "0");
     }
     if (pin != NULL) curl_easy_setopt(curl, CURLOPT_PINNEDPUBLICKEY, NULL);
+    if (post_body != NULL) {
+        curl_easy_setopt(curl, CURLOPT_POST, 0L);
+        curl_easy_setopt(curl, CURLOPT_POSTFIELDS, NULL);
+        curl_easy_setopt(curl, CURLOPT_HTTPGET, 1L);
+        curl_easy_setopt(curl, CURLOPT_HTTPHEADER, NULL);
+        curl_slist_free_all(post_headers);
+    }
     diag_http_end(response_code, (int)result);
 
     if (result == CURLE_OUT_OF_MEMORY) {
@@ -749,6 +779,10 @@ static int _http_request(char *url, PHTTP_DATA data, const char *pin) {
     } else if (data->memory == NULL) {
         return GS_OUT_OF_MEMORY;
     }
+    if (post_body != NULL && (response_code < 200 || response_code >= 300)) {
+        gs_error = "Sunshine rejected the diagnostic upload";
+        return GS_FAILED;
+    }
 
     if (log_level) {
         printf("Response: %lu bytes\n\n", (unsigned long)data->size);
@@ -758,12 +792,20 @@ static int _http_request(char *url, PHTTP_DATA data, const char *pin) {
 }
 
 int http_request(char *url, PHTTP_DATA data) {
-    return _http_request(url, data, NULL);
+    return _http_request(url, data, NULL, NULL, 0);
 }
 
 int http_request_pinned(char *url, PHTTP_DATA data, const char *public_key_pin) {
     if (public_key_pin == NULL) return GS_FAILED;
-    return _http_request(url, data, public_key_pin);
+    return _http_request(url, data, public_key_pin, NULL, 0);
+}
+
+int http_request_post_pinned(char *url, PHTTP_DATA data,
+                             const char *public_key_pin, const char *body,
+                             size_t body_size) {
+    if (public_key_pin == NULL || body == NULL || body_size == 0 ||
+        body_size > 256U * 1024U) return GS_FAILED;
+    return _http_request(url, data, public_key_pin, body, body_size);
 }
 
 void http_cleanup() {
