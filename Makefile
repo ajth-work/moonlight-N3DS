@@ -63,17 +63,17 @@ GFXBUILD	:=	$(BUILD)
 
 
 # 3dsx
-APP_TITLE := Moonlight Monitor GUI16
-APP_DESCRIPTION := Moonlight Game Streaming Monitor GUI16
+APP_TITLE := Moonlight Diag
+APP_DESCRIPTION := Moonlight game streaming diagnostics GUI16-DIAG1
 APP_AUTHOR	:=	zoeyjodon
 ICON		:=	3ds/res/ic_moonlight_ui.png
 
 # CIA
 BANNER_AUDIO	:=	3ds/res/banner.wav
-BANNER_IMAGE := 3ds/res/banner-gui16.png
+BANNER_IMAGE := 3ds/res/banner-diag1.png
 RSF_PATH		:=	3ds/res/app.rsf
-UNIQUE_ID		:=	0x4D12
-PRODUCT_CODE	:=	CTR-P-MLMN
+UNIQUE_ID		:=	0x4D13
+PRODUCT_CODE	:=	CTR-P-MLDG
 ICON_FLAGS		:=	nosavebackups,visible
 
 # Version

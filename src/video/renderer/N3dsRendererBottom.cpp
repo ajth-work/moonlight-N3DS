@@ -36,14 +36,19 @@ void N3dsRendererBottom::write_px_to_framebuffer(uint8_t *source) {
 
 void N3dsRendererBottom::write_px_to_framebuffer_raw(const uint8_t *source,
                                                      int offset, int size) {
+    const u64 started_ticks = svcGetSystemTick();
     u8 *gfxbtmadr = gfxGetFramebuffer(GFX_BOTTOM, GFX_LEFT, NULL, NULL);
 
     if (size == 0) {
         size = surface_width * surface_height * px_size;
     }
     memcpy(gfxbtmadr + offset, source, size);
+    const u64 copied_ticks = svcGetSystemTick();
 
     n3ds_draw_diag_version_overlay();
     gfxFlushBuffers();
     gfxScreenSwapBuffers(GFX_BOTTOM, false);
+    record_direct_present(started_ticks, copied_ticks,
+                          svcGetSystemTick(),
+                          reinterpret_cast<uintptr_t>(gfxbtmadr));
 }

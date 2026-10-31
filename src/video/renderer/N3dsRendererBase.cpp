@@ -49,6 +49,7 @@ N3dsRendererBase::N3dsRendererBase(gfxScreen_t screen_in, int surface_width_in,
 }
 
 N3dsRendererBase::~N3dsRendererBase() {
+    log_presentation_summary(presentation_path);
     linearFree(cmdlist);
     vramFree(vramFb);
     vramFree(vramTex);
@@ -345,6 +346,7 @@ void N3dsRendererBase::write_px_to_framebuffer_gpu(uint8_t *__restrict source) {
     GX_ProcessCommandList(cmdlist, cmdlist_len * 4, 2);
 
     gspWaitForEvent(GSPGPU_EVENT_P3D, 0);
+    const u64 p3d_ready_ticks = svcGetSystemTick();
 
     // Copy into framebuffer, untiled
     if ((screen == GFX_TOP) && gfxIs3D()) {
@@ -384,6 +386,22 @@ void N3dsRendererBase::write_px_to_framebuffer_gpu(uint8_t *__restrict source) {
                                GX_TRANSFER_SCALING(GX_TRANSFER_SCALE_NO));
     }
     gspWaitForEvent(GSPGPU_EVENT_PPF, 0);
+    const u64 transfer_ready_ticks = svcGetSystemTick();
+
+    const uintptr_t draw_buffer = reinterpret_cast<uintptr_t>(
+        gfxGetFramebuffer(screen, GFX_LEFT, NULL, NULL));
+    if (present_count == 0) {
+        first_draw_buffer = draw_buffer;
+    } else if (draw_buffer != last_draw_buffer) {
+        ++draw_buffer_changes;
+    }
+    last_draw_buffer = draw_buffer;
+    const u64 frame_interval = last_present_ticks == 0
+                                   ? 0
+                                   : start_ticks - last_present_ticks;
+    if (frame_interval > interval_max_ticks) {
+        interval_max_ticks = frame_interval;
+    }
 
     perf_fbcopy_ticks = svcGetSystemTick() - start_ticks;
     if (debug) {
@@ -395,6 +413,65 @@ void N3dsRendererBase::write_px_to_framebuffer_gpu(uint8_t *__restrict source) {
     }
 
     gfxScreenSwapBuffers(screen, true);
+    const u64 presented_ticks = svcGetSystemTick();
+    const u64 p3d_ticks = p3d_ready_ticks - start_ticks;
+    const u64 transfer_ticks = transfer_ready_ticks - p3d_ready_ticks;
+    const u64 present_ticks = presented_ticks - start_ticks;
+    ++present_count;
+    present_total_ticks += present_ticks;
+    first_stage_total_ticks += p3d_ticks;
+    transfer_total_ticks += transfer_ticks;
+    if (present_ticks > present_max_ticks) present_max_ticks = present_ticks;
+    if (p3d_ticks > first_stage_max_ticks) first_stage_max_ticks = p3d_ticks;
+    if (transfer_ticks > transfer_max_ticks) transfer_max_ticks = transfer_ticks;
+    last_present_ticks = presented_ticks;
+}
+
+void N3dsRendererBase::record_direct_present(u64 started_ticks,
+                                             u64 copied_ticks,
+                                             u64 presented_ticks,
+                                             uintptr_t framebuffer) {
+    presentation_path = "direct";
+    if (present_count == 0) {
+        first_draw_buffer = framebuffer;
+    } else if (framebuffer != last_draw_buffer) {
+        ++draw_buffer_changes;
+    }
+    last_draw_buffer = framebuffer;
+    const u64 interval = last_present_ticks == 0
+                             ? 0
+                             : started_ticks - last_present_ticks;
+    if (interval > interval_max_ticks) interval_max_ticks = interval;
+    const u64 total = presented_ticks - started_ticks;
+    const u64 copied = copied_ticks - started_ticks;
+    const u64 submit = presented_ticks - copied_ticks;
+    ++present_count;
+    present_total_ticks += total;
+    first_stage_total_ticks += copied;
+    if (total > present_max_ticks) present_max_ticks = total;
+    if (copied > transfer_max_ticks) transfer_max_ticks = copied;
+    if (copied > first_stage_max_ticks) first_stage_max_ticks = copied;
+    transfer_total_ticks += submit;
+    if (submit > transfer_max_ticks) transfer_max_ticks = submit;
+    last_present_ticks = presented_ticks;
+}
+
+void N3dsRendererBase::log_presentation_summary(const char *path) {
+    if (present_count == 0) return;
+    const char *name = screen == GFX_TOP ? "TOP" : "BOTTOM";
+    const u64 hz = SYSCLOCK_ARM11;
+    diag_log("PRESENT_SUMMARY",
+             "path=%s screen=%s frames=%llu avg_total_us=%llu max_total_us=%llu avg_stage1_us=%llu max_stage1_us=%llu avg_stage2_us=%llu max_stage2_us=%llu max_frame_interval_us=%llu draw_buffer_first=0x%08lx draw_buffer_last=0x%08lx buffer_changes=%u",
+             path, name, (unsigned long long)present_count,
+             (unsigned long long)(present_total_ticks * 1000000ULL / present_count / hz),
+             (unsigned long long)(present_max_ticks * 1000000ULL / hz),
+             (unsigned long long)(first_stage_total_ticks * 1000000ULL / present_count / hz),
+             (unsigned long long)(first_stage_max_ticks * 1000000ULL / hz),
+             (unsigned long long)(transfer_total_ticks * 1000000ULL / present_count / hz),
+             (unsigned long long)(transfer_max_ticks * 1000000ULL / hz),
+             (unsigned long long)(interval_max_ticks * 1000000ULL / hz),
+             (unsigned long)first_draw_buffer, (unsigned long)last_draw_buffer,
+             draw_buffer_changes);
 }
 
 void n3ds_draw_diag_version_overlay() {

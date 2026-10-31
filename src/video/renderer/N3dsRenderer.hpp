@@ -62,6 +62,11 @@ class N3dsRendererBase {
     u64 perf_fbcopy_ticks;
 
   protected:
+    void record_direct_present(u64 started_ticks, u64 copied_ticks,
+                               u64 presented_ticks, uintptr_t framebuffer);
+    void log_presentation_summary(const char *path);
+
+  protected:
     gfxScreen_t screen;
     int surface_width;
     int surface_height;
@@ -72,6 +77,19 @@ class N3dsRendererBase {
     u32 *cmdlist = NULL;
     void *vramFb = NULL;
     void *vramTex = NULL;
+    u64 present_count = 0;
+    u64 present_total_ticks = 0;
+    u64 present_max_ticks = 0;
+    u64 first_stage_total_ticks = 0;
+    u64 first_stage_max_ticks = 0;
+    u64 transfer_total_ticks = 0;
+    u64 transfer_max_ticks = 0;
+    u64 interval_max_ticks = 0;
+    u64 last_present_ticks = 0;
+    uintptr_t first_draw_buffer = 0;
+    uintptr_t last_draw_buffer = 0;
+    unsigned int draw_buffer_changes = 0;
+    const char *presentation_path = "gpu";
 };
 
 class N3dsRendererTop : public N3dsRendererBase {

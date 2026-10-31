@@ -28,3 +28,23 @@ Upstream: zoeyjodon/moonlight-N3DS (GPLv3).
 
 ---
 Tracking note: forks have GitHub Issues disabled by default, so this milestone lives as a doc until/unless Issues are enabled in the fork's settings.
+# GUI16-DIAG1 presentation timing
+
+The `3.6.0-gui16-diag1` build keeps renderer samples in memory and writes a
+`PRESENT_SUMMARY` line per screen when that renderer is destroyed. It does not
+write or sync a log record per video frame. The record reports sample count,
+average and maximum time from the callback start through swap submission,
+stage timing, largest callback-to-callback interval, first/last draw-buffer
+addresses, and how often the draw-buffer address changed.
+
+For `path=gpu`, stage 1 runs from callback entry through the P3D completion
+wait; stage 2 runs from that boundary through the display-transfer PPF wait.
+For `path=direct`, stage 1 is the bottom framebuffer copy and stage 2 is the
+version overlay, cache flush, and swap call. Toolkit UI screens retain the
+existing `UI_PRESENT` and `UI_PRESENT_VBLANK` records. These measurements
+describe client work and callback cadence; they do not measure the LCD's
+physical scanout or establish a tearing cause.
+
+Paired automatic log upload remains opt-in and uses the existing pinned
+Sunshine receiver behavior. The new summary is included in the normal local
+log and therefore in an opted-in upload after it is written.
