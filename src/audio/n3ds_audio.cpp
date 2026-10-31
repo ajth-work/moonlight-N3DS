@@ -18,6 +18,7 @@
  */
 
 #include "audio.h"
+#include "../diagnostics.h"
 
 #include <3ds.h>
 #include <math.h>
@@ -99,6 +100,7 @@ static void n3ds_renderer_cleanup() {
 }
 
 static void n3ds_renderer_decode_and_play_sample(char *data, int length) {
+    diag_stream_activity("audio", "receive", length);
     if (n3ds_audio_disabled ||
         (audio_wave_buf[wave_buf_idx].status != NDSP_WBUF_DONE)) {
         return;
@@ -109,6 +111,7 @@ static void n3ds_renderer_decode_and_play_sample(char *data, int length) {
         (opus_int16 *)audio_wave_buf[wave_buf_idx].data_vaddr, samplesPerFrame,
         0);
     if (decodeLen < 0) {
+        diag_stream_activity("audio", "decode_error", decodeLen);
         fprintf(stderr, "Opus error from decode: %d\n", decodeLen);
         return;
     }
@@ -116,6 +119,7 @@ static void n3ds_renderer_decode_and_play_sample(char *data, int length) {
                        decodeLen * channelCount * sizeof(short));
     audio_wave_buf[wave_buf_idx].nsamples = decodeLen;
     ndspChnWaveBufAdd(0, &audio_wave_buf[wave_buf_idx]);
+    diag_stream_activity("audio", "queued", decodeLen);
 
     wave_buf_idx = (wave_buf_idx + 1) % WAVEBUF_SIZE;
 }

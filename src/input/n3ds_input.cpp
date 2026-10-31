@@ -413,6 +413,7 @@ void N3dsInput::n3dsinput_handle_event() {
                 gamepad_state.leftStickX, gamepad_state.leftStickY,
                 gamepad_state.rightStickX, gamepad_state.rightStickY);
         }
+        diag_stream_activity("input", "controller_send", 0);
     }
 
     if (enable_accel.load()) {
@@ -426,6 +427,7 @@ void N3dsInput::n3dsinput_handle_event() {
                                         gamepad_state.accel_vector_x,
                                         gamepad_state.accel_vector_y,
                                         gamepad_state.accel_vector_z);
+            diag_stream_activity("input", "motion_send", 0);
         }
     }
 
@@ -440,6 +442,7 @@ void N3dsInput::n3dsinput_handle_event() {
                                         gamepad_state.gyro_rate_x,
                                         gamepad_state.gyro_rate_y,
                                         gamepad_state.gyro_rate_z);
+            diag_stream_activity("input", "motion_send", 0);
         }
     }
 

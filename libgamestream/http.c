@@ -769,6 +769,7 @@ static int _http_request(char *url, PHTTP_DATA data, const char *pin,
         curl_slist_free_all(post_headers);
     }
     diag_http_end(response_code, (int)result);
+    data->response_code = response_code;
 
     if (result == CURLE_OUT_OF_MEMORY) {
         return GS_OUT_OF_MEMORY;
@@ -829,6 +830,7 @@ PHTTP_DATA http_create_data() {
         return NULL;
     }
     data->size = 0;
+    data->response_code = 0;
 
     return data;
 }

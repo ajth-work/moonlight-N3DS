@@ -60,6 +60,17 @@ static char diag_stack_record[DIAG_STACK_RECORD_CAPACITY];
 static size_t diag_stack_record_length = 0;
 static char diag_ui_top_state[32];
 static char diag_ui_bottom_state[32];
+static char diag_session_id[33];
+static u64 diag_session_tick;
+static u64 diag_stage_tick;
+static char diag_stage_name[32];
+typedef struct { unsigned int count; unsigned int last_ms; int last_result; char last_action[20]; } DiagActivity;
+static DiagActivity diag_activity[5];
+static const char *diag_activity_names[5] = {"input", "audio", "video", "decode", "present"};
+
+static u64 diag_ticks_to_ms(u64 ticks) {
+    return (ticks * 1000ULL) / SYSCLOCK_ARM11;
+}
 
 static void format_session_id(const unsigned char raw[16], char out[33]) {
     static const char hex[] = "0123456789abcdef";
@@ -80,6 +91,7 @@ bool diag_session_begin(DIAG_SESSION *session, const char *scope,
     snprintf(session->scope, sizeof(session->scope), "%s", scope);
     if (parent_id != NULL) snprintf(session->parent_id, sizeof(session->parent_id), "%s", parent_id);
     session->begin_epoch = (unsigned long long)time(NULL);
+    session->begin_tick = svcGetSystemTick();
     FILE *file = fopen(DIAG_LOG_PATH, "ab");
     if (file == NULL) return false;
     fflush(file);
@@ -87,7 +99,12 @@ bool diag_session_begin(DIAG_SESSION *session, const char *scope,
     fclose(file);
     if (session->log_offset < 0) return false;
     session->active = true;
-    diag_log("SESSION_BEGIN", "scope=%s id=%s parent=%s begin=%llu build=%s",
+    if (strcmp(scope, "stream") == 0) diag_stream_activity_reset();
+    LightLock_Lock(&diag_lock);
+    snprintf(diag_session_id, sizeof(diag_session_id), "%s", session->id);
+    diag_session_tick = session->begin_tick;
+    LightLock_Unlock(&diag_lock);
+    diag_log("SESSION_BEGIN", "scope=%s id=%s parent=%s begin=%llu mono_ms=0 build=%s",
              session->scope, session->id, session->parent_id[0] ? session->parent_id : "-",
              session->begin_epoch, DIAG_BUILD_VERSION);
     return true;
@@ -137,11 +154,88 @@ bool diag_session_snapshot(DIAG_SESSION *session, char *path_out,
 bool diag_session_finish(DIAG_SESSION *session, const char *outcome,
                          char *path_out, size_t path_capacity) {
     if (session == NULL || !session->active || outcome == NULL) return false;
-    diag_log("SESSION_END", "scope=%s id=%s outcome=%s end=%llu",
-             session->scope, session->id, outcome, (unsigned long long)time(NULL));
+    session->end_epoch = (unsigned long long)time(NULL);
+    session->elapsed_ms = diag_ticks_to_ms(svcGetSystemTick() - session->begin_tick);
+    diag_log("SESSION_END", "scope=%s id=%s outcome=%s end=%llu mono_ms=%llu duration_ms=%llu",
+             session->scope, session->id, outcome, session->end_epoch,
+             (unsigned long long)session->elapsed_ms,
+             (unsigned long long)session->elapsed_ms);
     bool ok = diag_session_snapshot(session, path_out, path_capacity);
     session->active = false;
+    LightLock_Lock(&diag_lock);
+    if (strcmp(diag_session_id, session->id) == 0) diag_session_id[0] = '\0';
+    LightLock_Unlock(&diag_lock);
     return ok;
+}
+
+void diag_stream_stop_request(const char *reason, int result) {
+    diag_log("STREAM_STOP_REQUEST", "reason=%s result=%d", reason ? reason : "unknown", result);
+}
+
+void diag_stream_stage_begin(const char *stage) {
+    LightLock_Lock(&diag_lock);
+    diag_stage_tick = svcGetSystemTick();
+    snprintf(diag_stage_name, sizeof(diag_stage_name), "%s", stage ? stage : "unknown");
+    LightLock_Unlock(&diag_lock);
+    diag_log("STREAM_TEARDOWN_BEGIN", "stage=%s", diag_stage_name);
+}
+
+void diag_stream_stage_end(const char *stage, const char *result, bool timeout) {
+    LightLock_Lock(&diag_lock);
+    u64 duration = diag_ticks_to_ms(svcGetSystemTick() - diag_stage_tick);
+    char stage_copy[sizeof(diag_stage_name)];
+    snprintf(stage_copy, sizeof(stage_copy), "%s", stage ? stage : diag_stage_name);
+    diag_stage_name[0] = '\0';
+    LightLock_Unlock(&diag_lock);
+    diag_log("STREAM_TEARDOWN_END", "stage=%s duration_ms=%llu result=%s timeout=%s",
+             stage_copy, (unsigned long long)duration,
+             result ? result : "unknown", timeout ? "yes" : "not_reported_by_api");
+}
+
+void diag_stream_activity(const char *channel, const char *action, int result) {
+    unsigned int i;
+    DiagActivity *activity = &diag_activity[2];
+    for (i = 0; channel != NULL && i < 5; ++i) {
+        if (strcmp(channel, diag_activity_names[i]) == 0) { activity = &diag_activity[i]; break; }
+    }
+    LightLock_Lock(&diag_lock);
+    unsigned int count = ++activity->count;
+    activity->last_ms = (unsigned int)diag_ticks_to_ms(svcGetSystemTick() - diag_session_tick);
+    activity->last_result = result;
+    snprintf(activity->last_action, sizeof(activity->last_action), "%s", action ? action : "event");
+    LightLock_Unlock(&diag_lock);
+    if ((count & 63U) == 1U) {
+        diag_log("STREAM_ACTIVITY", "channel=%s action=%s count=%u result=%d",
+                 channel ? channel : "unknown", action ? action : "event", count, result);
+    }
+}
+
+void diag_stream_activity_reset(void) {
+    LightLock_Lock(&diag_lock);
+    memset(diag_activity, 0, sizeof(diag_activity));
+    LightLock_Unlock(&diag_lock);
+}
+
+void diag_stream_activity_summary(void) {
+    unsigned int now_ms = (unsigned int)diag_ticks_to_ms(svcGetSystemTick() - diag_session_tick);
+    for (unsigned int i = 0; i < 5; ++i) {
+        DiagActivity activity;
+        LightLock_Lock(&diag_lock);
+        activity = diag_activity[i];
+        LightLock_Unlock(&diag_lock);
+        unsigned int count = activity.count;
+        unsigned int last_ms = activity.last_ms;
+        if (count != 0) {
+            diag_log("STREAM_HEALTH", "channel=%s count=%u last_action=%s last_result=%d last_activity_ms=%u age_ms=%u",
+                     diag_activity_names[i], count,
+                     activity.last_action[0] ? activity.last_action : "none",
+                     activity.last_result,
+                     last_ms, now_ms - last_ms);
+        } else {
+            diag_log("STREAM_HEALTH", "channel=%s count=0 last_action=none last_result=0 last_activity_ms=unavailable age_ms=unavailable",
+                     diag_activity_names[i]);
+        }
+    }
 }
 
 bool diag_cert_fingerprint(X509 *certificate, char *out,
@@ -459,9 +553,11 @@ void diag_log(const char *event, const char *format, ...) {
     va_end(args);
 
     format_wall_time(diag_wall_time, sizeof(diag_wall_time));
-    snprintf(diag_line, sizeof(diag_line), "%s +%08llums %-18s %s", diag_wall_time,
-             (unsigned long long)diag_elapsed_ms(), event ? event : "EVENT",
-             diag_detail);
+    snprintf(diag_line, sizeof(diag_line), "%s +%08llums corr=%s session_ms=%llu %-18s %s", diag_wall_time,
+             (unsigned long long)diag_elapsed_ms(),
+             diag_session_id[0] ? diag_session_id : "-",
+             diag_session_id[0] ? (unsigned long long)diag_ticks_to_ms(svcGetSystemTick() - diag_session_tick) : 0ULL,
+             event ? event : "EVENT", diag_detail);
 
     snprintf(diag_recent[diag_recent_next], DIAG_LOG_LINE_MAX, "%s", diag_line);
     diag_recent_next = (diag_recent_next + 1) % DIAG_RECENT_LINE_COUNT;

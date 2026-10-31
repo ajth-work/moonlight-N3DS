@@ -1374,9 +1374,12 @@ static bool build_upload_json(const DIAG_SESSION &session, const std::string &pa
         ",\"session_id\":" + json_quote(session.id) +
         ",\"parent_id\":" + json_quote(session.parent_id) +
         ",\"begin\":" + json_quote(std::to_string(session.begin_epoch)) +
-        ",\"end\":" + json_quote(std::to_string(end_epoch)) +
+        ",\"end\":" + json_quote(std::to_string(session.end_epoch ? session.end_epoch : end_epoch)) +
+        ",\"begin_monotonic_ms\":\"0\",\"end_monotonic_ms\":" + json_quote(std::to_string(session.elapsed_ms)) +
+        ",\"duration_ms\":" + json_quote(std::to_string(session.elapsed_ms)) +
         ",\"build\":" + json_quote(DIAG_BUILD_VERSION) +
         ",\"outcome\":" + json_quote(outcome) +
+        ",\"transfer_state\":\"attempted\",\"acknowledgement\":\"awaiting_http_response\"" +
         ",\"truncated\":" + (truncated ? "true" : "false") +
         ",\"content\":" + json_quote(content) + "}";
     return body.size() <= 256 * 1024;
@@ -1384,19 +1387,40 @@ static bool build_upload_json(const DIAG_SESSION &session, const std::string &pa
 
 static bool upload_session(PSERVER_DATA server, const DIAG_SESSION &session,
                            const std::string &path, const char *outcome) {
+    diag_log("DIAG_UPLOAD", "session_id=%s state=attempted scope=%s", session.id, session.scope);
     std::string body;
-    if (!build_upload_json(session, path, outcome, body)) return false;
+    if (!build_upload_json(session, path, outcome, body)) {
+        diag_log("DIAG_UPLOAD", "session_id=%s state=failed reason=snapshot_or_payload_unavailable", session.id);
+        return false;
+    }
     char url[1024];
     const int url_length = snprintf(url, sizeof(url), "https://%s:%u/client-diagnostics",
                                     server->serverInfo.address, server->httpsPort);
-    if (url_length < 0 || (size_t)url_length >= sizeof(url)) return false;
+    if (url_length < 0 || (size_t)url_length >= sizeof(url)) {
+        diag_log("DIAG_UPLOAD", "session_id=%s state=failed reason=url_too_long", session.id);
+        return false;
+    }
     PHTTP_DATA response = http_create_data();
-    if (response == NULL) return false;
+    if (response == NULL) {
+        diag_log("DIAG_UPLOAD", "session_id=%s state=failed reason=response_allocation", session.id);
+        return false;
+    }
     http_set_timeout_s(5);
     int result = gs_request_pinned(server, url, response, body.c_str(), body.size());
     if (result != GS_OK) result = gs_request_pinned(server, url, response, body.c_str(), body.size());
     http_set_timeout_s(60);
+    const long response_code = response->response_code;
     http_free_data(response);
+    diag_log("DIAG_UPLOAD", "session_id=%s state=%s acknowledged=%d http_status=%ld result=%d",
+             session.id, result == GS_OK ? "accepted" : "failed", result == GS_OK ? 1 : 0,
+             response_code, result);
+    DIAG_SESSION refreshed_session = session;
+    refreshed_session.active = true;
+    char refreshed_path[256];
+    if (!diag_session_snapshot(&refreshed_session, refreshed_path,
+                               sizeof(refreshed_path))) {
+        diag_log("DIAG_UPLOAD", "session_id=%s snapshot_refresh=failed", session.id);
+    }
     return result == GS_OK;
 }
 
@@ -2654,12 +2678,16 @@ static void stream(PSERVER_DATA server, PCONFIGURATION config, int appId,
                  &start_call, true, false, "Requesting stream startup");
     if (diag_cancel_requested()) {
         diag_log("STREAM_STOP", "app_id=%d reason=watchdog_cancelled", appId);
+        diag_stream_activity_summary();
+        diag_stream_stop_request("watchdog_cancelled", GS_FAILED);
         return;
     }
     int ret = start_call.status;
     if (ret < 0) {
         diag_log("STREAM_STOP", "app_id=%d reason=start_app_failed result=%d",
                  appId, ret);
+        diag_stream_activity_summary();
+        diag_stream_stop_request("start_app_failed", ret);
         diag_log("START_APP_ERROR", "result=%d detail=%s", ret, gs_error);
         show_gui_message("APP COULD NOT START",
                          "The host did not start the selected app.",
@@ -2702,6 +2730,8 @@ static void stream(PSERVER_DATA server, PCONFIGURATION config, int appId,
     if (status != 0) {
         diag_log("STREAM_STOP", "app_id=%d reason=connection_start_failed status=%d",
                  appId, status);
+        diag_stream_activity_summary();
+        diag_stream_stop_request("connection_start_failed", status);
         n3ds_connection_callbacks.connectionTerminated(status);
         show_gui_message("STREAM CONNECTION FAILED",
                          "Moonlight could not establish the stream.",
@@ -2717,6 +2747,8 @@ static void stream(PSERVER_DATA server, PCONFIGURATION config, int appId,
 
     diag_set_phase("stream.stopping");
     diag_log("STREAM_STOP", "app_id=%d reason=connection_loop_ended", appId);
+    diag_stream_activity_summary();
+    diag_stream_stop_request("connection_loop_ended", GS_OK);
     LiStopConnection();
     diag_phase_outcome("stream.stopping", "complete", GS_OK);
     N3dsConnectionListener::destroy_instance();
@@ -3243,8 +3275,8 @@ int main_loop(int argc, char *argv[]) {
                         server.paired && auto_upload_enabled(&server)) {
                         const bool sent = upload_session(&server, host_session,
                                                          local_path, "user_left_host");
-                        show_gui_message(sent ? "LOGS SENT" : "LOG UPLOAD FAILED",
-                            sent ? "Sunshine saved this host session." : "This host session is still saved on the SD card.",
+                        show_gui_message(sent ? "UPLOAD ACKNOWLEDGED" : "LOG UPLOAD FAILED",
+                            sent ? "Sunshine acknowledged this host session upload." : "This host session is still saved on the SD card.",
                             sent ? "See Sunshine's moonlight-client-logs folder." : "Check the saved certificate pin, pairing, and host reachability.");
                     }
                 }
@@ -3261,8 +3293,8 @@ int main_loop(int argc, char *argv[]) {
                         server.paired && auto_upload_enabled(&server)) {
                         const bool sent = upload_session(&server, host_session,
                                                          local_path, "app_exit");
-                        show_gui_message(sent ? "LOGS SENT" : "LOG UPLOAD FAILED",
-                            sent ? "Sunshine saved this host session." : "This host session remains on the SD card.",
+                        show_gui_message(sent ? "UPLOAD ACKNOWLEDGED" : "LOG UPLOAD FAILED",
+                            sent ? "Sunshine acknowledged this host session upload." : "This host session remains on the SD card.",
                             sent ? "See Sunshine's moonlight-client-logs folder." : "Check the saved certificate pin, pairing, and host reachability.");
                     }
                 }
@@ -3281,8 +3313,8 @@ int main_loop(int argc, char *argv[]) {
                         auto_upload_enabled(&server)) {
                         const bool sent = upload_session(&server, stream_session,
                                                          local_path, "stream_returned");
-                        show_gui_message(sent ? "LOGS SENT" : "LOG UPLOAD FAILED",
-                            sent ? "Sunshine saved this stream session." : "The stream diagnostics remain on the SD card.",
+                        show_gui_message(sent ? "UPLOAD ACKNOWLEDGED" : "LOG UPLOAD FAILED",
+                            sent ? "Sunshine acknowledged this stream session upload." : "The stream diagnostics remain on the SD card.",
                             sent ? "See Sunshine's moonlight-client-logs folder." : "Retry from HOST ACTIONS when this host is reachable.");
                     }
                 }
@@ -3300,8 +3332,8 @@ int main_loop(int argc, char *argv[]) {
                                      confirm, &selected) && selected == 0) {
                         const bool sent = upload_session(&server, host_session,
                                                          local_path, "manual_current_host");
-                        show_gui_message(sent ? "LOGS SENT" : "LOG UPLOAD FAILED",
-                            sent ? "Sunshine saved this host session." : "The local session copy is preserved.",
+                        show_gui_message(sent ? "UPLOAD ACKNOWLEDGED" : "LOG UPLOAD FAILED",
+                            sent ? "Sunshine acknowledged this host session upload." : "The local session copy is preserved.",
                             sent ? "See Sunshine's moonlight-client-logs folder." : "Check pairing, pin, and host availability.");
                     }
                 }

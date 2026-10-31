@@ -18,6 +18,7 @@
  */
 
 #include "video.hpp"
+#include "../diagnostics.h"
 
 #include <3ds.h>
 
@@ -124,6 +125,7 @@ DecodeReturnStatus MvdDecoder::_decode(unsigned char *indata, int inlen) {
 }
 
 int MvdDecoder::submit_decode_unit(PDECODE_UNIT decodeUnit) {
+    diag_stream_activity("video", "receive", (int)decodeUnit->fullLength);
     u64 start_ticks = svcGetSystemTick();
     PLENTRY entry = decodeUnit->bufferList;
     int length = 0;
@@ -142,12 +144,14 @@ int MvdDecoder::submit_decode_unit(PDECODE_UNIT decodeUnit) {
     }
     GSPGPU_FlushDataCache(nal_unit_buffer, length);
 
-    _decode((unsigned char *)nal_unit_buffer, length);
+    DecodeReturnStatus decode_status = _decode((unsigned char *)nal_unit_buffer, length);
+    diag_stream_activity("decode", "submit", (int)decode_status);
 
     renderer_lock.lock();
     renderer->set_perf_decode_ticks(svcGetSystemTick() - start_ticks);
     renderer->write_px_to_framebuffer(rgb_img_buffer);
     renderer_lock.unlock();
+    diag_stream_activity("present", "framebuffer_write", (int)decode_status);
 
     // If MVD never gets an IDR frame, everything shows up gray
     if (first_frame) {

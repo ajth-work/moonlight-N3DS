@@ -32,6 +32,9 @@ typedef struct {
     char scope[8];
     char host_identity[53];
     unsigned long long begin_epoch;
+    uint64_t begin_tick;
+    unsigned long long end_epoch;
+    uint64_t elapsed_ms;
     long log_offset;
     bool active;
 } DIAG_SESSION;
@@ -53,6 +56,12 @@ void diag_ui_state(const char *screen, const char *state, bool graphical);
 void diag_stack_checkpoint(const char *boundary, uintptr_t stack_pointer);
 void diag_set_phase(const char *phase);
 void diag_phase_outcome(const char *phase, const char *outcome, int result);
+void diag_stream_stop_request(const char *reason, int result);
+void diag_stream_stage_begin(const char *stage);
+void diag_stream_stage_end(const char *stage, const char *result, bool timeout);
+void diag_stream_activity(const char *channel, const char *action, int result);
+void diag_stream_activity_reset(void);
+void diag_stream_activity_summary(void);
 /* Begin before host initialization; flush only after its call stack unwinds. */
 void diag_http_summary_begin(void);
 void diag_http_summary_flush(int result, bool cancelled);

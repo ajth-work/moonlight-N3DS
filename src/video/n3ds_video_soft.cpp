@@ -19,6 +19,7 @@
 
 #include "ffmpeg.h"
 #include "video.hpp"
+#include "../diagnostics.h"
 
 #include "../util.h"
 
@@ -139,6 +140,7 @@ y2ru_failed:
 }
 
 int SoftVideoDecoder::submit_decode_unit(PDECODE_UNIT decodeUnit) {
+    diag_stream_activity("video", "receive", (int)decodeUnit->fullLength);
     PLENTRY entry = decodeUnit->bufferList;
     int length = 0;
 
@@ -151,6 +153,7 @@ int SoftVideoDecoder::submit_decode_unit(PDECODE_UNIT decodeUnit) {
         entry = entry->next;
     }
     ffmpeg_decode((unsigned char *)ffmpeg_buffer, length);
+    diag_stream_activity("decode", "submit", length);
 
     AVFrame *frame = ffmpeg_get_frame(false);
     int status = _write_yuv_to_framebuffer(

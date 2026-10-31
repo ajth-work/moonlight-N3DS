@@ -31,6 +31,7 @@ extern "C" {
 typedef struct _HTTP_DATA {
     char *memory;
     size_t size;
+    long response_code;
 } HTTP_DATA, *PHTTP_DATA;
 
 int http_init(const char *keyDirectory, int logLevel);
