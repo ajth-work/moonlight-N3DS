@@ -35,7 +35,7 @@ For new behavioral tests, prefer deterministic clocks, fake transports, and life
 
 Update these checkboxes only when the corresponding evidence has been reviewed:
 
-- [x] Implement and publish the Moonlight session diagnostics work; review its Builder report.
+- [x] Implement the Moonlight session diagnostics work and review its Builder report. Public UniStore delivery was not verified in that report; verify it separately before claiming public availability.
 - [x] Audit existing Moonlight test coverage and record this repository guidance.
 - [ ] Review a real 3DS session with matching Moonlight and Sunshine logs and record what the evidence explains.
 - [ ] Queue a separate Sunshine logging/test job only if the paired logs leave host-side questions unanswered.
