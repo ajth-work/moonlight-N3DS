@@ -20,6 +20,7 @@
 #pragma once
 
 #include "xml.h"
+#include "http.h"
 
 #include <Limelight.h>
 
@@ -53,6 +54,7 @@ int gs_applist(PSERVER_DATA server, PAPP_LIST *app_list);
 int gs_display_list(PSERVER_DATA server, PDISPLAY_INFO *display_list);
 void gs_free_display_list(PDISPLAY_INFO display_list);
 int gs_unpair(PSERVER_DATA server);
+int gs_request_pinned(PSERVER_DATA server, char *url, PHTTP_DATA data);
 int gs_pair(PSERVER_DATA server, char* pin);
 int gs_quit_app(PSERVER_DATA server);
 

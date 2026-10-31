@@ -30,6 +30,14 @@ After modding your 3DS and installing the Moonlight CIA, open the moonlight appl
 - NOTE: When the Magnify view is active, you can lock the region you are magnifying by holding either of the shoulder buttons (L or R).
     - When the view is locked, you can use the touchscreen to click, drag, and release items in the selected region of the screen (similar to the Mirror and Stretch views)
 
+### Paired host identity pins
+
+After a successful GameStream pairing, Moonlight derives a SHA-256 pin from the DER-encoded SubjectPublicKeyInfo in the Sunshine certificate whose signature is verified during pairing. It stores the `sha256//` Base64 pin in `sd:/3ds/moonlight/host-pins`, keyed by the exact configured address and GameStream HTTP port used by the existing paired-host record. The address and port are only a lookup key; they do not prove the host identity. Moonlight does not learn or update a pin from an ordinary HTTPS response.
+
+The pin-aware request API is intended for future sensitive requests. It requires a saved, well-formed pin, targets the paired host's HTTPS port, sets libcurl's public-key pin before transfer, and does not follow redirects. Missing pins and changed server keys fail closed. If the address or HTTP port changes, there is no automatic pin migration; pair with the host again at the new endpoint. Successful unpair removes that endpoint's saved pin.
+
+This prerequisite alone does not enable automatic or manual log transfer. No logs are uploaded by this change, and Sunshine has not changed.
+
 ## Configuration
 
 You can modify documented settings either in the app, or by creating/modifying the config file located at `sd:/3ds/moonlight/moonlight.conf`.

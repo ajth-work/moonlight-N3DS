@@ -25,8 +25,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <cstdio>
+#include <sstream>
 
 #include "pair_record.hpp"
+#include "public_key_pin.h"
 
 // trim from start (in place)
 inline void ltrim(std::string &s) {
@@ -99,4 +102,99 @@ std::vector<std::string> list_paired_addresses() {
         addresses.push_back(line);
     }
     return addresses;
+}
+
+static std::string pin_file_path() {
+    return std::string(MOONLIGHT_3DS_PATH) + "/host-pins";
+}
+
+static std::string endpoint_key(std::string address, uint16_t port) {
+    if (address.empty() || address.find_first_of(" \t\r\n") != std::string::npos)
+        return std::string();
+    return address + ":" + std::to_string(port);
+}
+
+bool load_host_public_key_pin(std::string address, uint16_t port,
+                              std::string &pin) {
+    const std::string key = endpoint_key(address, port);
+    if (key.empty()) return false;
+    std::ifstream file(pin_file_path());
+    std::string stored_key, stored_pin;
+    while (file >> stored_key >> stored_pin) {
+        if (stored_key == key && valid_public_key_pin(stored_pin.c_str())) {
+            pin = stored_pin;
+            return true;
+        }
+    }
+    return false;
+}
+
+bool save_host_public_key_pin(std::string address, uint16_t port,
+                              const char *pin) {
+    const std::string key = endpoint_key(address, port);
+    if (key.empty() || !valid_public_key_pin(pin)) return false;
+    std::vector<std::pair<std::string, std::string>> entries;
+    std::ifstream input(pin_file_path());
+    std::string old_key, old_pin;
+    while (input >> old_key >> old_pin) {
+        if (old_key != key) entries.emplace_back(old_key, old_pin);
+    }
+    entries.emplace_back(key, pin);
+    const std::string path = pin_file_path();
+    const std::string temp = path + ".tmp";
+    FILE *file = fopen(temp.c_str(), "w");
+    if (file == NULL) return false;
+    bool ok = true;
+    for (const auto &entry : entries) {
+        if (fprintf(file, "%s %s\n", entry.first.c_str(), entry.second.c_str()) < 0)
+            ok = false;
+    }
+    if (fclose(file) != 0) ok = false;
+    if (!ok || rename(temp.c_str(), path.c_str()) != 0) {
+        remove(temp.c_str());
+        return false;
+    }
+    return true;
+}
+
+void remove_host_public_key_pin(std::string address, uint16_t port) {
+    const std::string key = endpoint_key(address, port);
+    if (key.empty()) return;
+    const std::string path = pin_file_path();
+    const std::string temp = path + ".tmp";
+    std::ifstream input(path);
+    FILE *output = fopen(temp.c_str(), "w");
+    if (output == NULL) return;
+    std::string old_key, old_pin;
+    while (input >> old_key >> old_pin) {
+        if (old_key != key) fprintf(output, "%s %s\n", old_key.c_str(), old_pin.c_str());
+    }
+    if (fclose(output) == 0) rename(temp.c_str(), path.c_str());
+    else remove(temp.c_str());
+}
+
+extern "C" bool host_pin_store_save(const char *address, uint16_t port,
+                                     const char *pin) {
+    return address != NULL && save_host_public_key_pin(address, port, pin);
+}
+
+extern "C" bool host_pin_store_save_after_pairing(const char *address,
+                                                    uint16_t port,
+                                                    const char *pin,
+                                                    bool pairing_succeeded) {
+    if (!pairing_succeeded) return false;
+    return host_pin_store_save(address, port, pin);
+}
+
+extern "C" bool host_pin_store_load(const char *address, uint16_t port,
+                                     char *pin, size_t pin_size) {
+    std::string value;
+    if (address == NULL || pin == NULL || !load_host_public_key_pin(address, port, value) ||
+        value.size() + 1 > pin_size) return false;
+    memcpy(pin, value.c_str(), value.size() + 1);
+    return true;
+}
+
+extern "C" void host_pin_store_remove(const char *address, uint16_t port) {
+    if (address != NULL) remove_host_public_key_pin(address, port);
 }

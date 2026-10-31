@@ -20,6 +20,7 @@
 #include "http.h"
 #include "errors.h"
 #include "diagnostics.h"
+#include "public_key_pin.h"
 
 #include <ctype.h>
 #include <curl/curl.h>
@@ -630,7 +631,7 @@ static CURLcode _perform_https_attempt(const char *url, PHTTP_DATA data,
     return result;
 }
 
-int http_request(char *url, PHTTP_DATA data) {
+static int _http_request(char *url, PHTTP_DATA data, const char *pin) {
     /* Diagnostic-only truncation; CURLOPT_URL still receives the original URL.
      * Per-call storage avoids races without holding a lock across curl. */
     char safe_url[384];
@@ -640,6 +641,15 @@ int http_request(char *url, PHTTP_DATA data) {
     bool attempted_ctx = false;
     bool performed_ctx = false;
     CURLcode result;
+    if (pin != NULL) {
+        if (curl == NULL || url == NULL || data == NULL || !_is_https(url) ||
+            !valid_public_key_pin(pin)) return GS_FAILED;
+        if (curl_easy_setopt(curl, CURLOPT_PINNEDPUBLICKEY, pin) != CURLE_OK ||
+            curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 0L) != CURLE_OK) {
+            curl_easy_setopt(curl, CURLOPT_PINNEDPUBLICKEY, NULL);
+            return GS_FAILED;
+        }
+    }
     _redact_url(url, safe_url, sizeof(safe_url));
     diag_http_begin("GET", safe_url);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, data);
@@ -657,6 +667,7 @@ int http_request(char *url, PHTTP_DATA data) {
     }
 
     if (!_reset_response(data)) {
+        if (pin != NULL) curl_easy_setopt(curl, CURLOPT_PINNEDPUBLICKEY, NULL);
         diag_http_end(response_code, GS_OUT_OF_MEMORY);
         return GS_OUT_OF_MEMORY;
     }
@@ -726,6 +737,7 @@ int http_request(char *url, PHTTP_DATA data) {
         CURL_SETOPT_LOG(CURLOPT_VERBOSE, log_level > 0 ? 1L : 0L,
                         log_level > 0 ? "1" : "0");
     }
+    if (pin != NULL) curl_easy_setopt(curl, CURLOPT_PINNEDPUBLICKEY, NULL);
     diag_http_end(response_code, (int)result);
 
     if (result == CURLE_OUT_OF_MEMORY) {
@@ -743,6 +755,15 @@ int http_request(char *url, PHTTP_DATA data) {
     }
 
     return GS_OK;
+}
+
+int http_request(char *url, PHTTP_DATA data) {
+    return _http_request(url, data, NULL);
+}
+
+int http_request_pinned(char *url, PHTTP_DATA data, const char *public_key_pin) {
+    if (public_key_pin == NULL) return GS_FAILED;
+    return _http_request(url, data, public_key_pin);
 }
 
 void http_cleanup() {

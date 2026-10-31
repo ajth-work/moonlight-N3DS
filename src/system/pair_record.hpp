@@ -19,7 +19,9 @@
 
 #pragma once
 
+#ifndef MOONLIGHT_3DS_PATH
 #define MOONLIGHT_3DS_PATH "/3ds/moonlight"
+#endif
 
 #ifdef __cplusplus
 #include <string>
@@ -29,4 +31,9 @@ void trim(std::string &s);
 void add_pair_address(std::string address, uint16_t port);
 void remove_pair_address(std::string address, uint16_t port);
 std::vector<std::string> list_paired_addresses();
+bool save_host_public_key_pin(std::string address, uint16_t port,
+                              const char *pin);
+bool load_host_public_key_pin(std::string address, uint16_t port,
+                              std::string &pin);
+void remove_host_public_key_pin(std::string address, uint16_t port);
 #endif

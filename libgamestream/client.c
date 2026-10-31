@@ -24,6 +24,8 @@
 #include "errors.h"
 #include "limits.h"
 #include "diagnostics.h"
+#include "pin_store.h"
+#include "public_key_pin.h"
 
 #include <Limelight.h>
 
@@ -37,7 +39,6 @@
 #else
 #include <uuid/uuid.h>
 #endif
-#include <openssl/sha.h>
 #include <openssl/aes.h>
 #include <openssl/rand.h>
 #include <openssl/evp.h>
@@ -431,7 +432,7 @@ static void decrypt(const unsigned char *ciphertext, int ciphertextLen, const un
   EVP_CIPHER_CTX_free(cipher);
 }
 
-int gs_unpair(PSERVER_DATA server) {
+static int gs_unpair_internal(PSERVER_DATA server, bool clear_pin) {
   int ret = GS_OK;
   char url[4096];
   diag_set_phase("pair.unpair_request");
@@ -449,8 +450,34 @@ int gs_unpair(PSERVER_DATA server) {
   ret = http_request(url, data);
 
   http_free_data(data);
+  if (ret == GS_OK) server->paired = false;
+  if (ret == GS_OK && clear_pin)
+    host_pin_store_remove(server->serverInfo.address, server->httpPort);
   diag_phase_outcome("pair.unpair_request", ret == GS_OK ? "success" : "failed", ret);
   return ret;
+}
+
+int gs_unpair(PSERVER_DATA server) {
+  return gs_unpair_internal(server, true);
+}
+
+int gs_request_pinned(PSERVER_DATA server, char *url, PHTTP_DATA data) {
+  char expected_prefix[1024];
+  char pin[53];
+  int prefix_length;
+  if (server == NULL || !server->paired || server->serverInfo.address == NULL ||
+      url == NULL || data == NULL) return GS_FAILED;
+  prefix_length = snprintf(expected_prefix, sizeof(expected_prefix),
+                           "https://%s:%u/", server->serverInfo.address,
+                           server->httpsPort);
+  if (prefix_length < 0 || (size_t)prefix_length >= sizeof(expected_prefix) ||
+      strncmp(url, expected_prefix, (size_t)prefix_length) != 0 ||
+      !host_pin_store_load(server->serverInfo.address, server->httpPort, pin,
+                           sizeof(pin))) {
+    gs_error = "No valid paired host public-key pin for this endpoint";
+    return GS_FAILED;
+  }
+  return http_request_pinned(url, data, pin);
 }
 
 int gs_pair(PSERVER_DATA server, char* pin) {
@@ -461,6 +488,7 @@ int gs_pair(PSERVER_DATA server, char* pin) {
   uuid_t uuid;
   char uuid_str[UUID_STRLEN];
   char* plaincert = NULL;
+  char public_key_pin[53];
   char* challenge_response = NULL;
   char* pairing_secret = NULL;
   char* client_pairing_secret = NULL;
@@ -477,7 +505,6 @@ int gs_pair(PSERVER_DATA server, char* pin) {
     goto cleanup;
   }
   diag_phase_outcome(current_phase, "success", GS_OK);
-
   unsigned char salt_data[16];
   char salt_hex[SIZEOF_AS_HEX_STR(salt_data)];
   RAND_bytes(salt_data, sizeof(salt_data));
@@ -653,6 +680,11 @@ int gs_pair(PSERVER_DATA server, char* pin) {
     ret = GS_FAILED;
     goto cleanup;
   }
+  if (!derive_public_key_pin(plaincert, public_key_pin)) {
+    gs_error = "Failed to derive paired host public-key pin";
+    ret = GS_FAILED;
+    goto cleanup;
+  }
   diag_phase_outcome(current_phase, "success", GS_OK);
 
   SET_PAIR_PHASE("pair.create_client_pairing_secret");
@@ -718,6 +750,13 @@ int gs_pair(PSERVER_DATA server, char* pin) {
     goto cleanup;
   }
 
+  if (!host_pin_store_save_after_pairing(server->serverInfo.address,
+                                         server->httpPort, public_key_pin,
+                                         true)) {
+    gs_error = "Failed to persist paired host public-key pin";
+    ret = GS_FAILED;
+    goto cleanup;
+  }
   diag_phase_outcome(current_phase, "success", GS_OK);
   SET_PAIR_PHASE("pair.complete");
   server->paired = true;
@@ -727,7 +766,7 @@ int gs_pair(PSERVER_DATA server, char* pin) {
     const char *failed_phase = current_phase;
     diag_phase_outcome(failed_phase, "failed", ret);
     diag_set_phase("pair.cleanup_unpair");
-    int cleanup_ret = gs_unpair(server);
+    int cleanup_ret = gs_unpair_internal(server, false);
     diag_phase_outcome("pair.cleanup_unpair",
                        cleanup_ret == GS_OK ? "success" : "failed",
                        cleanup_ret);

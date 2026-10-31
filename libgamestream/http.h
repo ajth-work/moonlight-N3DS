@@ -36,6 +36,7 @@ typedef struct _HTTP_DATA {
 int http_init(const char *keyDirectory, int logLevel);
 PHTTP_DATA http_create_data();
 int http_request(char *url, PHTTP_DATA data);
+int http_request_pinned(char *url, PHTTP_DATA data, const char *public_key_pin);
 void http_cleanup();
 void http_free_data(PHTTP_DATA data);
 void http_set_timeout_s(uint32_t connection_timeout_in);
