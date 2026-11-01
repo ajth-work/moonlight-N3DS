@@ -63,7 +63,18 @@ GFXBUILD	:=	$(BUILD)
 
 
 # 3dsx
+APP_IDENTITY	?=	GAMEPAD
+ifeq ($(APP_IDENTITY),GAMEPAD)
 APP_TITLE	:=	Moonlight GamePad
+UNIQUE_ID		:=	0x4D11
+PRODUCT_CODE	:=	CTR-P-MLGP
+else ifeq ($(APP_IDENTITY),UI)
+APP_TITLE	:=	Moonlight UI
+UNIQUE_ID		:=	0x5549
+PRODUCT_CODE	:=	CTR-P-MLUI
+else
+$(error Unsupported APP_IDENTITY '$(APP_IDENTITY)'; use GAMEPAD or UI)
+endif
 APP_DESCRIPTION	:=	Moonlight GamePad Streaming Client
 APP_AUTHOR	:=	zoeyjodon
 ICON		:=	3ds/res/ic_moonlight_ui.png
@@ -72,8 +83,6 @@ ICON		:=	3ds/res/ic_moonlight_ui.png
 BANNER_AUDIO	:=	3ds/res/banner.wav
 BANNER_IMAGE	:=	3ds/res/banner.png
 RSF_PATH		:=	3ds/res/app.rsf
-UNIQUE_ID		:=	0x4D11
-PRODUCT_CODE	:=	CTR-P-MLGP
 ICON_FLAGS		:=	nosavebackups,visible
 
 # Version
