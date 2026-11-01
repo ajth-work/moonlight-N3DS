@@ -5,6 +5,55 @@ request. AJ may talk to Codex directly in this repo; this file is
 the shared understanding. Codex: read this before starting work,
 along with AGENTS.md.
 
+## Branch map and consolidation status — 2026-11-01
+
+Phase 2 branch retirement was completed after verifying every source branch against its archive tag. This map supersedes the 2026-10-26 branch snapshot above and the 2026-10-29 SHAs in the consolidation specification.
+
+### Product mainlines
+
+- `n3ds-main` — default/upstream-tracking branch; keep upstream merges and repository-level documentation here.
+- `product/gui` — product mainline at `c2c4ea3657faa8a36f629430511fa6340c045a82`.
+- `product/3d` — product mainline at `85455a5014ebc81a2635cbcc2a93862a89e3e5ec`.
+
+### Retired branches and recovery tags
+
+Each tag was read back from origin and resolves to the listed commit. The corresponding remote branch was then deleted. These tags preserve the commit histories.
+
+| Retired remote branch | Archive tag | Verified commit |
+|---|---|---|
+| `diag/cert-fingerprints` | `archive/cert-fingerprints-2026` | `ac1ef6307c029945d3734d3a189c0725340e0f3c` |
+| `diag/moonlight-logging` | `archive/moonlight-logging-2026` | `02587cdbaa9d6183d09c9fb57d8df6db0139aced` |
+| `diag/tls-file-ctx-ab` | `archive/tls-file-ctx-ab-2026` | `fd83a742b2545cecb7fdf32177414b8ac0f96640` |
+| `feature/stream-profile-picker` | `archive/stream-profile-picker-2026` | `c7119ff9e30dc57c62d8b3e506eaab9c83648836` |
+| `feature/gui-toolkit` | `archive/gui-toolkit-2026` | `ad7bd4ab4dc9fbb6a61c97aa80fb637d3c363dd0` |
+| `feature/gui-stream-moonlight-theme` | `archive/gui-stream-moonlight-theme-2026` | `30d53377a254bf3a253240b8c9f45d31cfb9b971` |
+| `feature/gui-stream-gamepad` | `archive/gui-stream-gamepad-2026` | `c2c4ea3657faa8a36f629430511fa6340c045a82` |
+| `feature/moonlight-3d` | `archive/moonlight-3d-2026` | `85455a5014ebc81a2635cbcc2a93862a89e3e5ec` |
+
+### Branches retained for active or unresolved work
+
+These branches were deliberately left in place and are not covered by the eight-branch retirement:
+
+- `codex/moonlight-build-publish-skills` — build/publish skills still need to be landed on the product branches before this branch can be retired.
+- `diag/moonlight-presentation` — retained for a separate diagnostics disposition; it was not included in the authorized deletion list.
+- `feature/launch-display-select` — `1d0293dffbe29346316d9ecc29df0c929d22070a`.
+- `feature/gui-stream-stick-mockup` — `b288661e5e06f03ec613c39b18a7aafee5c26eae`.
+- `feature/gui-stream-multimonitor` — `2100dc1c1147db36843414387785066cde83f398`.
+
+The remote branch audit after deletion also confirmed `n3ds-main`, `product/gui`, and `product/3d`. The listed codex and diagnostics branches are transitional exceptions to standing rule 6 below; do not delete them without a separate disposition and approval.
+
+### Standing rules after consolidation
+
+1. New work branches from a `product/*` branch. Do not stack feature branches on other feature branches.
+2. A feature branch merges back into its product branch in the same job that publishes its build, then is deleted after merge. Released builds receive a checkpoint tag first: `<line>-checkpoint-YYYYMMDD`.
+3. Before branching for a new identity or product line, create a checkpoint tag on the product branch and verify the new Title ID by reading it from the built CIA's TMD, not from the Makefile alone.
+4. The source commit and push are part of the build-and-publish workflow.
+5. `n3ds-main` receives upstream merges and repository-level documentation only.
+6. The intended branch list is `n3ds-main`, `product/*`, and currently active `feature/*` branches. Other branches receive archive tags and are deleted after their work is dispositioned. The two retained non-feature branches above are explicit transitional exceptions.
+7. Repository skills (`.agents/skills/**/SKILL.md`) must live on the product branches where jobs need them.
+
+For a new product line: choose the closest product branch as the base, create a checkpoint tag, branch as `feature/<line>-<topic>`, verify the built CIA identity from its TMD, publish under the release workflow, merge back to its product branch (or promote it to `product/<line>` if it becomes a standing product), then delete the feature branch. A new line does not become a base for further feature stacking.
+
 ## What AJ wants
 
 AJ's fork of zoeyjodon's moonlight-N3DS (GPLv3), to fix the PC to
