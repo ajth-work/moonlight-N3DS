@@ -2311,10 +2311,16 @@ static void draw_stream_gamepad_panel(uint32_t rtt_ms, bool rtt_available,
     bottom.present(false);
 }
 
-static inline void stream_loop(PCONFIGURATION config,
+struct StreamWorkerThreads {
+    Thread input_thread = NULL;
+    Thread dispatch_thread = NULL;
+};
+
+static inline StreamWorkerThreads stream_loop(PCONFIGURATION config,
                                N3dsConnectionListener *connection_listener,
                                std::shared_ptr<N3dsInput> input_handler) {
     // Spin off worker threads
+    StreamWorkerThreads workers;
     size_t stack_size = 0x20000;
     s32 priority = 0x30;
     svcGetThreadPriority(&priority, CUR_THREAD_HANDLE);
@@ -2332,10 +2338,11 @@ static inline void stream_loop(PCONFIGURATION config,
         std::make_shared<TouchStateChangedMsg>(N3dsTouchType::GAMEPAD));
     if (input_handler) input_handler->set_stream_panel_enabled(true);
     if (!config->viewonly) {
-        threadCreate(input_loop, input_handler.get(), stack_size, priority, -1,
-                     true);
+        workers.input_thread = threadCreate(input_loop, input_handler.get(),
+                                            stack_size, priority, -1, false);
     }
-    threadCreate(dispatch_loop, nullptr, stack_size, priority, -1, true);
+    workers.dispatch_thread =
+        threadCreate(dispatch_loop, nullptr, stack_size, priority, -1, false);
 
     // Run the main connection loop
     while (!connection_listener->is_connection_closed() && aptMainLoop()) {
@@ -2374,6 +2381,14 @@ static inline void stream_loop(PCONFIGURATION config,
     }
     if (input_handler) input_handler->set_stream_panel_enabled(false);
     if (ptmu_ready) ptmuExit();
+    return workers;
+}
+
+static void join_stream_worker(Thread &thread) {
+    if (thread == NULL) return;
+    threadJoin(thread, 0xFFFFFFFFFFFFFFFFULL);
+    threadFree(thread);
+    thread = NULL;
 }
 
 struct LimelightStartCall {
@@ -2474,13 +2489,17 @@ static void stream(PSERVER_DATA server, PCONFIGURATION config, int appId,
     diag_set_phase("stream.active");
     diag_ui_state("TOP", "stream video", true);
     diag_ui_state("BOTTOM", "legacy graphical UI", true);
-    stream_loop(config, connection_listener, input_handler);
+    StreamWorkerThreads workers =
+        stream_loop(config, connection_listener, input_handler);
+    join_stream_worker(workers.input_thread);
+    join_stream_worker(workers.dispatch_thread);
 
     diag_set_phase("stream.stopping");
     diag_log("STREAM_STOP", "app_id=%d reason=connection_loop_ended", appId);
     LiStopConnection();
     diag_phase_outcome("stream.stopping", "complete", GS_OK);
     N3dsConnectionListener::destroy_instance();
+    restore_bottom_console();
 
     if (config->quitappafter) {
         printf("Sending app quit request ...\n");
