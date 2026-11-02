@@ -20,6 +20,7 @@
 #pragma once
 
 #include "xml.h"
+#include "http.h"
 
 #include <Limelight.h>
 
@@ -51,6 +52,8 @@ void gs_cleanup();
 int gs_start_app(PSERVER_DATA server, PSTREAM_CONFIGURATION config, int appId, bool sops, bool localaudio, int gamepad_mask);
 int gs_applist(PSERVER_DATA server, PAPP_LIST *app_list);
 int gs_unpair(PSERVER_DATA server);
+int gs_request_pinned(PSERVER_DATA server, char *url, PHTTP_DATA data,
+                      const char *request_body, size_t body_size);
 int gs_pair(PSERVER_DATA server, char* pin);
 int gs_quit_app(PSERVER_DATA server);
 
