@@ -60,8 +60,16 @@ int main() {
     assert(with_snapshot[1].filename == "sessions/stream-abc.log");
     assert(with_snapshot[1].session == "abc" && with_snapshot[1].scope == "stream");
     assert(with_snapshot[1].duration == "2 s");
+    const std::string interrupted = std::string(root) + "/sessions/session-cut.log";
+    { std::ofstream out(interrupted); out << "2026-01-01T00:30:00.000Z +0 SESSION_BEGIN scope=connection session_id=cut\n"; }
+    const std::vector<Entry> with_interrupted = DiagnosticInventory::list(root);
+    assert(with_interrupted.size() == 3);
+    assert(with_interrupted[2].filename == "sessions/session-cut.log");
+    assert(with_interrupted[2].completion == "interrupted/incomplete");
+    assert(with_interrupted[2].partial == "yes");
     unlink(path.c_str());
     unlink(snapshot.c_str());
+    unlink(interrupted.c_str());
     rmdir((std::string(root) + "/sessions").c_str());
     rmdir(root);
 }

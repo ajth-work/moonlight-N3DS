@@ -9,10 +9,12 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <fcntl.h>
 #include <time.h>
 #include <unistd.h>
 
 #define DIAG_LOG_PATH "sdmc:/3ds/moonlight/moonlight.log"
+#define DIAG_SESSION_DIR "sdmc:/3ds/moonlight/sessions"
 #define UNIX_EPOCH_OFFSET_MS 2208988800000ULL
 #define DIAG_FORMATTED_LINE_MAX 4096
 #define DIAG_STACK_RECORD_CAPACITY 512
@@ -35,6 +37,9 @@ static unsigned int diag_http_fact_count;
 static unsigned int diag_http_dropped;
 static bool diag_http_deferred;
 static FILE *diag_file = NULL;
+static FILE *diag_session_file = NULL;
+static char diag_session_id[48];
+static unsigned int diag_session_sequence;
 static bool diag_initialized = false;
 static volatile bool diag_logging_enabled = true;
 static bool diag_cancel = false;
@@ -368,6 +373,7 @@ static void format_wall_time(char *out, size_t capacity) {
 
 void diag_log(const char *event, const char *format, ...) {
     va_list args;
+    bool session_write_failed = false;
     LightLock_Lock(&diag_lock);
     va_start(args, format);
     vsnprintf(diag_detail, sizeof(diag_detail), format ? format : "", args);
@@ -383,13 +389,91 @@ void diag_log(const char *event, const char *format, ...) {
     if (diag_recent_count < DIAG_RECENT_LINE_COUNT) {
         diag_recent_count++;
     }
-    if (__atomic_load_n(&diag_logging_enabled, __ATOMIC_ACQUIRE) &&
-        diag_file != NULL) {
+    if (__atomic_load_n(&diag_logging_enabled, __ATOMIC_ACQUIRE) && diag_file != NULL) {
         fputs(diag_line, diag_file);
         fputc('\n', diag_file);
         fflush(diag_file);
         fsync(fileno(diag_file));
     }
+    if (__atomic_load_n(&diag_logging_enabled, __ATOMIC_ACQUIRE) &&
+        diag_session_file != NULL) {
+        if (fputs(diag_line, diag_session_file) == EOF ||
+            fputc('\n', diag_session_file) == EOF ||
+            fflush(diag_session_file) != 0 ||
+            fsync(fileno(diag_session_file)) != 0) {
+            fclose(diag_session_file);
+            diag_session_file = NULL;
+            diag_session_id[0] = '\0';
+            session_write_failed = true;
+        }
+    }
+    LightLock_Unlock(&diag_lock);
+    if (session_write_failed)
+        diag_log("SESSION_SINK_ERROR", "reason=write_or_sync_failed");
+}
+
+bool diag_session_begin(void) {
+    char path[128];
+    int fd = -1;
+    unsigned int attempt;
+    if (!diag_is_enabled()) return false;
+    LightLock_Lock(&diag_lock);
+    if (diag_session_file != NULL) {
+        LightLock_Unlock(&diag_lock);
+        diag_log("SESSION_SINK_ERROR", "reason=previous_session_still_open");
+        return false;
+    }
+    mkdir(DIAG_SESSION_DIR, 0777);
+    for (attempt = 0; attempt < 32; ++attempt) {
+        snprintf(diag_session_id, sizeof(diag_session_id), "%08llx-%04x",
+                 (unsigned long long)svcGetSystemTick(),
+                 (unsigned int)(++diag_session_sequence & 0xffff));
+        snprintf(path, sizeof(path), "%s/session-%s.log", DIAG_SESSION_DIR,
+                 diag_session_id);
+        fd = open(path, O_WRONLY | O_CREAT | O_EXCL, 0666);
+        if (fd >= 0) break;
+    }
+    if (fd >= 0) diag_session_file = fdopen(fd, "w");
+    if (fd >= 0 && diag_session_file == NULL) close(fd);
+    if (diag_session_file == NULL) {
+        if (fd >= 0) unlink(path);
+        diag_session_id[0] = '\0';
+    }
+    LightLock_Unlock(&diag_lock);
+    if (diag_session_file == NULL) {
+        diag_log("SESSION_SINK_ERROR", "reason=create_failed");
+        return false;
+    }
+    diag_log("SESSION_BEGIN", "scope=connection session_id=%s", diag_session_id);
+    diag_log("SESSION_PHASE", "name=host_contact session_id=%s", diag_session_id);
+    return true;
+}
+
+bool diag_session_available(void) {
+    bool available;
+    LightLock_Lock(&diag_lock);
+    available = diag_session_file != NULL;
+    LightLock_Unlock(&diag_lock);
+    return available;
+}
+
+void diag_session_end(const char *outcome, const char *reason) {
+    bool active;
+    LightLock_Lock(&diag_lock);
+    active = diag_session_file != NULL;
+    LightLock_Unlock(&diag_lock);
+    if (!active) return;
+    diag_log("SESSION_END", "scope=connection session_id=%s outcome=%s reason=%s",
+             diag_session_id, outcome ? outcome : "failed",
+             reason ? reason : "unspecified");
+    LightLock_Lock(&diag_lock);
+    if (diag_session_file != NULL) {
+        fflush(diag_session_file);
+        fsync(fileno(diag_session_file));
+        fclose(diag_session_file);
+        diag_session_file = NULL;
+    }
+    diag_session_id[0] = '\0';
     LightLock_Unlock(&diag_lock);
 }
 
@@ -428,6 +512,12 @@ bool diag_is_enabled(void) {
 
 void diag_close(void) {
     LightLock_Lock(&diag_lock);
+    if (diag_session_file != NULL) {
+        fflush(diag_session_file);
+        fsync(fileno(diag_session_file));
+        fclose(diag_session_file);
+        diag_session_file = NULL;
+    }
     if (diag_file != NULL) {
         fflush(diag_file);
         fsync(fileno(diag_file));

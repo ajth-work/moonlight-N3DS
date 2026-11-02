@@ -406,7 +406,8 @@ class CheckLogsScreen : public MoonlightUi::DualScreenModel {
                 "FILE: " + e.filename, "TYPE: " + e.scope, "SESSION: " + e.session,
                 "SIZE: " + std::to_string(e.size) + " bytes", "MODIFIED: " + e.modified_local,
                 "START: " + e.start_local, "END: " + e.end_local,
-                "DURATION: " + e.duration, "PARTIAL: " + e.partial,
+                "DURATION: " + e.duration, "COMPLETION: " + e.completion,
+                "PARTIAL: " + e.partial,
                 "UPLOAD: " + e.upload_state};
             for (unsigned int i = 0; i < sizeof(lines) / sizeof(lines[0]); ++i)
                 bottom.drawAutoRateText(16, 48 + static_cast<int>(i) * 16, lines[i],
@@ -2552,6 +2553,7 @@ static void stream(PSERVER_DATA server, PCONFIGURATION config, int appId,
     }
 
     diag_log("STREAM_STARTED", "app_id=%d", appId);
+    diag_log("STREAM_BEGIN", "app_id=%d", appId);
     diag_set_phase("stream.active");
     diag_ui_state("TOP", "stream video", true);
     diag_ui_state("BOTTOM", "legacy graphical UI", true);
@@ -2619,10 +2621,11 @@ static void print_init_server_error(CONFIGURATION *config, int status) {
     }
 }
 
-static void action_stream(CONFIGURATION *config, SERVER_DATA *server) {
+static const char *action_stream(CONFIGURATION *config, SERVER_DATA *server) {
+    diag_log("SESSION_PHASE", "name=host_display_selection");
     int appId = prompt_for_app_id(server);
     if (appId == -1) {
-        return;
+        return diag_cancel_requested() ? "user_cancelled" : "app_list_unavailable";
     }
 
     config->stream.supportedVideoFormats = VIDEO_FORMAT_H264;
@@ -2640,6 +2643,7 @@ static void action_stream(CONFIGURATION *config, SERVER_DATA *server) {
             config->use_triggers_for_mouse);
     }
     stream(server, config, appId, input_handler);
+    return diag_cancel_requested() ? "stream_cancelled_or_stopped" : "stream_teardown";
 }
 
 class ConnectionTestMessageScreen : public MoonlightUi::ScreenModel {
@@ -3035,6 +3039,7 @@ int main_loop(int argc, char *argv[]) {
         config.address = (char *)address_string.c_str();
         const std::string profile_host_key =
             std::string(config.address) + ":" + std::to_string(config.port);
+        diag_session_begin();
         diag_log("HOST_SELECTION", "host=%s port=%d", config.address,
                  config.port);
         SERVER_DATA server;
@@ -3046,6 +3051,7 @@ int main_loop(int argc, char *argv[]) {
         diag_http_summary_flush(connect_call.status, diag_cancel_requested());
         if (diag_cancel_requested()) {
             diag_log("CONNECT_CANCELLED", "returning to host list");
+            diag_session_end("cancelled", "host_contact_cancelled");
             continue;
         }
         if (connect_call.status != GS_OK) {
@@ -3053,27 +3059,34 @@ int main_loop(int argc, char *argv[]) {
             show_gui_message("HOST CONNECTION FAILED",
                              "Moonlight could not connect to this host.",
                              "Check that the host is online, then try again.");
+            diag_session_end("failed", "host_info_failed");
             continue;
         }
         diag_log("HOST_INFO", "host connection initialized codec_flags=0x%x",
                  server.serverInfo.serverCodecModeSupport);
+        diag_log("SESSION_PHASE", "name=host_info_ready");
 
         while (aptMainLoop()) {
             std::string action = prompt_for_action(&server);
             if (action.empty()) {
+                diag_session_end("cancelled", "user_left_host_menu_before_stream");
                 break;
             }
             config.action = (char *)action.c_str();
 
             if (strcmp("exit to 3ds home", config.action) == 0) {
                 diag_log("APP_EXIT_REQUEST", "route=host_action_menu");
+                diag_session_end("cancelled", "user_exit_before_stream");
                 return 0;
             } else if (strcmp("stream", config.action) == 0) {
-                action_stream(&config, &server);
+                const char *reason = action_stream(&config, &server);
+                diag_session_end(diag_cancel_requested() ? "cancelled" : "complete",
+                                 reason);
                 break;
             } else if (strcmp("pair", config.action) == 0) {
                 bool cancelled = action_pair(&config, &server);
                 (void)cancelled;
+                diag_session_end(cancelled ? "cancelled" : "complete", "pair_action_selected");
                 break;
             } else if (strcmp("stream settings", config.action) == 0) {
                 prompt_for_stream_settings(&config);
@@ -3085,15 +3098,18 @@ int main_loop(int argc, char *argv[]) {
                 show_check_logs();
             } else if (strcmp("unpair", config.action) == 0) {
                 action_unpair(&config, &server);
+                diag_session_end("complete", "unpair_action_selected");
                 break;
             } else if (strcmp("quit stream", config.action) == 0) {
                 action_quit_stream(&server);
+                diag_session_end("complete", "quit_action_selected");
                 break;
             } else {
                 printf("%s is not a valid action\n", config.action);
                 wait_for_button();
             }
         }
+        diag_session_end("cancelled", "host_menu_loop_ended");
     }
     return 0;
 }

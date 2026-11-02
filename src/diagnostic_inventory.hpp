@@ -16,6 +16,7 @@ struct Entry {
     std::string start_local = "unknown";
     std::string end_local = "unknown";
     std::string duration = "unknown";
+    std::string completion = "unknown";
     std::string partial = "unknown";
     std::string upload_state = "unknown";
 };

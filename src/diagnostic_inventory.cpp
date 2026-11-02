@@ -84,6 +84,12 @@ void add_directory(const std::string &path, std::vector<Entry> &out,
         /* The append-only application log can contain many sessions; do not
          * misattribute its last session's facts to the whole file. */
         if (e.filename != "moonlight.log") scan_file(full, e);
+        if (e.start_local != "unknown" && e.end_local == "unknown") {
+            e.completion = "interrupted/incomplete";
+            e.partial = "yes";
+        } else if (e.end_local != "unknown") {
+            e.completion = "complete";
+        }
         if (e.start_local != "unknown" && e.end_local != "unknown") {
             struct tm a, b;
             if (parse_utc(e.start_local, &a) && parse_utc(e.end_local, &b)) {
@@ -92,7 +98,8 @@ void add_directory(const std::string &path, std::vector<Entry> &out,
             }
         }
         if (e.start_local != "unknown") e.start_local = format_local_timestamp(e.start_local);
-        if (e.end_local != "unknown") e.end_local = format_local_timestamp(e.end_local);
+        if (e.end_local != "unknown" && e.end_local.find('T') != std::string::npos)
+            e.end_local = format_local_timestamp(e.end_local);
         out.push_back(e);
     }
     closedir(dir);
