@@ -23,15 +23,49 @@ std::string value_for(const std::string &line, const char *key) {
     return line.substr(at, end == std::string::npos ? end : end - at);
 }
 
-bool parse_utc(const std::string &s, struct tm *tm_out) {
+bool parse_digits(const std::string &s, size_t offset, size_t length, int *value) {
+    int parsed = 0;
+    if (offset + length > s.size()) return false;
+    for (size_t i = 0; i < length; ++i) {
+        const char c = s[offset + i];
+        if (c < '0' || c > '9') return false;
+        parsed = parsed * 10 + (c - '0');
+    }
+    *value = parsed;
+    return true;
+}
+
+long long days_from_civil(int year, unsigned month, unsigned day) {
+    year -= month <= 2;
+    const int era = (year >= 0 ? year : year - 399) / 400;
+    const unsigned year_of_era = static_cast<unsigned>(year - era * 400);
+    const unsigned day_of_year = (153 * (month + (month > 2 ? -3 : 9)) + 2) / 5 +
+                                 day - 1;
+    const unsigned day_of_era = year_of_era * 365 + year_of_era / 4 -
+                                year_of_era / 100 + day_of_year;
+    return static_cast<long long>(era) * 146097 + day_of_era - 719468;
+}
+
+bool parse_utc(const std::string &s, time_t *seconds_out) {
     if (s.size() < 20 || s[4] != '-' || s[7] != '-' || s[10] != 'T' ||
         s[13] != ':' || s[16] != ':' || s.back() != 'Z') return false;
-    char base[20];
-    memcpy(base, s.data(), 19);
-    base[19] = '\0';
-    memset(tm_out, 0, sizeof(*tm_out));
-    char *end = strptime(base, "%Y-%m-%dT%H:%M:%S", tm_out);
-    return end != NULL && *end == '\0';
+    int year, month, day, hour, minute, second;
+    if (!parse_digits(s, 0, 4, &year) || !parse_digits(s, 5, 2, &month) ||
+        !parse_digits(s, 8, 2, &day) || !parse_digits(s, 11, 2, &hour) ||
+        !parse_digits(s, 14, 2, &minute) || !parse_digits(s, 17, 2, &second))
+        return false;
+    static const int month_days[] = {31, 28, 31, 30, 31, 30,
+                                     31, 31, 30, 31, 30, 31};
+    if (month < 1 || month > 12 || hour > 23 || minute > 59 || second > 59)
+        return false;
+    const bool leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    const int max_day = month_days[month - 1] + (month == 2 && leap ? 1 : 0);
+    if (day < 1 || day > max_day) return false;
+    const long long epoch = days_from_civil(year, static_cast<unsigned>(month),
+                                             static_cast<unsigned>(day)) * 86400LL +
+                            hour * 3600LL + minute * 60LL + second;
+    *seconds_out = static_cast<time_t>(epoch);
+    return static_cast<long long>(*seconds_out) == epoch;
 }
 
 std::string timestamp_prefix(const std::string &line) {
@@ -91,9 +125,8 @@ void add_directory(const std::string &path, std::vector<Entry> &out,
             e.completion = "complete";
         }
         if (e.start_local != "unknown" && e.end_local != "unknown") {
-            struct tm a, b;
-            if (parse_utc(e.start_local, &a) && parse_utc(e.end_local, &b)) {
-                time_t ta = timegm(&a), tb = timegm(&b);
+            time_t ta, tb;
+            if (parse_utc(e.start_local, &ta) && parse_utc(e.end_local, &tb)) {
                 if (tb >= ta) e.duration = std::to_string((long long)(tb - ta)) + " s";
             }
         }
@@ -128,9 +161,8 @@ void parse_line(Entry &e, const std::string &line) {
 }
 
 std::string format_local_timestamp(const std::string &utc) {
-    struct tm value;
-    if (!parse_utc(utc, &value)) return "unknown";
-    time_t seconds = timegm(&value);
+    time_t seconds;
+    if (!parse_utc(utc, &seconds)) return "unknown";
     struct tm local;
     if (localtime_r(&seconds, &local) == NULL) return "unknown";
     char out[40];
