@@ -39,6 +39,8 @@ static bool diag_http_deferred;
 static FILE *diag_file = NULL;
 static FILE *diag_session_file = NULL;
 static char diag_session_id[48];
+static char diag_session_path[128];
+static unsigned long long diag_session_begin_epoch;
 static unsigned int diag_session_sequence;
 static bool diag_initialized = false;
 static volatile bool diag_logging_enabled = true;
@@ -438,6 +440,11 @@ bool diag_session_begin(void) {
     if (diag_session_file == NULL) {
         if (fd >= 0) unlink(path);
         diag_session_id[0] = '\0';
+        diag_session_path[0] = '\0';
+        diag_session_begin_epoch = 0;
+    } else {
+        snprintf(diag_session_path, sizeof(diag_session_path), "%s", path);
+        diag_session_begin_epoch = (unsigned long long)time(NULL);
     }
     LightLock_Unlock(&diag_lock);
     if (diag_session_file == NULL) {
@@ -457,6 +464,51 @@ bool diag_session_available(void) {
     return available;
 }
 
+bool diag_session_get_info(DIAG_SESSION *session) {
+    bool active;
+    if (session == NULL) return false;
+    LightLock_Lock(&diag_lock);
+    active = diag_session_file != NULL && diag_session_id[0] != '\0' &&
+             diag_session_path[0] != '\0';
+    if (active) {
+        fflush(diag_session_file);
+        fsync(fileno(diag_session_file));
+        memset(session, 0, sizeof(*session));
+        snprintf(session->id, sizeof(session->id), "%s", diag_session_id);
+        snprintf(session->scope, sizeof(session->scope), "connection");
+        snprintf(session->host_identity, sizeof(session->host_identity), "paired-host");
+        snprintf(session->path, sizeof(session->path), "%s", diag_session_path);
+        session->begin_epoch = diag_session_begin_epoch;
+    }
+    LightLock_Unlock(&diag_lock);
+    return active;
+}
+
+void diag_session_record_upload(const DIAG_SESSION *session, bool accepted) {
+    FILE *file;
+    char wall_time[40];
+    bool active = false;
+    if (session == NULL || session->id[0] == '\0' || session->path[0] == '\0')
+        return;
+    LightLock_Lock(&diag_lock);
+    active = diag_session_file != NULL &&
+             strcmp(diag_session_id, session->id) == 0;
+    LightLock_Unlock(&diag_lock);
+    diag_log("DIAG_UPLOAD", "scope=%s session_id=%s state=%s truncated=false",
+             session->scope, session->id, accepted ? "accepted" : "failed");
+    if (active) return;
+    file = fopen(session->path, "a");
+    if (file == NULL) return;
+    format_wall_time(wall_time, sizeof(wall_time));
+    if (fprintf(file, "%s +%08llums DIAG_UPLOAD scope=%s session_id=%s state=%s truncated=false\n",
+                wall_time, (unsigned long long)diag_elapsed_ms(), session->scope,
+                session->id, accepted ? "accepted" : "failed") >= 0) {
+        fflush(file);
+        fsync(fileno(file));
+    }
+    fclose(file);
+}
+
 void diag_session_end(const char *outcome, const char *reason) {
     bool active;
     LightLock_Lock(&diag_lock);
@@ -474,6 +526,8 @@ void diag_session_end(const char *outcome, const char *reason) {
         diag_session_file = NULL;
     }
     diag_session_id[0] = '\0';
+    diag_session_path[0] = '\0';
+    diag_session_begin_epoch = 0;
     LightLock_Unlock(&diag_lock);
 }
 

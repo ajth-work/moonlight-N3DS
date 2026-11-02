@@ -11,7 +11,7 @@ extern "C" {
 #endif
 
 #define DIAG_WATCHDOG_LIMIT_MS 30000ULL
-#define DIAG_BUILD_VERSION "3.6.0-gui19"
+#define DIAG_BUILD_VERSION "3.6.0-gui20"
 #define DIAG_MAIN_STACK_REQUESTED_SIZE 0x40000U
 /* app.rsf SystemControlInfo.StackSize */
 #define DIAG_LOG_LINE_MAX 512
@@ -26,6 +26,15 @@ typedef enum {
     DIAG_CERT_TLS
 } DIAG_CERT_STAGE;
 
+typedef struct {
+    char id[48];
+    char parent_id[48];
+    char scope[16];
+    char host_identity[53];
+    char path[128];
+    unsigned long long begin_epoch;
+} DIAG_SESSION;
+
 void diag_init(void);
 void diag_close(void);
 void diag_set_enabled(bool enabled);
@@ -33,6 +42,8 @@ bool diag_is_enabled(void);
 bool diag_session_begin(void);
 void diag_session_end(const char *outcome, const char *reason);
 bool diag_session_available(void);
+bool diag_session_get_info(DIAG_SESSION *session);
+void diag_session_record_upload(const DIAG_SESSION *session, bool accepted);
 void diag_log(const char *event, const char *format, ...);
 void diag_ui_state(const char *screen, const char *state, bool graphical);
 void diag_stack_checkpoint(const char *boundary, uintptr_t stack_pointer);
