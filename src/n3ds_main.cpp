@@ -20,6 +20,7 @@
 #include "audio/audio.h"
 #include "config.hpp"
 #include "diagnostics.h"
+#include "diagnostic_inventory.hpp"
 #include "input/n3ds_input.hpp"
 #include "input/touch/TouchHandler.hpp"
 #include "system/AtomicVar.hpp"
@@ -379,6 +380,68 @@ static bool run_gui_menu(const std::string &title, const std::string &context,
     return true;
 }
 
+class CheckLogsScreen : public MoonlightUi::DualScreenModel {
+  public:
+    CheckLogsScreen(std::vector<DiagnosticInventory::Entry> entries, size_t total_count)
+        : entries_(std::move(entries)), total_count_(total_count) {}
+    void draw(MoonlightUi::Screen &top, MoonlightUi::Screen &bottom) override {
+        top.drawHeader("CHECK LOGS", std::to_string(total_count_) + " FILES");
+        const int first = std::max(0, std::min(selected_ - 2,
+                                              static_cast<int>(entries_.size()) - 5));
+        for (int row = 0; row < 5 && first + row < static_cast<int>(entries_.size()); ++row) {
+            const int index = first + row;
+            MoonlightUi::Rect tile{14, 60 + row * 29, top.width() - 14, 85 + row * 29};
+            top.drawFilledTile(tile, index + 1);
+            top.drawAutoRateText(tile.left + 26, tile.top + 5, entries_[index].filename,
+                                 tile.right - tile.left - 34, {38, 43, 48});
+            if (index == selected_) top.drawHighlight(tile);
+        }
+        top.drawFooter(DIAG_BUILD_VERSION, "UP/DOWN SELECT  B BACK");
+        bottom.drawHeader("LOG DETAILS", "LOCAL INVENTORY");
+        if (entries_.empty()) {
+            bottom.drawLiveText(20, 78, "No diagnostic files found", MoonlightUi::TextStyle::Small, {38, 43, 48});
+        } else {
+            const DiagnosticInventory::Entry &e = entries_[selected_];
+            const std::string lines[] = {
+                "FILE: " + e.filename, "TYPE: " + e.scope, "SESSION: " + e.session,
+                "SIZE: " + std::to_string(e.size) + " bytes", "MODIFIED: " + e.modified_local,
+                "START: " + e.start_local, "END: " + e.end_local,
+                "DURATION: " + e.duration, "PARTIAL: " + e.partial,
+                "UPLOAD: " + e.upload_state};
+            for (unsigned int i = 0; i < sizeof(lines) / sizeof(lines[0]); ++i)
+                bottom.drawAutoRateText(16, 48 + static_cast<int>(i) * 16, lines[i],
+                                        bottom.width() - 32, {38, 43, 48});
+        }
+        bottom.drawFooter(DIAG_BUILD_VERSION, "B BACK");
+    }
+    bool handleInput(const MoonlightUi::InputEvent &event, bool *redraw) override {
+        *redraw = false;
+        if (event.type == MoonlightUi::InputEvent::Type::Back) return false;
+        if (event.type == MoonlightUi::InputEvent::Type::Direction && !entries_.empty()) {
+            int before = selected_;
+            if (event.direction == MoonlightUi::Direction::Up)
+                selected_ = selected_ == 0 ? static_cast<int>(entries_.size()) - 1 : selected_ - 1;
+            else if (event.direction == MoonlightUi::Direction::Down)
+                selected_ = (selected_ + 1) % static_cast<int>(entries_.size());
+            *redraw = before != selected_;
+        }
+        return true;
+    }
+  private:
+    std::vector<DiagnosticInventory::Entry> entries_;
+    size_t total_count_;
+    int selected_ = 0;
+};
+
+static void show_check_logs() {
+    size_t total_count = 0;
+    std::vector<DiagnosticInventory::Entry> entries =
+        DiagnosticInventory::list("sdmc:/3ds/moonlight", 64, &total_count);
+    CheckLogsScreen screen(std::move(entries), total_count);
+    MoonlightUi::runDualScreen(screen);
+    restore_consoles_after_dual_screen_ui();
+}
+
 static std::string prompt_for_action(PSERVER_DATA server) {
     std::vector<GuiMenuItem> actions;
     if (server->paired) {
@@ -386,6 +449,7 @@ static std::string prompt_for_action(PSERVER_DATA server) {
             {"Stream", "Start streaming from the selected host. The host app list opens next.", "Ready"},
             {"Stream Profile", "Choose a saved resolution and bitrate profile for this host.", "Host-specific"},
             {"Connection Test", "Measure frame timing and staged bitrate stability without changing saved settings.", "Diagnostic"},
+            {"Check Logs", "Browse diagnostic files stored on this 3DS.", "Local only"},
             {"Quit Stream", "Ask the host to close its currently active streaming app.", "Host request"},
             {"Stream Settings", "Edit video, audio, input, decoder, and diagnostic log options.", "Preferences"},
             {"Unpair", "Remove this device's pairing from the selected host.", "Destructive host change"},
@@ -394,6 +458,7 @@ static std::string prompt_for_action(PSERVER_DATA server) {
     } else {
         actions = {
             {"Pair", "Pair this 3DS with the selected host using the displayed PIN.", "Not paired"},
+            {"Check Logs", "Browse diagnostic files stored on this 3DS.", "Local only"},
             {"Exit to 3DS HOME", "Close Moonlight cleanly and return to the Nintendo 3DS HOME Menu.", "Exit app"},
         };
     }
@@ -403,6 +468,7 @@ static std::string prompt_for_action(PSERVER_DATA server) {
     if (label == "Stream") return "stream";
     if (label == "Stream Profile") return "stream profile";
     if (label == "Connection Test") return "connection test";
+    if (label == "Check Logs") return "check logs";
     if (label == "Quit Stream") return "quit stream";
     if (label == "Stream Settings") return "stream settings";
     if (label == "Unpair") return "unpair";
@@ -3015,6 +3081,8 @@ int main_loop(int argc, char *argv[]) {
                 prompt_for_stream_profile(&config, profile_host_key);
             } else if (strcmp("connection test", config.action) == 0) {
                 action_connection_test(&config, &server, profile_host_key);
+            } else if (strcmp("check logs", config.action) == 0) {
+                show_check_logs();
             } else if (strcmp("unpair", config.action) == 0) {
                 action_unpair(&config, &server);
                 break;
