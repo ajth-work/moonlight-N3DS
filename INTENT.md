@@ -83,6 +83,18 @@ These are roadmap candidates for AJ to prioritize; this section does not authori
 3. **Real 3D streaming is another major candidate.** Integrate the stereoscopic presentation and controls from the separate 3D product line into the GUI product while keeping GUI22's layout. Keep the 3D toolbar item disabled with the same message until the feature works.
 4. **Carry over only the 3D-specific lifecycle behavior when integrating 3D.** GUI22 already joins its generic stream workers before stopping Limelight (GUI18 teardown port). Preserve that ordering and selectively integrate the 3D renderer cleanup and HOME/resume handling from the 3D line; do not duplicate the generic join fix or merge the whole divergent branch without review.
 
+### Open branch feature reconciliation — 2026-11-03
+
+Read-only comparison of current GitHub branch tips against `product/gui` at `ec771649`. This identifies candidate work; it does not authorize a merge.
+
+- `feature/gui20-log-browser-promotion` (`2461f218)) has zero commits ahead of `product/gui`. Its log-browser promotion is already in the product line; GUI22 has the local log browser and consented manual transfer. No port is needed.
+- `feature/gui-stream-multimonitor` (`2100dc1c`) and `feature/gui-stream-stick-mockup` (`b288661e`) contain earlier monitor-panel and GUI17 stick-panel work. GUI22 has the paged toolbar, virtual sticks, MOVE/CLICK controls, and in-stream display controls. Those display controls select an index from a manually configured count and use a host hotkey; they are not Sunshine display enumeration.
+- `feature/launch-display-select` (`1d0293df`) is the source candidate for a true host display picker. GUI22 does not enumerate the host's display list before launching an app. The candidate also has display-list XML compatibility handling and `tests/test_displayinfo_xml.c`; GUI22's XML parser and tests do not include that display-list parser/test. Carry this support with the picker work and verify it against the host API.
+- The candidate branch's paired Sunshine certificate-pinning files (`public_key_pin.c`, `pin_store.h`, `pair_record.cpp`) match the current `product/gui` files exactly. Pinning is already present; do not port it again. The GUI20 log browser and current manual log-transfer flow are also present.
+- `product/3d` (`b4de978e`) has 3D presentation, stereo modes/aspect controls, a 3D touch page, and 3D-specific render, teardown, and HOME/resume fixes. GUI22 has no 3D presentation path; its generic worker teardown is already present. Port only reviewed 3D-specific behavior, not the whole branch.
+- `diag/moonlight-presentation` (`f46ea455`) is an isolated diagnostics build and should remain a separate product-line decision; do not merge it wholesale into GUI.
+- The display, stick, launch-picker, diagnostics, and 3D tips have diverged from the current GUI22 tip. Build and verify selected commits against the current product baseline before promotion; do not merge these branch tips wholesale.
+
 The broader progression is to align older pages (for example, Mouse and Magnify) with the GUI22 design and bring proven earlier GUI/3D capabilities into one product in reviewed steps. GUI23's exact implementation order and release scope are not yet fixed. AJ's current preference is feature-first: finish the intended layout/navigation and functional button behavior before spending a milestone on visual styling. The current GUI22 styling is a working baseline, not the final thematic treatment.
 
 ### GUI24 — color alignment proposal
