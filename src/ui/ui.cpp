@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 
 namespace MoonlightUi {
 namespace {
@@ -243,6 +244,10 @@ bool poll_input(InputEvent *event) {
         hidTouchRead(&event->touch);
         return true;
     }
+    if (keys & KEY_Y) {
+        event->type = InputEvent::Type::AppStateToggle;
+        return true;
+    }
 
     const u32 left = KEY_LEFT | KEY_CPAD_LEFT;
     const u32 right = KEY_RIGHT | KEY_CPAD_RIGHT;
@@ -376,6 +381,140 @@ void Screen::drawBackground() {
         setPixel(x, y, rgb565(footer_line));
     }
 }
+
+void Screen::drawSolidBackground(Color color) {
+    framebuffer_ = reinterpret_cast<uint16_t *>(
+        gfxGetFramebuffer(display_, GFX_LEFT, nullptr, nullptr));
+    if (framebuffer_ == nullptr) return;
+    const uint16_t pixel = rgb565(color);
+    for (int y = 0; y < height_; ++y)
+        for (int x = 0; x < width_; ++x) setPixel(x, y, pixel);
+}
+
+void Screen::drawCircle(int center_x, int center_y, int radius, Color color) {
+    if (radius <= 0) return;
+    const uint16_t pixel = rgb565(color);
+    const int radius_squared = radius * radius;
+    for (int y = -radius; y <= radius; ++y) {
+        for (int x = -radius; x <= radius; ++x) {
+            if (x * x + y * y <= radius_squared)
+                setPixel(center_x + x, center_y + y, pixel);
+        }
+    }
+}
+
+void Screen::drawCircleOutline(int center_x, int center_y, int radius,
+                               int thickness, Color color) {
+    if (radius <= 0 || thickness <= 0) return;
+    const uint16_t pixel = rgb565(color);
+    const int outer = radius * radius;
+    const int inner_radius = std::max(0, radius - thickness);
+    const int inner = inner_radius * inner_radius;
+    for (int y = -radius; y <= radius; ++y) {
+        for (int x = -radius; x <= radius; ++x) {
+            const int distance = x * x + y * y;
+            if (distance <= outer && distance >= inner)
+                setPixel(center_x + x, center_y + y, pixel);
+        }
+    }
+}
+
+void Screen::drawLine(int x0, int y0, int x1, int y1, Color color) {
+    const uint16_t pixel = rgb565(color);
+    const int dx = std::abs(x1 - x0);
+    const int sx = x0 < x1 ? 1 : -1;
+    const int dy = -std::abs(y1 - y0);
+    const int sy = y0 < y1 ? 1 : -1;
+    int error = dx + dy;
+    for (;;) {
+        setPixel(x0, y0, pixel);
+        if (x0 == x1 && y0 == y1) break;
+        const int twice_error = 2 * error;
+        if (twice_error >= dy) {
+            error += dy;
+            x0 += sx;
+        }
+        if (twice_error <= dx) {
+            error += dx;
+            y0 += sy;
+        }
+    }
+}
+
+void Screen::drawSwapIcon(int center_x, int center_y, Color color) {
+    drawLine(center_x - 9, center_y - 3, center_x + 8, center_y - 3, color);
+    drawLine(center_x + 8, center_y - 3, center_x + 4, center_y - 7, color);
+    drawLine(center_x + 8, center_y - 3, center_x + 4, center_y + 1, color);
+    drawLine(center_x + 9, center_y + 4, center_x - 8, center_y + 4, color);
+    drawLine(center_x - 8, center_y + 4, center_x - 4, center_y, color);
+    drawLine(center_x - 8, center_y + 4, center_x - 4, center_y + 8, color);
+}
+
+void Screen::drawMagnifierIcon(int center_x, int center_y, Color color) {
+    drawCircleOutline(center_x - 3, center_y - 3, 8, 2, color);
+    drawLine(center_x + 3, center_y + 3, center_x + 13, center_y + 13, color);
+}
+
+void Screen::drawKeyboardIcon(int center_x, int center_y, Color color) {
+    const uint16_t pixel = rgb565(color);
+    for (int x = -16; x <= 16; ++x) {
+        setPixel(center_x + x, center_y - 9, pixel);
+        setPixel(center_x + x, center_y + 9, pixel);
+    }
+    for (int y = -9; y <= 9; ++y) {
+        setPixel(center_x - 16, center_y + y, pixel);
+        setPixel(center_x + 16, center_y + y, pixel);
+    }
+    for (int row = 0; row < 2; ++row)
+        for (int column = 0; column < 5; ++column)
+            setPixel(center_x - 10 + column * 5,
+                     center_y - 4 + row * 6, pixel);
+    for (int x = -6; x <= 6; ++x) setPixel(center_x + x, center_y + 5, pixel);
+}
+
+void Screen::drawSettingsIcon(int center_x, int center_y, Color color) {
+    drawCircleOutline(center_x, center_y, 9, 3, color);
+    drawLine(center_x, center_y - 14, center_x, center_y - 10, color);
+    drawLine(center_x, center_y + 10, center_x, center_y + 14, color);
+    drawLine(center_x - 14, center_y, center_x - 10, center_y, color);
+    drawLine(center_x + 10, center_y, center_x + 14, center_y, color);
+    drawLine(center_x - 10, center_y - 10, center_x - 7, center_y - 7, color);
+    drawLine(center_x + 7, center_y - 7, center_x + 10, center_y - 10, color);
+    drawLine(center_x - 10, center_y + 10, center_x - 7, center_y + 7, color);
+    drawLine(center_x + 7, center_y + 7, center_x + 10, center_y + 10, color);
+}
+
+void Screen::drawPanelButton(const Rect &rect, const std::string &label,
+                             Color fill, Color text) {
+    fillRoundedRect(rect, 8, rgb565(fill));
+    const int text_width = measureLiveText(label, TextStyle::Header);
+    drawLiveText(rect.left + (rect.right - rect.left - text_width) / 2,
+                 rect.top + (rect.bottom - rect.top - 15) / 2,
+                 label, TextStyle::Header, text);
+}
+
+void Screen::drawDisplaySelector(int selected, int count, bool configure_count) {
+    const Color ink{238, 246, 250};
+    const Color muted{151, 166, 178};
+    const uint16_t edge = rgb565(ink);
+    fillRoundedRect({139, 40, 181, 67}, 5, edge);
+    fillRoundedRect({141, 42, 179, 65}, 4, rgb565({20, 31, 42}));
+    for (int x = 155; x <= 165; ++x) setPixel(x, 68, edge);
+    for (int x = 151; x <= 169; ++x) setPixel(x, 69, edge);
+    if (count > 1 && selected > 1)
+        drawPanelButton({74, 39, 119, 71}, "<", {37, 65, 78}, ink);
+    if (count > 1 && selected < count)
+        drawPanelButton({201, 39, 246, 71}, ">", {37, 65, 78}, ink);
+    char value[12];
+    snprintf(value, sizeof(value), "%d", selected);
+    drawLiveText(153, 47, value, TextStyle::Header, ink);
+    if (configure_count) {
+        char hint[48];
+        snprintf(hint, sizeof(hint), "HOSTS %d", count);
+        drawLiveText(12, 47, hint, TextStyle::Small, muted);
+    }
+}
+
 void Screen::drawTextStyle(int x, int y, const std::string &text, int font_id,
                            Color color) {
     if (framebuffer_ == nullptr || FONT_DATA[0] != 'M' || FONT_DATA[1] != 'L' ||
@@ -661,6 +800,10 @@ bool runDualScreen(DualScreenModel &model) {
             gspWaitForVBlank();
             redraw = false;
         }
+
+        bool updated = false;
+        model.update(&updated);
+        redraw = redraw || updated;
 
         InputEvent event{};
         if (!poll_input(&event)) {

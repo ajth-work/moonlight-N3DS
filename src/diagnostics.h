@@ -11,7 +11,7 @@ extern "C" {
 #endif
 
 #define DIAG_WATCHDOG_LIMIT_MS 30000ULL
-#define DIAG_BUILD_VERSION "3.6.0-gui20"
+#define DIAG_BUILD_VERSION "3.6.0-gui21"
 #define DIAG_MAIN_STACK_REQUESTED_SIZE 0x40000U
 /* app.rsf SystemControlInfo.StackSize */
 #define DIAG_LOG_LINE_MAX 512
@@ -27,12 +27,13 @@ typedef enum {
 } DIAG_CERT_STAGE;
 
 typedef struct {
-    char id[48];
-    char parent_id[48];
+    char id[65];
+    char parent_id[65];
     char scope[16];
     char host_identity[53];
     char path[128];
     unsigned long long begin_epoch;
+    unsigned long long end_epoch;
 } DIAG_SESSION;
 
 void diag_init(void);

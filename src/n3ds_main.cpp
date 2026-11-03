@@ -30,6 +30,7 @@
 #include "pin_store.h"
 #include "ui/ui.hpp"
 #include "video/video.hpp"
+#include "video/renderer/N3dsRenderer.hpp"
 
 #include <3ds.h>
 #include <Limelight.h>
@@ -52,6 +53,7 @@
 #include <netdb.h>
 #include <netinet/in.h>
 #include <openssl/rand.h>
+#include <openssl/sha.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -270,6 +272,10 @@ struct GuiMenuItem {
 };
 
 static void restore_consoles_after_dual_screen_ui();
+static void show_gui_message(const std::string &title, const std::string &message,
+                             const std::string &detail);
+static bool upload_session(PSERVER_DATA server, const DIAG_SESSION &session,
+                           const char *outcome);
 
 class GuiMenuScreen : public MoonlightUi::DualScreenModel {
   public:
@@ -385,65 +391,249 @@ static bool run_gui_menu(const std::string &title, const std::string &context,
 
 class CheckLogsScreen : public MoonlightUi::DualScreenModel {
   public:
-    CheckLogsScreen(std::vector<DiagnosticInventory::Entry> entries, size_t total_count)
-        : entries_(std::move(entries)), total_count_(total_count) {}
+    enum class Result { Back, Send };
+    CheckLogsScreen() = default;
+
     void draw(MoonlightUi::Screen &top, MoonlightUi::Screen &bottom) override {
-        top.drawHeader("CHECK LOGS", std::to_string(total_count_) + " FILES");
+        if (!loaded_) {
+            top.drawHeader("CHECK LOGS", "LOADING LOCAL INVENTORY");
+            top.drawLiveText(28, 92, "Scanning diagnostic files...",
+                             MoonlightUi::TextStyle::Header, {38, 43, 48});
+            top.drawFooter(DIAG_BUILD_VERSION, "PLEASE WAIT");
+            bottom.drawHeader("LOG BROWSER", "LOCAL ONLY");
+            bottom.drawLiveText(18, 78, "Reading filenames and session times.",
+                                MoonlightUi::TextStyle::Small, {38, 43, 48});
+            bottom.drawFooter(DIAG_BUILD_VERSION, "KEEP LOGS ON DEVICE");
+            return;
+        }
+        const std::vector<size_t> visible = visible_indices();
+        top.drawHeader("CHECK LOGS", std::to_string(visible.size()) + " LOGS" +
+                       (show_app_state_ ? " + APP STATE" : ""));
         const int first = std::max(0, std::min(selected_ - 2,
-                                              static_cast<int>(entries_.size()) - 5));
-        for (int row = 0; row < 5 && first + row < static_cast<int>(entries_.size()); ++row) {
-            const int index = first + row;
+                                              static_cast<int>(visible.size()) - 5));
+        for (int row = 0; row < 5 && first + row < static_cast<int>(visible.size()); ++row) {
+            const int index = static_cast<int>(visible[first + row]);
             MoonlightUi::Rect tile{14, 60 + row * 29, top.width() - 14, 85 + row * 29};
-            top.drawFilledTile(tile, index + 1);
-            top.drawAutoRateText(tile.left + 26, tile.top + 5, entries_[index].filename,
+            top.drawFilledTile(tile, first + row + 1);
+            top.drawAutoRateText(tile.left + 26, tile.top + 5, row_label(entries_[index]),
                                  tile.right - tile.left - 34, {38, 43, 48});
-            if (index == selected_) top.drawHighlight(tile);
+            if (first + row == selected_) top.drawHighlight(tile);
         }
-        top.drawFooter(DIAG_BUILD_VERSION, "UP/DOWN SELECT  B BACK");
+        top.drawFooter(DIAG_BUILD_VERSION, "UP/DOWN MOVE A SEND Y STATE B BACK");
         bottom.drawHeader("LOG DETAILS", "LOCAL INVENTORY");
-        if (entries_.empty()) {
-            bottom.drawLiveText(20, 78, "No diagnostic files found", MoonlightUi::TextStyle::Small, {38, 43, 48});
+        if (visible.empty()) {
+            bottom.drawLiveText(20, 72, "No diagnostic logs found.",
+                                MoonlightUi::TextStyle::Small, {38, 43, 48});
         } else {
-            const DiagnosticInventory::Entry &e = entries_[selected_];
+            const DiagnosticInventory::Entry &e = entries_[visible[selected_]];
             const std::string lines[] = {
-                "FILE: " + e.filename, "TYPE: " + e.scope, "SESSION: " + e.session,
-                "SIZE: " + std::to_string(e.size) + " bytes", "MODIFIED: " + e.modified_local,
-                "START: " + e.start_local, "END: " + e.end_local,
-                "DURATION: " + e.duration, "COMPLETION: " + e.completion,
-                "PARTIAL: " + e.partial,
-                "UPLOAD: " + e.upload_state};
+                "FILE: " + e.filename,
+                std::string("TYPE: ") + (e.app_state ? "application state" : e.scope),
+                "SESSION: " + e.session,
+                "SIZE: " + std::to_string(e.size) + " bytes",
+                "START: " + e.start_local,
+                "END: " + e.end_local,
+                "DURATION: " + e.duration,
+                "STATUS: " + (e.app_state ? std::string("not a log") : e.completion + " / upload " + e.upload_state)};
             for (unsigned int i = 0; i < sizeof(lines) / sizeof(lines[0]); ++i)
-                bottom.drawAutoRateText(16, 48 + static_cast<int>(i) * 16, lines[i],
-                                        bottom.width() - 32, {38, 43, 48});
+                bottom.drawAutoRateText(14, 47 + static_cast<int>(i) * 15, lines[i],
+                                        bottom.width() - 28, {38, 43, 48});
+            bottom.drawFilledTile(STATE_TILE, 1);
+            bottom.drawAutoRateText(STATE_TILE.left + 5, STATE_TILE.top + 7,
+                                    show_app_state_ ? "HIDE STATE" : "SHOW STATE",
+                                    STATE_TILE.right - STATE_TILE.left - 10,
+                                    {38, 43, 48});
+            bottom.drawFilledTile(SEND_TILE, 2);
+            bottom.drawAutoRateText(SEND_TILE.left + 5, SEND_TILE.top + 7,
+                                    e.app_state ? "READ ONLY" : "SEND LOG",
+                                    SEND_TILE.right - SEND_TILE.left - 10,
+                                    {38, 43, 48});
         }
-        bottom.drawFooter(DIAG_BUILD_VERSION, "B BACK");
+        bottom.drawFooter(DIAG_BUILD_VERSION, "A SEND Y STATE B BACK TOUCH");
     }
+
+    void update(bool *redraw) override {
+        *redraw = false;
+        if (loaded_) return;
+        entries_ = DiagnosticInventory::list("sdmc:/3ds/moonlight", 64, &total_count_);
+        loaded_ = true;
+        *redraw = true;
+    }
+
     bool handleInput(const MoonlightUi::InputEvent &event, bool *redraw) override {
         *redraw = false;
         if (event.type == MoonlightUi::InputEvent::Type::Back) return false;
-        if (event.type == MoonlightUi::InputEvent::Type::Direction && !entries_.empty()) {
-            int before = selected_;
+        if (!loaded_) return true;
+        const std::vector<size_t> visible = visible_indices();
+        if (event.type == MoonlightUi::InputEvent::Type::AppStateToggle) {
+            show_app_state_ = !show_app_state_;
+            const size_t count = visible_indices().size();
+            selected_ = count ? std::min(selected_, static_cast<int>(count) - 1) : 0;
+            *redraw = true;
+        } else if (event.type == MoonlightUi::InputEvent::Type::Confirm) {
+            result_ = Result::Send;
+            return false;
+        } else if (event.type == MoonlightUi::InputEvent::Type::Touch) {
+            const int x = event.touch.px, y = event.touch.py;
+            if (y >= STATE_TILE.top && y <= STATE_TILE.bottom &&
+                x >= STATE_TILE.left && x <= STATE_TILE.right) {
+                show_app_state_ = !show_app_state_;
+                const size_t count = visible_indices().size();
+                selected_ = count ? std::min(selected_, static_cast<int>(count) - 1) : 0;
+                *redraw = true;
+            } else if (y >= SEND_TILE.top && y <= SEND_TILE.bottom &&
+                       x >= SEND_TILE.left && x <= SEND_TILE.right) {
+                result_ = Result::Send;
+                return false;
+            } else if (!visible.empty() && y >= 48 && y < 208) {
+                const int row = (y - 60) / 29;
+                const int first = std::max(0, std::min(selected_ - 2,
+                                                      static_cast<int>(visible.size()) - 5));
+                const int index = first + row;
+                if (row >= 0 && row < 5 && index >= 0 && index < static_cast<int>(visible.size())) {
+                    selected_ = index;
+                    *redraw = true;
+                }
+            }
+        } else if (event.type == MoonlightUi::InputEvent::Type::Direction && !visible.empty()) {
+            const int before = selected_;
             if (event.direction == MoonlightUi::Direction::Up)
-                selected_ = selected_ == 0 ? static_cast<int>(entries_.size()) - 1 : selected_ - 1;
+                selected_ = selected_ == 0 ? static_cast<int>(visible.size()) - 1 : selected_ - 1;
             else if (event.direction == MoonlightUi::Direction::Down)
-                selected_ = (selected_ + 1) % static_cast<int>(entries_.size());
+                selected_ = (selected_ + 1) % static_cast<int>(visible.size());
             *redraw = before != selected_;
         }
         return true;
     }
+
+    Result result() const { return result_; }
+    bool selected_entry(DiagnosticInventory::Entry *entry) const {
+        if (!loaded_ || entry == NULL) return false;
+        const std::vector<size_t> visible = visible_indices();
+        if (visible.empty() || selected_ < 0 || selected_ >= static_cast<int>(visible.size())) return false;
+        *entry = entries_[visible[selected_]];
+        return true;
+    }
+
   private:
+    static constexpr MoonlightUi::Rect STATE_TILE{12, 176, 153, 207};
+    static constexpr MoonlightUi::Rect SEND_TILE{166, 176, 307, 207};
     std::vector<DiagnosticInventory::Entry> entries_;
-    size_t total_count_;
+    size_t total_count_ = 0;
     int selected_ = 0;
+    bool loaded_ = false;
+    bool show_app_state_ = false;
+    Result result_ = Result::Back;
+
+    std::vector<size_t> visible_indices() const {
+        std::vector<size_t> indices;
+        for (size_t i = 0; i < entries_.size(); ++i)
+            if (show_app_state_ || !entries_[i].app_state) indices.push_back(i);
+        return indices;
+    }
+
+    static std::string row_label(const DiagnosticInventory::Entry &e) {
+        if (e.app_state) return "APP STATE  " + e.filename;
+        if (e.filename == "moonlight.log") return "APPLICATION LOG  Moonlight";
+        std::string label = e.scope == "stream" ? "STREAM " : "HOST ";
+        if (e.start_local != "unknown") label += e.start_local.substr(5, 11) + "  ";
+        if (e.session != "unknown") {
+            label += "ID ";
+            label += e.session.substr(e.session.size() > 6 ? e.session.size() - 6 : 0);
+        }
+        return label;
+    }
 };
 
-static void show_check_logs() {
-    size_t total_count = 0;
-    std::vector<DiagnosticInventory::Entry> entries =
-        DiagnosticInventory::list("sdmc:/3ds/moonlight", 64, &total_count);
-    CheckLogsScreen screen(std::move(entries), total_count);
-    MoonlightUi::runDualScreen(screen);
-    restore_consoles_after_dual_screen_ui();
+static bool is_diagnostic_log(const DiagnosticInventory::Entry &entry) {
+    if (entry.app_state || entry.filename.empty() || entry.filename.find("..") != std::string::npos ||
+        entry.filename[0] == '/') return false;
+    if (entry.filename == "moonlight.log") return true;
+    if (entry.filename.compare(0, 9, "sessions/") != 0) return false;
+    return entry.filename.size() > 4 &&
+           entry.filename.compare(entry.filename.size() - 4, 4, ".log") == 0;
+}
+
+static std::string make_sunshine_session_id(const std::string &filename,
+                                            const std::string &session,
+                                            unsigned long long begin_epoch) {
+    const std::string material = filename + "|" + session + "|" + std::to_string(begin_epoch);
+    unsigned char digest[SHA256_DIGEST_LENGTH];
+    if (SHA256(reinterpret_cast<const unsigned char *>(material.data()), material.size(), digest) == NULL)
+        return std::string();
+    static const char hex[] = "0123456789abcdef";
+    std::string id(64, '0');
+    for (size_t i = 0; i < sizeof(digest); ++i) {
+        id[i * 2] = hex[digest[i] >> 4];
+        id[i * 2 + 1] = hex[digest[i] & 0x0f];
+    }
+    return id;
+}
+
+static void send_inventory_log(PSERVER_DATA server,
+                               const DiagnosticInventory::Entry &entry) {
+    if (!is_diagnostic_log(entry)) {
+        show_gui_message("APP STATE NOT SENT",
+                         "Configuration and pairing files are read-only here.",
+                         "Choose a diagnostic log to send to Sunshine.");
+        return;
+    }
+    if (server == NULL || !server->paired) {
+        show_gui_message("HOST NOT PAIRED", "Pair this 3DS with the selected Sunshine host first.",
+                         "The local log remains on the SD card.");
+        return;
+    }
+    const std::vector<GuiMenuItem> choices = {
+        {"Send This Log", "Send only the selected redacted diagnostic file over pinned HTTPS.", server->serverInfo.address},
+        {"Cancel", "Keep the log local on the SD card.", "No upload"},
+    };
+    int selected = 1;
+    if (!run_gui_menu("CONFIRM LOG TRANSFER", "PAIRED SUNSHINE HOST", choices, &selected) || selected != 0)
+        return;
+
+    DIAG_SESSION session{};
+    const std::string session_id = make_sunshine_session_id(entry.filename, entry.session,
+                                                            entry.start_epoch);
+    if (session_id.empty()) {
+        show_gui_message("LOG TRANSFER FAILED", "Could not identify the selected log.",
+                         "The local copy remains available.");
+        return;
+    }
+    snprintf(session.id, sizeof(session.id), "%s", session_id.c_str());
+    snprintf(session.scope, sizeof(session.scope), "host");
+    const std::string path = std::string("sdmc:/3ds/moonlight/") + entry.filename;
+    if (path.size() >= sizeof(session.path)) {
+        show_gui_message("LOG TRANSFER FAILED", "Selected log path is too long.",
+                         "The local copy remains available.");
+        return;
+    }
+    snprintf(session.path, sizeof(session.path), "%s", path.c_str());
+    session.begin_epoch = entry.start_epoch;
+    session.end_epoch = entry.end_epoch;
+    if (session.begin_epoch == 0) session.begin_epoch = session.end_epoch ? session.end_epoch : (unsigned long long)time(NULL);
+    if (session.end_epoch < session.begin_epoch) session.end_epoch = session.begin_epoch;
+    const bool sent = upload_session(server, session, "manual_current_host");
+    if (entry.filename == "moonlight.log") {
+        diag_log("DIAG_UPLOAD", "scope=host session_id=%s state=%s truncated=false",
+                 session.id, sent ? "accepted" : "failed");
+    } else {
+        diag_session_record_upload(&session, sent);
+    }
+    show_gui_message(sent ? "LOG SENT" : "LOG TRANSFER FAILED",
+                     sent ? "Sunshine accepted the selected log." : "The log remains saved on the SD card.",
+                     sent ? "The local copy is still available in Check Logs." :
+                            "Check host pairing, the saved pin, and host reachability.");
+}
+
+static void show_check_logs(PSERVER_DATA server) {
+    while (aptMainLoop()) {
+        CheckLogsScreen screen;
+        MoonlightUi::runDualScreen(screen);
+        restore_consoles_after_dual_screen_ui();
+        if (screen.result() == CheckLogsScreen::Result::Back) return;
+        DiagnosticInventory::Entry selected;
+        if (screen.selected_entry(&selected)) send_inventory_log(server, selected);
+    }
 }
 
 static std::string prompt_for_action(PSERVER_DATA server) {
@@ -1440,14 +1630,27 @@ static bool build_upload_json(const DIAG_SESSION &session, const char *outcome,
         upload_id[i * 2] = hex[raw_id[i] >> 4];
         upload_id[i * 2 + 1] = hex[raw_id[i] & 0xf];
     }
-    body = "{\"version\":1,\"scope\":" + json_quote(session.scope) +
+    const std::string normalized_id = make_sunshine_session_id("active-session", session.id,
+                                                               session.begin_epoch);
+    if (normalized_id.empty()) return false;
+    const unsigned long long end_epoch = session.end_epoch ? session.end_epoch : (unsigned long long)time(NULL);
+    const unsigned long long begin_epoch = session.begin_epoch > end_epoch ? end_epoch : session.begin_epoch;
+    const std::string normalized_outcome =
+        outcome && (strcmp(outcome, "stream_returned") == 0 ||
+                    strcmp(outcome, "user_left_host") == 0 ||
+                    strcmp(outcome, "app_exit") == 0 || strcmp(outcome, "unpair") == 0 ||
+                    strcmp(outcome, "manual_current_host") == 0 ||
+                    strcmp(outcome, "host_init_failed") == 0 ||
+                    strcmp(outcome, "pair_action") == 0 || strcmp(outcome, "quit_stream") == 0)
+            ? outcome : "manual_current_host";
+    body = "{\"version\":1,\"scope\":\"host\","
         ",\"upload_id\":" + json_quote(upload_id) +
-        ",\"session_id\":" + json_quote(session.id) +
-        ",\"parent_id\":" + json_quote(session.parent_id) +
-        ",\"begin\":" + json_quote(std::to_string(session.begin_epoch)) +
-        ",\"end\":" + json_quote(std::to_string((unsigned long long)time(NULL))) +
+        ",\"session_id\":" + json_quote(normalized_id) +
+        ",\"parent_id\":\"\","
+        ",\"begin\":" + json_quote(std::to_string(begin_epoch)) +
+        ",\"end\":" + json_quote(std::to_string(end_epoch)) +
         ",\"build\":" + json_quote(DIAG_BUILD_VERSION) +
-        ",\"outcome\":" + json_quote(outcome ? outcome : "unknown") +
+        ",\"outcome\":" + json_quote(normalized_outcome) +
         ",\"truncated\":" + (truncated ? "true" : "false") +
         ",\"content\":" + json_quote(content) + "}";
     return body.size() <= 256 * 1024;
@@ -2516,58 +2719,92 @@ static void draw_stream_gamepad_panel(uint32_t rtt_ms, bool rtt_available,
                                      unsigned int session_seconds,
                                      int battery_percent,
                                      int touch_buttons,
-                                     bool settings_open,
-                                     const STREAM_CONFIGURATION &stream_config) {
+                                     int left_touch_x, int left_touch_y,
+                                     int right_touch_x, int right_touch_y,
+                                     bool click_mode,
+                                     int display_count, int default_display) {
     static MoonlightUi::Screen bottom(GFX_BOTTOM);
     using MoonlightUi::Color;
-    using MoonlightUi::Rect;
     using MoonlightUi::TextStyle;
-    const Color ink{38, 43, 48};
-    const Color muted{105, 114, 122};
-    const Color teal{0, 137, 153};
-    bottom.drawBackground();
-    bottom.drawHeader("MOONLIGHT",
-                      settings_open ? "STREAM SETTINGS" : "IN-STREAM GAMEPAD");
+    const Color ink{231, 239, 244};
+    const Color muted{151, 166, 178};
+    const Color teal{64, 205, 214};
+    const Color dark{17, 25, 34};
+    bottom.drawSolidBackground(dark);
 
     char status[64];
     if (rtt_available)
         snprintf(status, sizeof(status), "RTT  %lu ms", (unsigned long)rtt_ms);
     else
         snprintf(status, sizeof(status), "RTT  unavailable");
-    bottom.drawLiveText(18, 43, status, TextStyle::Small, teal);
+    bottom.drawLiveText(8, 9, status, TextStyle::Small, teal);
+    bottom.drawFrameTimingGraph({67, 8, 108, 26}, history, 200, teal);
     char battery[32];
     if (battery_percent >= 0)
         snprintf(battery, sizeof(battery), "BATTERY  %d%%", battery_percent);
     else
         snprintf(battery, sizeof(battery), "BATTERY  unavailable");
-    bottom.drawLiveText(112, 43, battery, TextStyle::Small, muted);
+    bottom.drawLiveText(116, 9, battery, TextStyle::Small, muted);
     char session[32];
     snprintf(session, sizeof(session), "SESSION  %02u:%02u",
              session_seconds / 3600, (session_seconds / 60) % 60);
-    bottom.drawLiveText(224, 43, session, TextStyle::Small, muted);
+    bottom.drawLiveText(211, 9, session, TextStyle::Small, muted);
+    bottom.drawLiveText(257, 25, DIAG_BUILD_VERSION, TextStyle::Small, muted);
+    bottom.drawDisplaySelector(default_display, display_count, false);
 
-    bottom.drawFilledTile({8, 66, 156, 174}, 1);
-    bottom.drawFilledTile({164, 66, 312, 174}, 2);
-    if (touch_buttons & LS_CLK_FLAG) bottom.drawHighlight({8, 66, 156, 174});
-    if (touch_buttons & RS_CLK_FLAG) bottom.drawHighlight({164, 66, 312, 174});
-    bottom.drawLiveText(31, 92, "L3", TextStyle::Tile, ink);
-    bottom.drawLiveText(31, 125, "TOUCH AND HOLD", TextStyle::Small, muted);
-    bottom.drawLiveText(187, 92, "R3", TextStyle::Tile, ink);
-    bottom.drawLiveText(187, 125, "TOUCH AND HOLD", TextStyle::Small, muted);
-    bottom.drawFrameTimingGraph({45, 146, 275, 169}, history, 200, teal);
-    if (settings_open) {
-        char settings[64];
-        snprintf(settings, sizeof(settings), "%dx%d  %dfps  %dkbps",
-                 stream_config.width, stream_config.height, stream_config.fps,
-                 stream_config.bitrate);
-        bottom.drawLiveText(90, 174, settings, TextStyle::Small, muted);
+    const Color mint{78, 232, 174};
+    const Color ring{61, 202, 178};
+    const Color ring_shadow{23, 75, 75};
+    const int left_center_x = 78;
+    const int right_center_x = 242;
+    const int stick_center_y = 137;
+    const int left_knob_x = left_center_x + (left_touch_x * 22 / 32767);
+    const int left_knob_y = stick_center_y - (left_touch_y * 22 / 32767);
+    const int right_knob_x = right_center_x + (right_touch_x * 22 / 32767);
+    const int right_knob_y = stick_center_y - (right_touch_y * 22 / 32767);
+    for (const int center_x : {left_center_x, right_center_x}) {
+        bottom.drawCircle(center_x, stick_center_y, 43, ring_shadow);
+        bottom.drawCircle(center_x, stick_center_y, 40, dark);
+        bottom.drawCircleOutline(center_x, stick_center_y, 42, 2, ring);
+        bottom.drawLine(center_x, stick_center_y - 51,
+                        center_x, stick_center_y - 44, mint);
+        bottom.drawLine(center_x + 44, stick_center_y,
+                        center_x + 51, stick_center_y, mint);
+        bottom.drawLine(center_x, stick_center_y + 44,
+                        center_x, stick_center_y + 46, mint);
+        bottom.drawLine(center_x - 51, stick_center_y,
+                        center_x - 44, stick_center_y, mint);
     }
+    if (touch_buttons & LS_CLK_FLAG)
+        bottom.drawCircleOutline(left_center_x, stick_center_y, 43, 4, mint);
+    if (touch_buttons & RS_CLK_FLAG)
+        bottom.drawCircleOutline(right_center_x, stick_center_y, 43, 4, mint);
+    const auto draw_stick = [&](int knob_x, int knob_y, const char *label) {
+        bottom.drawCircle(knob_x, knob_y, 21, {45, 58, 67});
+        bottom.drawCircle(knob_x, knob_y, 18, {25, 34, 42});
+        bottom.drawCircleOutline(knob_x, knob_y, 20, 1, ring);
+        const int label_width = bottom.measureLiveText(label, TextStyle::Header);
+        bottom.drawLiveText(knob_x - label_width / 2, knob_y - 7, label,
+                            TextStyle::Header, mint);
+    };
+    draw_stick(left_knob_x, left_knob_y, "L3");
+    draw_stick(right_knob_x, right_knob_y, "R3");
 
-    bottom.drawFilledTile({8, 182, 156, 218}, 3);
-    bottom.drawFilledTile({164, 182, 312, 218}, 4);
-    bottom.drawLiveText(35, 194, "KEYBOARD", TextStyle::Header, ink);
-    bottom.drawLiveText(202, 194, "SETTINGS", TextStyle::Header, ink);
-    bottom.drawFooter(DIAG_BUILD_VERSION, "TOUCH L3/R3  HOLD");
+    const Color mode_on{29, 176, 98};
+    const Color mode_off{55, 67, 75};
+    bottom.drawPanelButton({132, 83, 188, 103}, "MOVE",
+                           click_mode ? mode_off : mode_on, ink);
+    bottom.drawSwapIcon(160, 112, ring);
+    bottom.drawPanelButton({132, 121, 188, 141}, "CLICK",
+                           click_mode ? mode_on : mode_off, ink);
+    const Color button_ink{231, 241, 246};
+    const Color button_fill{35, 48, 60};
+    bottom.drawPanelButton({12, 184, 102, 225}, "", button_fill, button_ink);
+    bottom.drawPanelButton({115, 184, 205, 225}, "", button_fill, button_ink);
+    bottom.drawPanelButton({218, 184, 308, 225}, "", button_fill, button_ink);
+    bottom.drawMagnifierIcon(57, 204, button_ink);
+    bottom.drawKeyboardIcon(160, 204, button_ink);
+    bottom.drawSettingsIcon(263, 204, button_ink);
     bottom.present(false);
 }
 
@@ -2585,7 +2822,6 @@ static inline StreamWorkerThreads stream_loop(PCONFIGURATION config,
     s32 priority = 0x30;
     svcGetThreadPriority(&priority, CUR_THREAD_HANDLE);
     bool panel_active = true;
-    bool settings_open = false;
     bool rtt_available = false;
     bool battery_available = false;
     uint32_t latest_rtt_ms = 0;
@@ -2593,10 +2829,15 @@ static inline StreamWorkerThreads stream_loop(PCONFIGURATION config,
     std::vector<uint16_t> rtt_history;
     const u64 session_started = svcGetSystemTick();
     u64 last_panel_update = 0;
+    char stream_config_path[] = MOONLIGHT_3DS_PATH "/moonlight.conf";
+    bool top_magnified = false;
+    n3ds_set_top_magnified(false);
     const bool ptmu_ready = R_SUCCEEDED(ptmuInit());
     MessageDispatcher::get_instance()->post_immediate(
         std::make_shared<TouchStateChangedMsg>(N3dsTouchType::GAMEPAD));
     if (input_handler) input_handler->set_stream_panel_enabled(true);
+    diag_log("MONITOR_CONFIG", "configured_count=%d selected=%d",
+             config->sunshine_display_count, config->sunshine_default_display);
     if (!config->viewonly) {
         workers.input_thread = threadCreate(input_loop, input_handler.get(),
                                             stack_size, priority, -1, false);
@@ -2617,7 +2858,57 @@ static inline StreamWorkerThreads stream_loop(PCONFIGURATION config,
             panel_active = false;
         }
         if (input_handler && input_handler->consume_stream_panel_settings_request())
-            settings_open = !settings_open;
+        {
+            input_handler->open_stream_mode_menu();
+            panel_active = false;
+        }
+        if (input_handler && input_handler->consume_stream_panel_restore_request()) {
+            input_handler->set_stream_panel_enabled(true);
+            panel_active = true;
+        }
+        if (input_handler) {
+            const int display_action = input_handler->consume_stream_display_action();
+            if (display_action == 3) {
+                top_magnified = !top_magnified;
+                n3ds_set_top_magnified(top_magnified);
+                diag_log("STREAM_MAGNIFIER", "top_screen=%s",
+                         top_magnified ? "on" : "off");
+            } else if (display_action != 0 &&
+                       config->sunshine_display_count > 1) {
+                int selected = config->sunshine_default_display + display_action;
+                if (selected < 1) selected = 1;
+                if (selected > config->sunshine_display_count)
+                    selected = config->sunshine_display_count;
+                if (selected != config->sunshine_default_display) {
+                    config->sunshine_default_display = selected;
+                    config_save(stream_config_path, config);
+                    diag_log("MONITOR_REQUEST",
+                             "requested_display=%d configured_count=%d",
+                             selected, config->sunshine_display_count);
+                    const int key = 0x70 + selected - 1; // VK_F1 ... VK_F12
+                    const char modifiers =
+                        MODIFIER_CTRL | MODIFIER_ALT | MODIFIER_SHIFT;
+                    const int down_status = LiSendKeyboardEvent(
+                        key, KEY_ACTION_DOWN, modifiers);
+                    diag_log("MONITOR_SHORTCUT",
+                             "key=F%d action=down modifiers=ctrl+alt+shift send_result=%d",
+                             selected, down_status);
+                    const int up_status = LiSendKeyboardEvent(
+                        key, KEY_ACTION_UP, modifiers);
+                    diag_log("MONITOR_SHORTCUT",
+                             "key=F%d action=up modifiers=ctrl+alt+shift send_result=%d",
+                             selected, up_status);
+                    diag_log("MONITOR_SELECTED",
+                             "requested_display_index=%d configured_display_count=%d",
+                             selected, config->sunshine_display_count);
+                }
+            }
+            if (display_action != 0)
+                diag_log("MONITOR_SELECTION_STATE",
+                         "tap_action=%d selected_display_index=%d configured_display_count=%d",
+                         display_action, config->sunshine_default_display,
+                         config->sunshine_display_count);
+        }
         const u64 now = svcGetSystemTick();
         if (panel_active && now - last_panel_update >= SYSCLOCK_ARM11 / 2) {
             uint32_t rtt_variance = 0;
@@ -2635,11 +2926,18 @@ static inline StreamWorkerThreads stream_loop(PCONFIGURATION config,
                 latest_rtt_ms, rtt_available, rtt_history, session_seconds,
                 battery_available ? static_cast<int>(battery_level) * 20 : -1,
                 input_handler ? input_handler->stream_panel_touch_buttons() : 0,
-                settings_open, config->stream);
+                input_handler ? input_handler->stream_panel_touch_x() : 0,
+                input_handler ? input_handler->stream_panel_touch_y() : 0,
+                input_handler ? input_handler->stream_panel_right_touch_x() : 0,
+                input_handler ? input_handler->stream_panel_right_touch_y() : 0,
+                input_handler ? input_handler->stream_panel_click_mode() : false,
+                config->sunshine_display_count,
+                config->sunshine_default_display);
             last_panel_update = now;
         }
     }
     if (input_handler) input_handler->set_stream_panel_enabled(false);
+    n3ds_set_top_magnified(false);
     if (ptmu_ready) ptmuExit();
     return workers;
 }
@@ -3290,7 +3588,7 @@ int main_loop(int argc, char *argv[]) {
             } else if (strcmp("connection test", config.action) == 0) {
                 action_connection_test(&config, &server, profile_host_key);
             } else if (strcmp("check logs", config.action) == 0) {
-                show_check_logs();
+                show_check_logs(&server);
             } else if (strcmp("send logs", config.action) == 0) {
                 send_current_session(&server);
             } else if (strcmp("toggle automatic logs", config.action) == 0) {

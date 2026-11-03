@@ -40,6 +40,7 @@ struct InputEvent {
         Confirm,
         Back,
         Touch,
+        AppStateToggle,
     } type;
     Direction direction;
     touchPosition touch;
@@ -56,6 +57,17 @@ class Screen {
     int width() const;
     int height() const;
     void drawBackground();
+    void drawSolidBackground(Color color);
+    void drawCircle(int center_x, int center_y, int radius, Color color);
+    void drawCircleOutline(int center_x, int center_y, int radius,
+                           int thickness, Color color);
+    void drawLine(int x0, int y0, int x1, int y1, Color color);
+    void drawSwapIcon(int center_x, int center_y, Color color);
+    void drawMagnifierIcon(int center_x, int center_y, Color color);
+    void drawKeyboardIcon(int center_x, int center_y, Color color);
+    void drawSettingsIcon(int center_x, int center_y, Color color);
+    void drawPanelButton(const Rect &rect, const std::string &label,
+                         Color fill, Color text);
     void drawFilledTile(const Rect &rect, int number);
     void drawProgressBar(const Rect &rect, unsigned int percent, Color color);
     void drawListRow(const Rect &rect, int number, const std::string &label,
@@ -66,6 +78,7 @@ class Screen {
     void drawFrameTimingGraph(const Rect &rect,
                               const std::vector<uint16_t> &intervals_ms,
                               uint16_t scale_ms, Color color);
+    void drawDisplaySelector(int selected, int count, bool configure_count);
     void drawLiveText(int x, int y, const std::string &text, TextStyle style,
                       Color color);
     void drawAutoRateText(int x, int y, const std::string &text,
@@ -108,6 +121,8 @@ class DualScreenModel {
   public:
     virtual ~DualScreenModel() = default;
     virtual void draw(Screen &top, Screen &bottom) = 0;
+    // Called after each presented frame; set redraw when visible state changed.
+    virtual void update(bool *redraw) { *redraw = false; }
     // Return false to leave the screen. Set redraw when visible state changed.
     virtual bool handleInput(const InputEvent &event, bool *redraw) = 0;
 };

@@ -35,9 +35,17 @@ class N3dsInput : public ISubscriber {
     bool quit_to_menu_requested() { return quit_to_menu.load(); }
     void set_stream_panel_enabled(bool enabled);
     int stream_panel_touch_buttons() { return panel_touch_buttons.load(); }
+    int stream_panel_touch_x() { return panel_touch_x.load(); }
+    int stream_panel_touch_y() { return panel_touch_y.load(); }
+    int stream_panel_right_touch_x() { return panel_right_touch_x.load(); }
+    int stream_panel_right_touch_y() { return panel_right_touch_y.load(); }
+    bool stream_panel_click_mode() { return panel_click_mode.load(); }
     bool consume_stream_panel_keyboard_request();
     bool consume_stream_panel_settings_request();
+    bool consume_stream_panel_restore_request();
+    int consume_stream_display_action();
     void open_stream_keyboard();
+    void open_stream_mode_menu();
 
   private:
     void _add_gamepad();
@@ -63,10 +71,22 @@ class N3dsInput : public ISubscriber {
     bool quit_combo_suppressed = false;
     AtomicVar<bool> quit_to_menu = false;
     AtomicVar<bool> stream_panel_enabled = false;
+    AtomicVar<bool> stream_mode_menu_active = false;
+    AtomicVar<bool> stream_panel_restore_requested = false;
     AtomicVar<int> panel_touch_buttons = 0;
     AtomicVar<int> panel_touch_zone = 0;
+    AtomicVar<int> panel_touch_x = 0;
+    AtomicVar<int> panel_touch_y = 0;
+    AtomicVar<int> panel_right_touch_x = 0;
+    AtomicVar<int> panel_right_touch_y = 0;
+    AtomicVar<bool> panel_click_mode = false;
+    AtomicVar<bool> panel_touch_click = false;
+    int panel_touch_start_x = 0;
+    int panel_touch_start_y = 0;
+    u64 panel_touch_start_ticks = 0;
     AtomicVar<bool> panel_keyboard_requested = false;
     AtomicVar<bool> panel_settings_requested = false;
+    AtomicVar<int> panel_display_action = 0;
 
     uint32_t CUSTOM_KEY_A;
     uint32_t CUSTOM_KEY_B;

@@ -11,7 +11,7 @@
 namespace DiagnosticInventory {
 namespace {
 const size_t MAX_FILES = 64;
-const size_t MAX_SCAN_BYTES = 256 * 1024;
+const size_t MAX_SCAN_BYTES = 64 * 1024;
 const size_t MAX_LINE = 2048;
 
 std::string value_for(const std::string &line, const char *key) {
@@ -92,6 +92,33 @@ void scan_file(const std::string &path, Entry &entry) {
     fclose(f);
 }
 
+bool is_diagnostic_filename(const std::string &filename) {
+    if (filename == "moonlight.log") return true;
+    const size_t slash = filename.find_last_of('/');
+    const std::string leaf = slash == std::string::npos ? filename : filename.substr(slash + 1);
+    return leaf.size() > 4 && leaf.compare(leaf.size() - 4, 4, ".log") == 0;
+}
+
+void scan_upload_state(const std::string &path, Entry &entry) {
+    FILE *f = fopen(path.c_str(), "rb");
+    if (!f) return;
+    char buffer[MAX_LINE];
+    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return; }
+    const long file_size = ftell(f);
+    if (file_size < 0) { fclose(f); return; }
+    const long offset = file_size > static_cast<long>(MAX_SCAN_BYTES)
+                            ? file_size - static_cast<long>(MAX_SCAN_BYTES) : 0;
+    if (fseek(f, offset, SEEK_SET) != 0) { fclose(f); return; }
+    size_t consumed = 0;
+    while (consumed < MAX_SCAN_BYTES && fgets(buffer, sizeof(buffer), f)) {
+        const size_t n = strlen(buffer);
+        consumed += n;
+        if (strstr(buffer, " DIAG_UPLOAD ") != NULL)
+            parse_line(entry, std::string(buffer, n));
+    }
+    fclose(f);
+}
+
 void add_directory(const std::string &path, std::vector<Entry> &out,
                    size_t limit, size_t &total_count) {
     DIR *dir = opendir(path.c_str());
@@ -109,6 +136,7 @@ void add_directory(const std::string &path, std::vector<Entry> &out,
                          ? std::string("sessions/") + item->d_name
                          : item->d_name;
         e.size = static_cast<uint64_t>(st.st_size);
+        e.app_state = !is_diagnostic_filename(e.filename);
         if (e.filename == "moonlight.log") e.scope = "application log";
         struct tm modified;
         char modified_text[40];
@@ -117,7 +145,8 @@ void add_directory(const std::string &path, std::vector<Entry> &out,
             e.modified_local = modified_text;
         /* The append-only application log can contain many sessions; do not
          * misattribute its last session's facts to the whole file. */
-        if (e.filename != "moonlight.log") scan_file(full, e);
+        if (e.filename == "moonlight.log") scan_upload_state(full, e);
+        else if (!e.app_state) scan_file(full, e);
         if (e.start_local != "unknown" && e.end_local == "unknown") {
             e.completion = "interrupted/incomplete";
             e.partial = "yes";
@@ -151,8 +180,16 @@ void parse_line(Entry &e, const std::string &line) {
                                     : value_for(line, "session_id");
     if (!scope.empty()) e.scope = scope;
     if (!session.empty()) e.session = session;
-    if (event == "SESSION_BEGIN" && !ts.empty()) e.start_local = ts;
-    if (event == "SESSION_END" && !ts.empty()) e.end_local = ts;
+    if (event == "SESSION_BEGIN" && !ts.empty()) {
+        e.start_local = ts;
+        time_t epoch;
+        if (parse_utc(ts, &epoch)) e.start_epoch = static_cast<unsigned long long>(epoch);
+    }
+    if (event == "SESSION_END" && !ts.empty()) {
+        e.end_local = ts;
+        time_t epoch;
+        if (parse_utc(ts, &epoch)) e.end_epoch = static_cast<unsigned long long>(epoch);
+    }
     const std::string truncated = value_for(line, "truncated");
     if (!truncated.empty()) e.partial = truncated == "1" || truncated == "true" ? "yes" : "no";
     const std::string state = value_for(line, "state");
@@ -179,6 +216,7 @@ std::vector<Entry> list(const std::string &root, size_t limit,
     add_directory(root, entries, limit, count);
     add_directory(root + "/sessions", entries, limit, count);
     std::sort(entries.begin(), entries.end(), [](const Entry &a, const Entry &b) {
+        if (a.app_state != b.app_state) return !a.app_state;
         return a.filename < b.filename;
     });
     if (total_count) *total_count = count;

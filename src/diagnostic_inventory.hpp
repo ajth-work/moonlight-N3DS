@@ -9,6 +9,7 @@ namespace DiagnosticInventory {
 
 struct Entry {
     std::string filename;
+    bool app_state = false;
     std::string scope = "unknown";
     std::string session = "unknown";
     uint64_t size = 0;
@@ -19,6 +20,8 @@ struct Entry {
     std::string completion = "unknown";
     std::string partial = "unknown";
     std::string upload_state = "unknown";
+    unsigned long long start_epoch = 0;
+    unsigned long long end_epoch = 0;
 };
 
 /* Parse only explicitly recorded diagnostic facts. */

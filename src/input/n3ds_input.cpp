@@ -18,6 +18,7 @@
  */
 
 #include "n3ds_input.hpp"
+#include "../diagnostics.h"
 #include "../system/dispatcher.hpp"
 #include "touch/TouchHandler.hpp"
 
@@ -30,6 +31,13 @@
 
 #define TOUCH_GAMEPAD_BUTTONS (SPECIAL_FLAG | LS_CLK_FLAG | RS_CLK_FLAG)
 #define TOUCH_MOUSEPAD_BUTTONS (BUTTON_LEFT | BUTTON_RIGHT)
+
+static bool inside_virtual_stick_start(const touchPosition &touch,
+                                       int center_x, int center_y) {
+    const int dx = static_cast<int>(touch.px) - center_x;
+    const int dy = static_cast<int>(touch.py) - center_y;
+    return dx * dx + dy * dy <= 46 * 46;
+}
 #define SUPPORTED_BUTTONS                                                      \
     (A_FLAG | B_FLAG | X_FLAG | Y_FLAG | RIGHT_FLAG | LEFT_FLAG | UP_FLAG |    \
      DOWN_FLAG | RB_FLAG | LB_FLAG | LS_CLK_FLAG | RS_CLK_FLAG | BACK_FLAG |   \
@@ -73,12 +81,14 @@ N3dsInput::N3dsInput(int image_width, int image_height, bool swap_face_buttons,
     auto pDispatcher = MessageDispatcher::get_instance();
     pDispatcher->subscribe(MessageType::ENABLE_ACCEL, this);
     pDispatcher->subscribe(MessageType::ENABLE_GYRO, this);
+    pDispatcher->subscribe(MessageType::TOUCH_STATE_CHANGED, this);
 }
 
 N3dsInput::~N3dsInput() {
     auto pDispatcher = MessageDispatcher::get_instance();
     pDispatcher->unsubscribe(MessageType::ENABLE_ACCEL, this);
     pDispatcher->unsubscribe(MessageType::ENABLE_GYRO, this);
+    pDispatcher->unsubscribe(MessageType::TOUCH_STATE_CHANGED, this);
 
     _remove_gamepad();
     gamepad_state = GAMEPAD_STATE();
@@ -93,6 +103,14 @@ void N3dsInput::accept(IMessage *msg) {
         enable_accel.store(true);
     } else if (msg->getMessageType() == MessageType::ENABLE_GYRO) {
         enable_gyro.store(true);
+    } else if (msg->getMessageType() == MessageType::TOUCH_STATE_CHANGED &&
+               stream_mode_menu_active.load()) {
+        auto *touch_msg = static_cast<TouchStateChangedMsg *>(msg);
+        if (touch_msg->ttype != N3dsTouchType::MENU_TOUCH) {
+            stream_mode_menu_active.store(false);
+            if (touch_msg->ttype == N3dsTouchType::GAMEPAD)
+                stream_panel_restore_requested.store(true);
+        }
     }
 }
 
@@ -182,14 +200,22 @@ void N3dsInput::force_touchscreen_menu() {
 void N3dsInput::set_stream_panel_enabled(bool enabled) {
     stream_panel_enabled.store(enabled);
     if (enabled) {
+        panel_click_mode.store(false);
+        stream_mode_menu_active.store(false);
         quit_combo_start_ticks = 0;
         quit_combo_suppressed = false;
         quit_to_menu.store(false);
     } else {
         panel_touch_zone.store(0);
         panel_touch_buttons.store(0);
+        panel_touch_x.store(0);
+        panel_touch_y.store(0);
+        panel_right_touch_x.store(0);
+        panel_right_touch_y.store(0);
+        panel_touch_click.store(false);
         panel_keyboard_requested.store(false);
         panel_settings_requested.store(false);
+        panel_display_action.store(0);
     }
 }
 
@@ -205,9 +231,28 @@ bool N3dsInput::consume_stream_panel_settings_request() {
     return requested;
 }
 
+bool N3dsInput::consume_stream_panel_restore_request() {
+    const bool requested = stream_panel_restore_requested.load();
+    stream_panel_restore_requested.store(false);
+    return requested;
+}
+
+int N3dsInput::consume_stream_display_action() {
+    const int action = panel_display_action.load();
+    panel_display_action.store(0);
+    return action;
+}
+
 void N3dsInput::open_stream_keyboard() {
     stream_panel_enabled.store(false);
     auto message = std::make_shared<TouchStateChangedMsg>(N3dsTouchType::KEYBOARD);
+    MessageDispatcher::get_instance()->post(message);
+}
+
+void N3dsInput::open_stream_mode_menu() {
+    stream_panel_enabled.store(false);
+    stream_mode_menu_active.store(true);
+    auto message = std::make_shared<TouchStateChangedMsg>(N3dsTouchType::MENU_TOUCH);
     MessageDispatcher::get_instance()->post(message);
 }
 
@@ -222,14 +267,54 @@ void N3dsInput::n3dsinput_handle_event() {
         if (kDown & KEY_TOUCH) {
             touchPosition touch;
             hidTouchRead(&touch);
-            if (touch.py >= 62 && touch.py < 178) {
-                const int zone = touch.px < 160 ? 1 : 2;
-                panel_touch_zone.store(zone);
-                const int touch_buttons = zone == 1 ? LS_CLK_FLAG : RS_CLK_FLAG;
-                panel_touch_buttons.store(touch_buttons);
-            } else if (touch.py >= 184 && touch.py < 222) {
-                if (touch.px < 160) panel_keyboard_requested.store(true);
+            if (touch.py >= 80 && touch.py < 107 &&
+                touch.px >= 130 && touch.px < 190) {
+                panel_click_mode.store(false);
+                diag_log("PANEL_MODE", "mode=move");
+            } else if (touch.py >= 117 && touch.py < 145 &&
+                       touch.px >= 130 && touch.px < 190) {
+                panel_click_mode.store(true);
+                diag_log("PANEL_MODE", "mode=click");
+            } else if (touch.py >= 107 && touch.py < 118 &&
+                       touch.px >= 130 && touch.px < 190) {
+                const bool click_mode = !panel_click_mode.load();
+                panel_click_mode.store(click_mode);
+                diag_log("PANEL_MODE", "mode=%s",
+                         click_mode ? "click" : "move");
+            } else if (touch.py >= 184 && touch.py < 228) {
+                if (touch.px < 106) panel_display_action.store(3);
+                else if (touch.px < 214) panel_keyboard_requested.store(true);
                 else panel_settings_requested.store(true);
+            } else if (touch.py >= 37 && touch.py < 72) {
+                int action = 0;
+                if (touch.px < 116) action = -1;
+                else if (touch.px > 204) action = 1;
+                else action = 2;
+                panel_display_action.store(action);
+                diag_log("MONITOR_TAP", "x=%u y=%u action=%d", touch.px,
+                         touch.py, action);
+            } else if (inside_virtual_stick_start(touch, 78, 137)) {
+                panel_touch_zone.store(1);
+                panel_touch_start_x = touch.px;
+                panel_touch_start_y = touch.py;
+                panel_touch_start_ticks = svcGetSystemTick();
+                panel_touch_click.store(false);
+                panel_touch_buttons.store(0);
+                panel_touch_x.store(0);
+                panel_touch_y.store(0);
+                panel_right_touch_x.store(0);
+                panel_right_touch_y.store(0);
+            } else if (inside_virtual_stick_start(touch, 242, 137)) {
+                panel_touch_zone.store(2);
+                panel_touch_start_x = touch.px;
+                panel_touch_start_y = touch.py;
+                panel_touch_start_ticks = svcGetSystemTick();
+                panel_touch_click.store(false);
+                panel_touch_buttons.store(0);
+                panel_touch_x.store(0);
+                panel_touch_y.store(0);
+                panel_right_touch_x.store(0);
+                panel_right_touch_y.store(0);
             }
         }
         if (kHeld & KEY_TOUCH) {
@@ -237,17 +322,42 @@ void N3dsInput::n3dsinput_handle_event() {
             if (zone != 0) {
                 touchPosition touch;
                 hidTouchRead(&touch);
-                if (touch.py < 62 || touch.py >= 178 ||
-                    (zone == 1 && touch.px >= 160) ||
-                    (zone == 2 && touch.px < 160)) {
-                    panel_touch_zone.store(0);
-                    panel_touch_buttons.store(0);
+                int dx = (static_cast<int>(touch.px) -
+                          (zone == 1 ? 78 : 242)) * 32767 / 46;
+                int dy = (137 - static_cast<int>(touch.py)) * 32767 / 46;
+                const float magnitude = sqrtf(static_cast<float>(dx) * dx +
+                                              static_cast<float>(dy) * dy);
+                if (magnitude > 32767.0f) {
+                    const float scale = 32767.0f / magnitude;
+                    dx = static_cast<int>(dx * scale);
+                    dy = static_cast<int>(dy * scale);
+                }
+                const bool click_mode = panel_click_mode.load();
+                panel_touch_x.store(zone == 1 && !click_mode ? dx : 0);
+                panel_touch_y.store(zone == 1 && !click_mode ? dy : 0);
+                panel_right_touch_x.store(zone == 2 && !click_mode ? dx : 0);
+                panel_right_touch_y.store(zone == 2 && !click_mode ? dy : 0);
+                const int moved = abs(static_cast<int>(touch.px) -
+                                      panel_touch_start_x) +
+                                  abs(static_cast<int>(touch.py) -
+                                      panel_touch_start_y);
+                if (click_mode && moved < 8 &&
+                    svcGetSystemTick() - panel_touch_start_ticks >
+                        SYSCLOCK_ARM11 / 3) {
+                    panel_touch_click.store(true);
+                    panel_touch_buttons.store(zone == 1 ? LS_CLK_FLAG
+                                                        : RS_CLK_FLAG);
                 }
             }
         }
         if (kUp & KEY_TOUCH) {
             panel_touch_zone.store(0);
             panel_touch_buttons.store(0);
+            panel_touch_x.store(0);
+            panel_touch_y.store(0);
+            panel_right_touch_x.store(0);
+            panel_right_touch_y.store(0);
+            panel_touch_click.store(false);
         }
     } else {
         touch_handler->n3dsinput_handle_touch(kDown, kUp);
@@ -282,8 +392,6 @@ void N3dsInput::n3dsinput_handle_event() {
         if (QUIT_TO_MENU_CHORD & CUSTOM_KEY_ZL) gamepad_state.leftTrigger = 0;
         if (QUIT_TO_MENU_CHORD & CUSTOM_KEY_ZR) gamepad_state.rightTrigger = 0;
     }
-    gamepad_state.buttons |= panel_touch_buttons.load();
-
     // Use the HOME button to open the menu
     if (aptCheckHomePressRejected()) {
         if (!menu_active) {
@@ -306,6 +414,34 @@ void N3dsInput::n3dsinput_handle_event() {
         scale_n3ds_axis(cstick_pos.dx, N3DS_C_STICK_MAX);
     gamepad_state.rightStickY =
         scale_n3ds_axis(cstick_pos.dy, N3DS_C_STICK_MAX);
+
+    // Physical controls take precedence over virtual stick clicks.
+    const bool physical_left_active =
+        abs(cpad_pos.dx) >= N3DS_ANALOG_MAX / 8 ||
+        abs(cpad_pos.dy) >= N3DS_ANALOG_MAX / 8;
+    const bool physical_right_active =
+        abs(cstick_pos.dx) >= N3DS_C_STICK_MAX / 8 ||
+        abs(cstick_pos.dy) >= N3DS_C_STICK_MAX / 8;
+    const int virtual_click = panel_touch_buttons.load();
+    gamepad_state.buttons &= ~(LS_CLK_FLAG | RS_CLK_FLAG);
+    if (!physical_left_active && (virtual_click & LS_CLK_FLAG))
+        gamepad_state.buttons |= LS_CLK_FLAG;
+    if (!physical_right_active && (virtual_click & RS_CLK_FLAG))
+        gamepad_state.buttons |= RS_CLK_FLAG;
+
+    const int touch_zone = panel_touch_zone.load();
+    if (touch_zone == 1 && !panel_click_mode.load() &&
+        abs(cpad_pos.dx) < N3DS_ANALOG_MAX / 8 &&
+        abs(cpad_pos.dy) < N3DS_ANALOG_MAX / 8) {
+        gamepad_state.leftStickX = panel_touch_x.load();
+        gamepad_state.leftStickY = panel_touch_y.load();
+    }
+    if (touch_zone == 2 && !panel_click_mode.load() &&
+        abs(cstick_pos.dx) < N3DS_C_STICK_MAX / 8 &&
+        abs(cstick_pos.dy) < N3DS_C_STICK_MAX / 8) {
+        gamepad_state.rightStickX = panel_right_touch_x.load();
+        gamepad_state.rightStickY = panel_right_touch_y.load();
+    }
 
     if (_gamepad_state_changed()) {
         if (use_triggers_for_mouse) {

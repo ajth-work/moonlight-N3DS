@@ -479,6 +479,7 @@ bool diag_session_get_info(DIAG_SESSION *session) {
         snprintf(session->host_identity, sizeof(session->host_identity), "paired-host");
         snprintf(session->path, sizeof(session->path), "%s", diag_session_path);
         session->begin_epoch = diag_session_begin_epoch;
+        session->end_epoch = (unsigned long long)time(NULL);
     }
     LightLock_Unlock(&diag_lock);
     return active;
