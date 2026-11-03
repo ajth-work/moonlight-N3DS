@@ -2722,6 +2722,8 @@ static void draw_stream_gamepad_panel(uint32_t rtt_ms, bool rtt_available,
                                      int left_touch_x, int left_touch_y,
                                      int right_touch_x, int right_touch_y,
                                      bool click_mode,
+                                     int toolbar_page, int touch_zone,
+                                     bool quit_armed,
                                      int display_count, int default_display) {
     static MoonlightUi::Screen bottom(GFX_BOTTOM);
     using MoonlightUi::Color;
@@ -2766,15 +2768,11 @@ static void draw_stream_gamepad_panel(uint32_t rtt_ms, bool rtt_available,
         bottom.drawCircle(center_x, stick_center_y, 43, ring_shadow);
         bottom.drawCircle(center_x, stick_center_y, 40, dark);
         bottom.drawCircleOutline(center_x, stick_center_y, 42, 2, ring);
-        bottom.drawLine(center_x, stick_center_y - 51,
-                        center_x, stick_center_y - 44, mint);
-        bottom.drawLine(center_x + 44, stick_center_y,
-                        center_x + 51, stick_center_y, mint);
-        bottom.drawLine(center_x, stick_center_y + 44,
-                        center_x, stick_center_y + 46, mint);
-        bottom.drawLine(center_x - 51, stick_center_y,
-                        center_x - 44, stick_center_y, mint);
     }
+    if (touch_zone == 1)
+        bottom.drawCircleOutline(left_center_x, stick_center_y, 43, 3, mint);
+    if (touch_zone == 2)
+        bottom.drawCircleOutline(right_center_x, stick_center_y, 43, 3, mint);
     if (touch_buttons & LS_CLK_FLAG)
         bottom.drawCircleOutline(left_center_x, stick_center_y, 43, 4, mint);
     if (touch_buttons & RS_CLK_FLAG)
@@ -2799,12 +2797,73 @@ static void draw_stream_gamepad_panel(uint32_t rtt_ms, bool rtt_available,
                            click_mode ? mode_on : mode_off, ink);
     const Color button_ink{231, 241, 246};
     const Color button_fill{35, 48, 60};
-    bottom.drawPanelButton({12, 184, 102, 225}, "", button_fill, button_ink);
-    bottom.drawPanelButton({115, 184, 205, 225}, "", button_fill, button_ink);
-    bottom.drawPanelButton({218, 184, 308, 225}, "", button_fill, button_ink);
-    bottom.drawMagnifierIcon(57, 204, button_ink);
-    bottom.drawKeyboardIcon(160, 204, button_ink);
-    bottom.drawSettingsIcon(263, 204, button_ink);
+    const Color home_fill{21, 85, 92};
+    char page_status[8];
+    snprintf(page_status, sizeof(page_status), "%d/3", toolbar_page + 1);
+    bottom.drawLiveText(151, 165, page_status, TextStyle::Small, muted);
+    bottom.drawPanelButton({8, 184, 42, 228}, "", button_fill, button_ink);
+    bottom.drawPanelButton({46, 184, 88, 228}, "", button_fill, button_ink);
+    bottom.drawPanelButton({90, 184, 132, 228}, "", button_fill, button_ink);
+    bottom.drawPanelButton({136, 181, 184, 230}, "", home_fill, button_ink);
+    bottom.drawPanelButton({188, 184, 230, 228}, "", button_fill, button_ink);
+    bottom.drawPanelButton({232, 184, 274, 228}, "", button_fill, button_ink);
+    bottom.drawPanelButton({278, 184, 312, 228}, "", button_fill, button_ink);
+    bottom.drawArrowIcon(25, 205, true, button_ink);
+    bottom.drawHomeIcon(160, 198, {64, 228, 231});
+    bottom.drawLiveText(145, 215, "HOME", TextStyle::Small, button_ink);
+    bottom.drawArrowIcon(295, 205, false, button_ink);
+
+    const auto draw_toolbar_item = [&](int slot, const char *label, int icon,
+                                       bool warning) {
+        const MoonlightUi::Rect rects[] = {
+            {46, 184, 88, 228}, {90, 184, 132, 228},
+            {188, 184, 230, 228}, {232, 184, 274, 228}};
+        const MoonlightUi::Rect &rect = rects[slot];
+        const int center_x = (rect.left + rect.right) / 2;
+        const int center_y = 199;
+        const Color label_color = warning ? Color{255, 184, 164} : button_ink;
+        const Color fill = warning ? Color{91, 42, 47} : button_fill;
+        bottom.drawPanelButton(rect, "", fill, label_color);
+        switch (icon) {
+        case 0: bottom.drawMagnifierIcon(center_x, center_y, label_color); break;
+        case 1: bottom.drawGamepadIcon(center_x, center_y, label_color); break;
+        case 2: bottom.drawMouseIcon(center_x, center_y, label_color); break;
+        case 3: bottom.drawKeyboardIcon(center_x, center_y - 1, label_color); break;
+        case 4: bottom.drawTouchIcon(center_x, center_y, label_color); break;
+        case 5: bottom.drawSettingsIcon(center_x, center_y, label_color); break;
+        case 6: bottom.drawDisplayIcon(center_x, center_y - 1, label_color); break;
+        case 7: bottom.drawPowerIcon(center_x, center_y, label_color); break;
+        case 8: {
+            const int label_width =
+                bottom.measureLiveText("3D", TextStyle::Header);
+            bottom.drawLiveText(center_x - label_width / 2, center_y - 7,
+                                "3D", TextStyle::Header, label_color);
+            break;
+        }
+        default: break;
+        }
+        const int label_width = bottom.measureLiveText(label, TextStyle::Small);
+        bottom.drawLiveText(center_x - label_width / 2, 215, label,
+                            TextStyle::Small, label_color);
+    };
+
+    if (toolbar_page == 0) {
+        draw_toolbar_item(0, "MAG", 0, false);
+        draw_toolbar_item(1, "OFF", 8, true);
+        draw_toolbar_item(2, "GAME", 1, false);
+        draw_toolbar_item(3, "KEY", 3, false);
+    } else if (toolbar_page == 1) {
+        draw_toolbar_item(0, "MOUSE", 2, false);
+        draw_toolbar_item(1, "ABS", 4, false);
+        draw_toolbar_item(2, "DS", 4, false);
+        draw_toolbar_item(3, "MAG", 0, false);
+    } else {
+        draw_toolbar_item(0, "DEBUG", 5, false);
+        draw_toolbar_item(1, "PREV", 6, false);
+        draw_toolbar_item(2, "NEXT", 6, false);
+        draw_toolbar_item(3, quit_armed ? "AGAIN" : "QUIT", 7,
+                          quit_armed);
+    }
     bottom.present(false);
 }
 
@@ -2862,6 +2921,16 @@ static inline StreamWorkerThreads stream_loop(PCONFIGURATION config,
             input_handler->open_stream_mode_menu();
             panel_active = false;
         }
+        if (input_handler) {
+            const int requested_mode =
+                input_handler->consume_stream_panel_mode_request();
+            if (requested_mode >= 0) {
+                const N3dsTouchType mode =
+                    static_cast<N3dsTouchType>(requested_mode);
+                input_handler->open_stream_touch_mode(mode);
+                panel_active = mode == N3dsTouchType::GAMEPAD;
+            }
+        }
         if (input_handler && input_handler->consume_stream_panel_restore_request()) {
             input_handler->set_stream_panel_enabled(true);
             panel_active = true;
@@ -2910,16 +2979,26 @@ static inline StreamWorkerThreads stream_loop(PCONFIGURATION config,
                          config->sunshine_display_count);
         }
         const u64 now = svcGetSystemTick();
-        if (panel_active && now - last_panel_update >= SYSCLOCK_ARM11 / 2) {
-            uint32_t rtt_variance = 0;
-            rtt_available = LiGetEstimatedRttInfo(&latest_rtt_ms, &rtt_variance);
-            if (rtt_available) {
-                rtt_history.push_back(static_cast<uint16_t>(
-                    std::min<uint32_t>(latest_rtt_ms, 65535)));
-                if (rtt_history.size() > 110) rtt_history.erase(rtt_history.begin());
+        const bool metric_update =
+            now - last_panel_update >= SYSCLOCK_ARM11 / 2;
+        const bool input_redraw =
+            input_handler && input_handler->consume_stream_panel_redraw_request();
+        if (panel_active && (metric_update || input_redraw)) {
+            if (metric_update) {
+                uint32_t rtt_variance = 0;
+                rtt_available =
+                    LiGetEstimatedRttInfo(&latest_rtt_ms, &rtt_variance);
+                if (rtt_available) {
+                    rtt_history.push_back(static_cast<uint16_t>(
+                        std::min<uint32_t>(latest_rtt_ms, 65535)));
+                    if (rtt_history.size() > 110)
+                        rtt_history.erase(rtt_history.begin());
+                }
+                battery_available =
+                    ptmu_ready &&
+                    R_SUCCEEDED(PTMU_GetBatteryLevel(&battery_level));
+                last_panel_update = now;
             }
-            battery_available = ptmu_ready &&
-                                R_SUCCEEDED(PTMU_GetBatteryLevel(&battery_level));
             const unsigned int session_seconds = static_cast<unsigned int>(
                 (now - session_started) / SYSCLOCK_ARM11);
             draw_stream_gamepad_panel(
@@ -2931,9 +3010,11 @@ static inline StreamWorkerThreads stream_loop(PCONFIGURATION config,
                 input_handler ? input_handler->stream_panel_right_touch_x() : 0,
                 input_handler ? input_handler->stream_panel_right_touch_y() : 0,
                 input_handler ? input_handler->stream_panel_click_mode() : false,
+                input_handler ? input_handler->stream_panel_toolbar_page() : 0,
+                input_handler ? input_handler->stream_panel_touch_zone() : 0,
+                input_handler ? input_handler->stream_panel_quit_armed() : false,
                 config->sunshine_display_count,
                 config->sunshine_default_display);
-            last_panel_update = now;
         }
     }
     if (input_handler) input_handler->set_stream_panel_enabled(false);

@@ -450,6 +450,74 @@ void Screen::drawSwapIcon(int center_x, int center_y, Color color) {
     drawLine(center_x - 8, center_y + 4, center_x - 4, center_y + 8, color);
 }
 
+void Screen::drawArrowIcon(int center_x, int center_y, bool left,
+                           Color color) {
+    const int direction = left ? -1 : 1;
+    drawLine(center_x - direction * 8, center_y, center_x + direction * 8,
+             center_y, color);
+    drawLine(center_x + direction * 8, center_y,
+             center_x + direction * 1, center_y - 7, color);
+    drawLine(center_x + direction * 8, center_y,
+             center_x + direction * 1, center_y + 7, color);
+}
+
+void Screen::drawHomeIcon(int center_x, int center_y, Color color) {
+    drawLine(center_x - 13, center_y - 1, center_x, center_y - 13, color);
+    drawLine(center_x, center_y - 13, center_x + 13, center_y - 1, color);
+    drawLine(center_x - 9, center_y - 4, center_x - 9, center_y + 12, color);
+    drawLine(center_x + 9, center_y - 4, center_x + 9, center_y + 12, color);
+    drawLine(center_x - 9, center_y + 12, center_x + 9, center_y + 12, color);
+    drawLine(center_x - 3, center_y + 12, center_x - 3, center_y + 3, color);
+    drawLine(center_x + 3, center_y + 12, center_x + 3, center_y + 3, color);
+    drawLine(center_x - 3, center_y + 3, center_x + 3, center_y + 3, color);
+}
+
+void Screen::drawGamepadIcon(int center_x, int center_y, Color color) {
+    drawLine(center_x - 12, center_y - 5, center_x + 12, center_y - 5, color);
+    drawLine(center_x - 15, center_y - 2, center_x - 17, center_y + 8, color);
+    drawLine(center_x - 17, center_y + 8, center_x - 11, center_y + 10, color);
+    drawLine(center_x - 11, center_y + 10, center_x - 7, center_y + 5, color);
+    drawLine(center_x - 7, center_y + 5, center_x + 7, center_y + 5, color);
+    drawLine(center_x + 7, center_y + 5, center_x + 11, center_y + 10, color);
+    drawLine(center_x + 11, center_y + 10, center_x + 17, center_y + 8, color);
+    drawLine(center_x + 17, center_y + 8, center_x + 15, center_y - 2, color);
+    drawLine(center_x + 15, center_y - 2, center_x + 12, center_y - 5, color);
+    drawLine(center_x - 10, center_y - 1, center_x - 10, center_y + 4, color);
+    drawLine(center_x - 13, center_y + 1, center_x - 7, center_y + 1, color);
+    drawCircle(center_x + 8, center_y - 1, 2, color);
+    drawCircle(center_x + 13, center_y + 2, 2, color);
+}
+
+void Screen::drawMouseIcon(int center_x, int center_y, Color color) {
+    drawCircleOutline(center_x, center_y + 1, 12, 2, color);
+    drawLine(center_x, center_y - 10, center_x, center_y + 1, color);
+    drawLine(center_x - 4, center_y - 2, center_x + 4, center_y - 2, color);
+}
+
+void Screen::drawDisplayIcon(int center_x, int center_y, Color color) {
+    drawLine(center_x - 15, center_y - 9, center_x + 15, center_y - 9, color);
+    drawLine(center_x - 15, center_y - 9, center_x - 15, center_y + 7, color);
+    drawLine(center_x + 15, center_y - 9, center_x + 15, center_y + 7, color);
+    drawLine(center_x - 15, center_y + 7, center_x + 15, center_y + 7, color);
+    drawLine(center_x, center_y + 7, center_x, center_y + 12, color);
+    drawLine(center_x - 8, center_y + 12, center_x + 8, center_y + 12, color);
+}
+
+void Screen::drawTouchIcon(int center_x, int center_y, Color color) {
+    drawCircleOutline(center_x, center_y, 10, 2, color);
+    drawCircle(center_x, center_y, 2, color);
+    drawLine(center_x + 7, center_y - 7, center_x + 14, center_y - 14, color);
+    drawLine(center_x + 14, center_y - 14, center_x + 12, center_y - 8, color);
+    drawLine(center_x + 14, center_y - 14, center_x + 8, center_y - 12, color);
+}
+
+void Screen::drawPowerIcon(int center_x, int center_y, Color color) {
+    drawCircleOutline(center_x, center_y + 2, 10, 2, color);
+    drawLine(center_x, center_y - 14, center_x, center_y + 1, color);
+    drawLine(center_x - 5, center_y - 9, center_x - 9, center_y - 5, color);
+    drawLine(center_x + 5, center_y - 9, center_x + 9, center_y - 5, color);
+}
+
 void Screen::drawMagnifierIcon(int center_x, int center_y, Color color) {
     drawCircleOutline(center_x - 3, center_y - 3, 8, 2, color);
     drawLine(center_x + 3, center_y + 3, center_x + 13, center_y + 13, color);

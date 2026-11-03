@@ -20,6 +20,7 @@
 #pragma once
 
 #include "../system/AtomicVar.hpp"
+#include "../system/message.hpp"
 #include "../system/subscriber.hpp"
 #include "touch/N3dsTouchscreenInput.hpp"
 #include <stdbool.h>
@@ -35,6 +36,9 @@ class N3dsInput : public ISubscriber {
     bool quit_to_menu_requested() { return quit_to_menu.load(); }
     void set_stream_panel_enabled(bool enabled);
     int stream_panel_touch_buttons() { return panel_touch_buttons.load(); }
+    int stream_panel_touch_zone() { return panel_touch_zone.load(); }
+    int stream_panel_toolbar_page() { return panel_toolbar_page.load(); }
+    bool stream_panel_quit_armed();
     int stream_panel_touch_x() { return panel_touch_x.load(); }
     int stream_panel_touch_y() { return panel_touch_y.load(); }
     int stream_panel_right_touch_x() { return panel_right_touch_x.load(); }
@@ -43,9 +47,12 @@ class N3dsInput : public ISubscriber {
     bool consume_stream_panel_keyboard_request();
     bool consume_stream_panel_settings_request();
     bool consume_stream_panel_restore_request();
+    bool consume_stream_panel_redraw_request();
+    int consume_stream_panel_mode_request();
     int consume_stream_display_action();
     void open_stream_keyboard();
     void open_stream_mode_menu();
+    void open_stream_touch_mode(N3dsTouchType type);
 
   private:
     void _add_gamepad();
@@ -73,6 +80,11 @@ class N3dsInput : public ISubscriber {
     AtomicVar<bool> stream_panel_enabled = false;
     AtomicVar<bool> stream_mode_menu_active = false;
     AtomicVar<bool> stream_panel_restore_requested = false;
+    AtomicVar<int> panel_toolbar_page = 0;
+    AtomicVar<bool> panel_redraw_requested = true;
+    AtomicVar<int> panel_touch_mode_request = -1;
+    AtomicVar<bool> panel_quit_armed = false;
+    AtomicVar<u64> panel_quit_arm_ticks = 0;
     AtomicVar<int> panel_touch_buttons = 0;
     AtomicVar<int> panel_touch_zone = 0;
     AtomicVar<int> panel_touch_x = 0;

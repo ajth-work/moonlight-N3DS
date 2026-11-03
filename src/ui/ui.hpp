@@ -62,6 +62,13 @@ class Screen {
     void drawCircleOutline(int center_x, int center_y, int radius,
                            int thickness, Color color);
     void drawLine(int x0, int y0, int x1, int y1, Color color);
+    void drawArrowIcon(int center_x, int center_y, bool left, Color color);
+    void drawHomeIcon(int center_x, int center_y, Color color);
+    void drawGamepadIcon(int center_x, int center_y, Color color);
+    void drawMouseIcon(int center_x, int center_y, Color color);
+    void drawDisplayIcon(int center_x, int center_y, Color color);
+    void drawTouchIcon(int center_x, int center_y, Color color);
+    void drawPowerIcon(int center_x, int center_y, Color color);
     void drawSwapIcon(int center_x, int center_y, Color color);
     void drawMagnifierIcon(int center_x, int center_y, Color color);
     void drawKeyboardIcon(int center_x, int center_y, Color color);

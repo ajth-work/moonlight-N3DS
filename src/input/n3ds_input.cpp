@@ -192,6 +192,7 @@ bool N3dsInput::_gyroscope_state_changed() {
 }
 
 void N3dsInput::force_touchscreen_menu() {
+    stream_mode_menu_active.store(true);
     auto message =
         std::make_shared<TouchStateChangedMsg>(N3dsTouchType::MENU_TOUCH);
     MessageDispatcher::get_instance()->post(message);
@@ -202,6 +203,11 @@ void N3dsInput::set_stream_panel_enabled(bool enabled) {
     if (enabled) {
         panel_click_mode.store(false);
         stream_mode_menu_active.store(false);
+        panel_toolbar_page.store(0);
+        panel_redraw_requested.store(true);
+        panel_touch_mode_request.store(-1);
+        panel_quit_armed.store(false);
+        panel_quit_arm_ticks.store(0);
         quit_combo_start_ticks = 0;
         quit_combo_suppressed = false;
         quit_to_menu.store(false);
@@ -216,6 +222,10 @@ void N3dsInput::set_stream_panel_enabled(bool enabled) {
         panel_keyboard_requested.store(false);
         panel_settings_requested.store(false);
         panel_display_action.store(0);
+        panel_redraw_requested.store(false);
+        panel_touch_mode_request.store(-1);
+        panel_quit_armed.store(false);
+        panel_quit_arm_ticks.store(0);
     }
 }
 
@@ -237,6 +247,28 @@ bool N3dsInput::consume_stream_panel_restore_request() {
     return requested;
 }
 
+bool N3dsInput::consume_stream_panel_redraw_request() {
+    const bool requested = panel_redraw_requested.load();
+    panel_redraw_requested.store(false);
+    return requested;
+}
+
+int N3dsInput::consume_stream_panel_mode_request() {
+    const int mode = panel_touch_mode_request.load();
+    panel_touch_mode_request.store(-1);
+    return mode;
+}
+
+bool N3dsInput::stream_panel_quit_armed() {
+    if (!panel_quit_armed.load()) return false;
+    if (svcGetSystemTick() - panel_quit_arm_ticks.load() >
+        SYSCLOCK_ARM11 * 2) {
+        panel_quit_armed.store(false);
+        return false;
+    }
+    return true;
+}
+
 int N3dsInput::consume_stream_display_action() {
     const int action = panel_display_action.load();
     panel_display_action.store(0);
@@ -256,6 +288,16 @@ void N3dsInput::open_stream_mode_menu() {
     MessageDispatcher::get_instance()->post(message);
 }
 
+void N3dsInput::open_stream_touch_mode(N3dsTouchType type) {
+    const bool gamepad_panel = type == N3dsTouchType::GAMEPAD;
+    stream_panel_enabled.store(gamepad_panel);
+    stream_mode_menu_active.store(true);
+    if (gamepad_panel) panel_toolbar_page.store(0);
+    panel_redraw_requested.store(true);
+    auto message = std::make_shared<TouchStateChangedMsg>(type);
+    MessageDispatcher::get_instance()->post(message);
+}
+
 void N3dsInput::n3dsinput_handle_event() {
     hidScanInput();
     u32 kDown = hidKeysDown();
@@ -265,6 +307,7 @@ void N3dsInput::n3dsinput_handle_event() {
 
     if (stream_panel_enabled.load()) {
         if (kDown & KEY_TOUCH) {
+            panel_redraw_requested.store(true);
             touchPosition touch;
             hidTouchRead(&touch);
             if (touch.py >= 80 && touch.py < 107 &&
@@ -281,10 +324,68 @@ void N3dsInput::n3dsinput_handle_event() {
                 panel_click_mode.store(click_mode);
                 diag_log("PANEL_MODE", "mode=%s",
                          click_mode ? "click" : "move");
-            } else if (touch.py >= 184 && touch.py < 228) {
-                if (touch.px < 106) panel_display_action.store(3);
-                else if (touch.px < 214) panel_keyboard_requested.store(true);
-                else panel_settings_requested.store(true);
+            } else if (touch.py >= 184 && touch.py < 230) {
+                int page = panel_toolbar_page.load();
+                if (touch.px < 42) {
+                    panel_toolbar_page.store((page + 2) % 3);
+                    panel_quit_armed.store(false);
+                } else if (touch.px >= 278) {
+                    panel_toolbar_page.store((page + 1) % 3);
+                    panel_quit_armed.store(false);
+                } else if (touch.px >= 136 && touch.px < 184) {
+                    panel_settings_requested.store(true);
+                    panel_quit_armed.store(false);
+                } else {
+                    int slot = -1;
+                    if (touch.px >= 46 && touch.px < 88) slot = 0;
+                    else if (touch.px >= 90 && touch.px < 132) slot = 1;
+                    else if (touch.px >= 188 && touch.px < 230) slot = 2;
+                    else if (touch.px >= 232 && touch.px < 274) slot = 3;
+
+                    if (page == 0) {
+                        if (slot == 0) panel_display_action.store(3);
+                        else if (slot == 2)
+                            panel_touch_mode_request.store(
+                                static_cast<int>(N3dsTouchType::GAMEPAD));
+                        else if (slot == 3)
+                            panel_keyboard_requested.store(true);
+                    } else if (page == 1) {
+                        if (slot == 0)
+                            panel_touch_mode_request.store(
+                                static_cast<int>(N3dsTouchType::MOUSEPAD));
+                        else if (slot == 1)
+                            panel_touch_mode_request.store(
+                                static_cast<int>(N3dsTouchType::ABSOLUTE_TOUCH));
+                        else if (slot == 2)
+                            panel_touch_mode_request.store(
+                                static_cast<int>(N3dsTouchType::DS_TOUCH));
+                        else if (slot == 3)
+                            panel_touch_mode_request.store(static_cast<int>(
+                                N3dsTouchType::MAGNIFY_TOUCH));
+                    } else if (page == 2) {
+                        if (slot == 0)
+                            panel_touch_mode_request.store(
+                                static_cast<int>(N3dsTouchType::DEBUG_TOUCH));
+                        else if (slot == 1) panel_display_action.store(-1);
+                        else if (slot == 2) panel_display_action.store(1);
+                        else if (slot == 3) {
+                            const u64 now = svcGetSystemTick();
+                            const u64 armed_at = panel_quit_arm_ticks.load();
+                            if (!panel_quit_armed.load() ||
+                                now - armed_at > SYSCLOCK_ARM11 * 2) {
+                                panel_quit_arm_ticks.store(now);
+                                panel_quit_armed.store(true);
+                                diag_log("PANEL_QUIT", "state=armed");
+                            } else {
+                                panel_quit_armed.store(false);
+                                quit_to_menu.store(true);
+                                diag_log("PANEL_QUIT", "state=confirmed");
+                            }
+                        }
+                    }
+                    if (!(page == 2 && slot == 3))
+                        panel_quit_armed.store(false);
+                }
             } else if (touch.py >= 37 && touch.py < 72) {
                 int action = 0;
                 if (touch.px < 116) action = -1;
@@ -318,6 +419,7 @@ void N3dsInput::n3dsinput_handle_event() {
             }
         }
         if (kHeld & KEY_TOUCH) {
+            panel_redraw_requested.store(true);
             const int zone = panel_touch_zone.load();
             if (zone != 0) {
                 touchPosition touch;
@@ -351,6 +453,7 @@ void N3dsInput::n3dsinput_handle_event() {
             }
         }
         if (kUp & KEY_TOUCH) {
+            panel_redraw_requested.store(true);
             panel_touch_zone.store(0);
             panel_touch_buttons.store(0);
             panel_touch_x.store(0);
