@@ -68,6 +68,8 @@ These tips supersede the product-line SHAs in the 2026-11-01 snapshot above. The
 
 AJ's direction is for `product/gui` to become the mainline over time. GUI22 (3.6.0-gui22) establishes a cohesive layout that keeps the existing Moonlight controls and behavior available as the product evolves.
 
+- Keep the published GUI22 state as the stable `product/gui` baseline. Develop future features on candidate branches and promote them only after the exact candidate commit/build passes applicable checks and any needed AJ on-console testing. Record what was actually verified; do not describe untested behavior as verified.
+
 - The bottom toolbar is a paged carousel, with left/right navigation at the edges and a persistent Home control in the center.
 - Existing controls remain reachable as icons and keep their established behavior as older pages are brought into the new visual system.
 - The 3D control remains visible but dark red and disabled until real 3D streaming is implemented. While disabled, tapping it should show a short “Feature not available yet” message.
