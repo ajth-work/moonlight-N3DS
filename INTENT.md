@@ -81,16 +81,17 @@ These are roadmap candidates for AJ to prioritize; this section does not authori
 3. **Real 3D streaming is another major candidate.** Integrate the stereoscopic presentation and controls from the separate 3D product line into the GUI product while keeping GUI22's layout. Keep the 3D toolbar item disabled with the same message until the feature works.
 4. **Carry over only the 3D-specific lifecycle behavior when integrating 3D.** GUI22 already joins its generic stream workers before stopping Limelight (GUI18 teardown port). Preserve that ordering and selectively integrate the 3D renderer cleanup and HOME/resume handling from the 3D line; do not duplicate the generic join fix or merge the whole divergent branch without review.
 
-The broader progression is to align older pages (for example, Mouse and Magnify) with the GUI22 design and bring proven earlier GUI/3D capabilities into one product in reviewed steps. GUI23's exact implementation order and release scope are not yet fixed.
+The broader progression is to align older pages (for example, Mouse and Magnify) with the GUI22 design and bring proven earlier GUI/3D capabilities into one product in reviewed steps. GUI23's exact implementation order and release scope are not yet fixed. AJ's current preference is feature-first: finish the intended layout/navigation and functional button behavior before spending a milestone on visual styling. The current GUI22 styling is a working baseline, not the final thematic treatment.
 
 ### GUI24 — color alignment proposal
 
-AJ likes the GUI22 layout overall, but wants the app-owned screens to feel like one Moonlight client. The current pre-stream screens are very light, while the in-stream UI has a different visual identity.
+GUI24 is a later, focused color-alignment pass across pre-stream and in-stream screens, after the functional layout and controls are in place. Keep the approved GUI22 layout as the starting point.
 
-- Consider GUI24 as a focused color-alignment pass across both pre-stream and in-stream screens. The goal is a consistent Moonlight gray/white visual language that fits the broader Moonlight community, not a new standalone brand.
-- Keep the approved GUI22 layout as the starting point; focus this pass on putting the colors in the right places rather than redesigning the page structure.
-- A prior neutral gray/white reference is recorded under “GUI6 in-stream presentation variant” in `docs/GUI_PLAN.md`; an earlier implementation commit is `ed856489d3ad2bf51a246477a5eafeab9c0c6e90` (`src/ui/ui.cpp`, gray ramp from RGB 12–22 with divider gray 96). The plan describes it as a separate, unmerged variant. Treat it as a reference to review, not an automatic palette decision for every current screen. Before applying colors, verify the intended exact values against the Moonlight banner/Android references AJ identified; do not approximate from memory or screenshots.
-- GUI24 and the exact palette scope remain tentative until separately prioritized.
+- On pre-stream pages, use one flat Moonlight gray for the header and body surfaces. AJ sees the current light header and body as separate whites and wants them unified into the same flat color.
+- Use the Moonlight gray swatch already selected from the approved reference graphic with the color picker. Preserve the exact sampled value from that source when implementing; the numeric color code is not recorded here, so do not guess it.
+- Review the rest of the pre-stream and in-stream colors for a consistent Moonlight visual language. This is color placement and alignment, not a page-structure redesign.
+- The earlier neutral gray/white reference is under “GUI6 in-stream presentation variant” in `docs/GUI_PLAN.md`; the implementation commit is `ed856489d3ad2bf51a246477a5eafeab9c0c6e90` (`src/ui/ui.cpp`, gray ramp from RGB 12–22 with divider gray 96). It is a separate, unmerged variant and is historical reference only; it does not replace AJ's selected swatch.
+- GUI24 and its exact palette scope remain tentative until separately prioritized.
 
 ### GUI25 — pixel-aware visual polish proposal
 
