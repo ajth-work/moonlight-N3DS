@@ -83,6 +83,23 @@ These are roadmap candidates for AJ to prioritize; this section does not authori
 
 The broader progression is to align older pages (for example, Mouse and Magnify) with the GUI22 design and bring proven earlier GUI/3D capabilities into one product in reviewed steps. GUI23's exact implementation order and release scope are not yet fixed.
 
+### GUI24 — color alignment proposal
+
+AJ likes the GUI22 layout overall, but wants the app-owned screens to feel like one Moonlight client. The current pre-stream screens are very light, while the in-stream UI has a different visual identity.
+
+- Consider GUI24 as a focused color-alignment pass across both pre-stream and in-stream screens. The goal is a consistent Moonlight gray/white visual language that fits the broader Moonlight community, not a new standalone brand.
+- Keep the approved GUI22 layout as the starting point; focus this pass on putting the colors in the right places rather than redesigning the page structure.
+- A prior neutral gray/white reference is recorded under “GUI6 in-stream presentation variant” in `docs/GUI_PLAN.md`; an earlier implementation commit is `ed856489d3ad2bf51a246477a5eafeab9c0c6e90` (`src/ui/ui.cpp`, gray ramp from RGB 12–22 with divider gray 96). The plan describes it as a separate, unmerged variant. Treat it as a reference to review, not an automatic palette decision for every current screen. Before applying colors, verify the intended exact values against the Moonlight banner/Android references AJ identified; do not approximate from memory or screenshots.
+- GUI24 and the exact palette scope remain tentative until separately prioritized.
+
+### GUI25 — pixel-aware visual polish proposal
+
+- Consider a later pass to make the GUI22 interface feel more contemporary and thematically coherent, while keeping its basic layout.
+- Take inspiration from the Nintendo 3DS system UI's clarity at the console's actual resolution and pixel budget—not from 3DS game art. Review type size, spacing, icon weight, contrast, and panel treatment at native screen dimensions.
+- Keep the resulting UI recognizable as Moonlight and aligned with its community visual language. Treat this as refinement of the shared product UI, not a new identity.
+- GUI25 is a tentative milestone idea, not a committed release scope.
+
+
 
 ## End-of-day delivery and audit status — 2026-11-01
 
