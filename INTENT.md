@@ -1,19 +1,19 @@
 # Current Intent — moonlight-N3DS
 
-Updated by Rocky, 2026-10-26 (evening — pairing RESOLVED), at AJ's
-request. AJ may talk to Codex directly in this repo; this file is
-the shared understanding. Codex: read this before starting work,
-along with AGENTS.md.
+Originally updated by Rocky on 2026-10-26. Updated by Codex at
+AJ's request on 2026-11-03 to record the GUI22 baseline and GUI23+
+direction. This file is the shared understanding. Codex: read this
+before starting work, along with AGENTS.md.
 
-## Branch map and consolidation status — 2026-11-01 (end of day)
+## Branch map and consolidation status — 2026-11-01 snapshot
 
-Phase 2 branch retirement was completed after verifying every source branch against its archive tag. This map supersedes the 2026-10-26 branch snapshot above and the 2026-10-29 SHAs in the consolidation specification.
+Phase 2 branch retirement was completed after verifying every source branch against its archive tag. This is the historical branch snapshot from 2026-11-01; current product tips are recorded in the GUI direction section below.
 
 ### Product mainlines
 
 - `n3ds-main` — default/upstream-tracking branch; keep upstream merges and repository-level documentation here.
-- `product/gui` — product mainline at `68083cc51412df88a6f2fcd2e6c3236582734493` (GUI18 teardown port).
-- `product/3d` — product mainline at `89611bf043945f76246a1d542ef30565acf6cf95`.
+- `product/gui` — at `68083cc51412df88a6f2fcd2e6c3236582734493` (GUI18 teardown port, as of this snapshot).
+- `product/3d` — at `89611bf043945f76246a1d542ef30565acf6cf95` (as of this snapshot).
 
 ### Retired branches and recovery tags
 
@@ -54,10 +54,40 @@ The remote branch audit confirmed `n3ds-main`, `product/gui`, `product/3d`, the 
 
 For a new product line: choose the closest product branch as the base, create a checkpoint tag, branch as `feature/<line>-<topic>`, verify the built CIA identity from its TMD, publish under the release workflow, merge back to its product branch (or promote it to `product/<line>` if it becomes a standing product), then delete the feature branch. A new line does not become a base for further feature stacking.
 
+## GUI product direction — 2026-11-03 (AJ)
+
+Current GitHub branch tips checked on 2026-11-03:
+
+- `product/gui` — `ec77164986e5f5a72ef02dd69366a288fa6769ba`, the GUI22 product line with reusable banner-template documentation.
+- `product/3d` — `b4de978e403c2859abfa002405861bedbb46a585`, still maintained as a separate product line.
+- `feature/launch-display-select` — `1d0293dffbe29346316d9ecc29df0c929d22070a`, a separate display-selection candidate.
+
+These tips supersede the product-line SHAs in the 2026-11-01 snapshot above. The earlier branch-retirement record remains historical.
+
+### GUI22 — current visual and navigation foundation
+
+AJ's direction is for `product/gui` to become the mainline over time. GUI22 (3.6.0-gui22) establishes a cohesive layout that keeps the existing Moonlight controls and behavior available as the product evolves.
+
+- The bottom toolbar is a paged carousel, with left/right navigation at the edges and a persistent Home control in the center.
+- Existing controls remain reachable as icons and keep their established behavior as older pages are brought into the new visual system.
+- The 3D control remains visible but dark red and disabled until real 3D streaming is implemented. While disabled, tapping it should show a short “Feature not available yet” message.
+
+### GUI23 and later — candidate feature work
+
+These are roadmap candidates for AJ to prioritize; this section does not authorize implementation, merging, building, or publishing.
+
+1. **Pre-stream host display selection is important.** After connecting to the chosen host, enumerate that host's available displays and let AJ choose one before starting an in-game stream. Intended flow: connect to host → enumerate and choose display → launch the selected game into the stream. Preserve the existing app-selection step in that flow. Do not require a manually configured display count as a substitute for host enumeration.
+2. **In-stream display switching is a separate, tentative toolbar feature.** The enumeration-backed switcher may be added to the bottom carousel after the pre-stream picker. Until it actually works, show it dark red and disabled; tapping it should show “Feature not available yet.” The current configured-count/hotkey behavior is not host display enumeration and does not replace either planned feature or the required pre-stream picker.
+3. **Real 3D streaming is another major candidate.** Integrate the stereoscopic presentation and controls from the separate 3D product line into the GUI product while keeping GUI22's layout. Keep the 3D toolbar item disabled with the same message until the feature works.
+4. **Carry over only the 3D-specific lifecycle behavior when integrating 3D.** GUI22 already joins its generic stream workers before stopping Limelight (GUI18 teardown port). Preserve that ordering and selectively integrate the 3D renderer cleanup and HOME/resume handling from the 3D line; do not duplicate the generic join fix or merge the whole divergent branch without review.
+
+The broader progression is to align older pages (for example, Mouse and Magnify) with the GUI22 design and bring proven earlier GUI/3D capabilities into one product in reviewed steps. GUI23's exact implementation order and release scope are not yet fixed.
+
+
 ## End-of-day delivery and audit status — 2026-11-01
 
 - **Phase 3 complete:** PR #21 merged the GUI identity parameterization into `product/gui`; commit `919d78c528` is part of the product line. The merged feature branch was deleted from origin after verifying ancestry.
-- **GUI18 teardown port complete:** merged and published as Moonlight GamePad `3.6.0-gui18`, UniStore feed revision 56. `product/gui` currently tips at `68083cc51412df88a6f2fcd2e6c3236582734493`.
+- **GUI18 teardown port complete:** merged and published as Moonlight GamePad `3.6.0-gui18`, UniStore feed revision 56. At this 2026-11-01 snapshot, `product/gui` tipped at `68083cc51412df88a6f2fcd2e6c3236582734493`.
 - **Phase 4 X2 audit complete:** teardown ordering is ported in GUI18. `LiStopConnection()` remains unbounded in both product lines; tracked in issue #23.
 - **Human retests pending:** issue #22 covers GUI18 teardown and its checklist is posted; issue #24 tracks the instrumented GUI17 stick retest; issue #25 tracks GUI16 log-transfer acceptance.
 - **Remaining consolidation spec work:** Phase 4 X1 cross-pollination and disposition of `diag/moonlight-presentation`.
@@ -175,7 +205,10 @@ Next client work, when AJ picks it: decide the diag line's fate
 the diag5 file route), the remembered-hosts merge, and the GUI
 milestone below.
 
-## Later GUI milestone idea
+## Earlier GUI milestone exploration (before GUI22)
+
+The material below is retained as design history. Check it against the current GUI before treating an item as missing or carrying it into a future release. The GUI22+ direction above is the current roadmap.
+
 
 After diagnostics and the on-console test, AJ wants to explore a
 more modern, intentional touchscreen control surface for streamed
