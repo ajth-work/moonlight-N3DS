@@ -88,7 +88,7 @@ The broader progression is to align older pages (for example, Mouse and Magnify)
 GUI24 is a later, focused color-alignment pass across pre-stream and in-stream screens, after the functional layout and controls are in place. Keep the approved GUI22 layout as the starting point.
 
 - On pre-stream pages, use one flat Moonlight gray for the header and body surfaces. AJ sees the current light header and body as separate whites and wants them unified into the same flat color.
-- Use the Moonlight gray swatch already selected from the approved reference graphic with the color picker. Preserve the exact sampled value from that source when implementing; the numeric color code is not recorded here, so do not guess it.
+- Use the main gray field in the current `product/gui` Moonlight hero banner at `3ds/res/banner.png` as the flat-fill swatch: RGB (79, 86, 97), hex `#4F5661`. This is the dominant gray-field pixel sampled from the 256×128 banner at blob `c76ebd37255bb082cd2872fd10890147ab0b8dae`. Apply this same value to the pre-stream header and body surfaces.
 - Review the rest of the pre-stream and in-stream colors for a consistent Moonlight visual language. This is color placement and alignment, not a page-structure redesign.
 - The earlier neutral gray/white reference is under “GUI6 in-stream presentation variant” in `docs/GUI_PLAN.md`; the implementation commit is `ed856489d3ad2bf51a246477a5eafeab9c0c6e90` (`src/ui/ui.cpp`, gray ramp from RGB 12–22 with divider gray 96). It is a separate, unmerged variant and is historical reference only; it does not replace AJ's selected swatch.
 - GUI24 and its exact palette scope remain tentative until separately prioritized.
