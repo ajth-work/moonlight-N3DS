@@ -18,10 +18,9 @@ The CIA uses the existing GUI22 title ID (Moonlight GamePad, 0x00040000004D1100)
 
 Built cleanly with the cached `moonlight-n3ds:latest` devkitPro image in 86.69 seconds. The link map and ELF show a fully static executable with no dynamic section. The CIA package was written at 2026-11-03 17:46:02 local time.
 
-- TLS implementation: mbedTLS static archives (`libmbedtls.a`, 361 selected members; `libmbedcrypto.a`, 1,263 selected members).
-- Crypto support: OpenSSL 3.1.4 static `libcrypto.a` (15,241 selected members).
-- `libssl.a` was on the link search but contributed zero archive members. The active TLS symbols include `mbedtls_ssl_setup`.
-- This build is static mbedTLS plus OpenSSL crypto; it is not a LibreSSL build.
+- TLS implementation: mbedTLS, confirmed by `Curl_ssl_mbedtls` and `mbedtls_ssl_setup` in the final link map.
+- Crypto support: statically linked OpenSSL 3.1.4 `libcrypto.a`.
+- `libssl.a` contributed zero selected archive members. The build uses mbedTLS for TLS and is not a LibreSSL build.
 
 ## Automated checks already passed
 
