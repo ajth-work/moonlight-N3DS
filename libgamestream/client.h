@@ -49,8 +49,10 @@ typedef struct _SERVER_DATA {
 
 int gs_init(PSERVER_DATA server, char* address, unsigned short httpPort, const char *keyDirectory, int logLevel, bool unsupported);
 void gs_cleanup();
-int gs_start_app(PSERVER_DATA server, PSTREAM_CONFIGURATION config, int appId, bool sops, bool localaudio, int gamepad_mask);
+int gs_start_app(PSERVER_DATA server, PSTREAM_CONFIGURATION config, int appId, bool sops, bool localaudio, int gamepad_mask, const char *display_id);
 int gs_applist(PSERVER_DATA server, PAPP_LIST *app_list);
+int gs_display_list(PSERVER_DATA server, PDISPLAY_INFO *display_list);
+void gs_free_display_list(PDISPLAY_INFO display_list);
 int gs_unpair(PSERVER_DATA server);
 int gs_request_pinned(PSERVER_DATA server, char *url, PHTTP_DATA data,
                       const char *request_body, size_t body_size);

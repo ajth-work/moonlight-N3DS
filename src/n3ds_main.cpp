@@ -31,6 +31,7 @@
 #include "ui/ui.hpp"
 #include "video/video.hpp"
 #include "video/renderer/N3dsRenderer.hpp"
+#include "video/renderer/N3ds3DPresentation.hpp"
 
 #include <3ds.h>
 #include <Limelight.h>
@@ -91,6 +92,9 @@ static const char *diagnostic_callsite(const char *name) {
     }
     if (strcmp(name, "connect.app_list") == 0) {
         return "libgamestream/client.c:gs_applist()";
+    }
+    if (strcmp(name, "connect.display_list") == 0) {
+        return "libgamestream/client.c:gs_display_list()";
     }
     if (strcmp(name, "pair") == 0) {
         return "libgamestream/client.c:gs_pair()";
@@ -1508,6 +1512,12 @@ struct AppListTaskContext {
     int status;
 };
 
+struct DisplayListTaskContext {
+    PSERVER_DATA server;
+    PDISPLAY_INFO list;
+    int status;
+};
+
 class GuiMessageScreen : public MoonlightUi::DualScreenModel {
   public:
     GuiMessageScreen(std::string title, std::string message, std::string hint)
@@ -1748,6 +1758,96 @@ static void app_list_task(void *opaque) {
     task->status = gs_applist(task->server, &task->list);
 }
 
+static void display_list_task(void *opaque) {
+    DisplayListTaskContext *task = static_cast<DisplayListTaskContext *>(opaque);
+    task->status = gs_display_list(task->server, &task->list);
+}
+
+static bool choose_host_default_display(std::string *selected_display_id,
+                                        const std::string &reason) {
+    std::vector<GuiMenuItem> choices = {
+        {"Use Host Default", reason,
+         "Sunshine's configured capture display"},
+        {"Back", "Return to the host list without launching an app.",
+         "No stream started"},
+    };
+    int selected = 1;
+    if (!run_gui_menu("DISPLAY LIST UNAVAILABLE", "CHOOSE HOW TO CONTINUE",
+                      choices, &selected) || selected != 0) {
+        return false;
+    }
+    selected_display_id->clear();
+    diag_log("DISPLAY_SELECTED", "source=host_default");
+    return true;
+}
+
+static bool prompt_for_display_id(PSERVER_DATA server,
+                                  std::string *selected_display_id) {
+    if (selected_display_id == NULL)
+        return false;
+    selected_display_id->clear();
+
+    DisplayListTaskContext task{server, NULL, GS_ERROR};
+    const bool cancelled = run_gui_call(
+        "connect.display_list", "Finding host displays", display_list_task,
+        &task, true, false, "Enumerating capture-supported displays");
+    if (cancelled || diag_cancel_requested()) {
+        gs_free_display_list(task.list);
+        diag_log("CONNECT_CANCELLED", "phase=connect.display_list");
+        return false;
+    }
+    if (task.status != GS_OK) {
+        const std::string reason =
+            "Moonlight could not enumerate displays on this host.";
+        diag_log("DISPLAY_LIST_ERROR", "status=%d detail=%s", task.status,
+                 gs_error != NULL ? gs_error : "unknown");
+        const bool use_default = choose_host_default_display(
+            selected_display_id, reason + " " +
+            "You can continue with Sunshine's configured display.");
+        gs_free_display_list(task.list);
+        return use_default;
+    }
+
+    std::vector<GuiMenuItem> display_items;
+    std::vector<std::string> display_ids;
+    for (PDISPLAY_INFO display = task.list; display != NULL;
+         display = display->next) {
+        if (display->id == NULL || display->id[0] == '\0')
+            continue;
+        const std::string id(display->id);
+        const std::string name = display->name != NULL && display->name[0] != '\0'
+            ? std::string(display->name) : id;
+        display_items.push_back({name,
+            "Use this capture-supported host display for the selected app.",
+            id});
+        display_ids.push_back(id);
+    }
+    gs_free_display_list(task.list);
+
+    if (display_items.empty()) {
+        return choose_host_default_display(
+            selected_display_id,
+            "The host returned no named display IDs. You can continue with "
+            "Sunshine's configured display.");
+    }
+
+    display_items.push_back({"Use Host Default",
+        "Use Sunshine's configured capture display instead of a specific ID.",
+        "Configured Sunshine display"});
+    int selected = 0;
+    if (!run_gui_menu("SELECT A DISPLAY", "SUNSHINE HOST", display_items,
+                      &selected)) {
+        return false;
+    }
+    if (selected < static_cast<int>(display_ids.size())) {
+        *selected_display_id = display_ids[static_cast<size_t>(selected)];
+        diag_log("DISPLAY_SELECTED", "source=enumerated index=%d", selected);
+    } else {
+        diag_log("DISPLAY_SELECTED", "source=host_default");
+    }
+    return true;
+}
+
 static int prompt_for_app_id(PSERVER_DATA server) {
     PAPP_LIST list = NULL;
     AppListTaskContext task{server, NULL, GS_ERROR};
@@ -1769,9 +1869,14 @@ static int prompt_for_app_id(PSERVER_DATA server) {
     std::vector<std::string> app_names;
     std::vector<int> app_ids;
     while (list != NULL) {
-        app_names.push_back(std::string(list->name));
-        app_ids.push_back(list->id);
-        list = list->next;
+        PAPP_LIST next = list->next;
+        if (list->name != NULL && list->name[0] != '\0' && list->id > 0) {
+            app_names.push_back(std::string(list->name));
+            app_ids.push_back(list->id);
+        }
+        free(list->name);
+        free(list);
+        list = next;
     }
     if (app_names.empty()) {
         show_gui_message("NO APPS AVAILABLE",
@@ -2724,7 +2829,8 @@ static void draw_stream_gamepad_panel(uint32_t rtt_ms, bool rtt_available,
                                      bool click_mode,
                                      int toolbar_page, int touch_zone,
                                      bool quit_armed,
-                                     int display_count, int default_display) {
+                                     int display_count, int default_display,
+                                     const N3ds3DSettings &stereo_settings) {
     static MoonlightUi::Screen bottom(GFX_BOTTOM);
     using MoonlightUi::Color;
     using MoonlightUi::TextStyle;
@@ -2757,49 +2863,65 @@ static void draw_stream_gamepad_panel(uint32_t rtt_ms, bool rtt_available,
     const Color mint{78, 232, 174};
     const Color ring{61, 202, 178};
     const Color ring_shadow{23, 75, 75};
-    const int left_center_x = 78;
-    const int right_center_x = 242;
-    const int stick_center_y = 137;
-    const int left_knob_x = left_center_x + (left_touch_x * 22 / 32767);
-    const int left_knob_y = stick_center_y - (left_touch_y * 22 / 32767);
-    const int right_knob_x = right_center_x + (right_touch_x * 22 / 32767);
-    const int right_knob_y = stick_center_y - (right_touch_y * 22 / 32767);
-    for (const int center_x : {left_center_x, right_center_x}) {
-        bottom.drawCircle(center_x, stick_center_y, 43, ring_shadow);
-        bottom.drawCircle(center_x, stick_center_y, 40, dark);
-        bottom.drawCircleOutline(center_x, stick_center_y, 42, 2, ring);
-    }
-    if (touch_zone == 1)
-        bottom.drawCircleOutline(left_center_x, stick_center_y, 43, 3, mint);
-    if (touch_zone == 2)
-        bottom.drawCircleOutline(right_center_x, stick_center_y, 43, 3, mint);
-    if (touch_buttons & LS_CLK_FLAG)
-        bottom.drawCircleOutline(left_center_x, stick_center_y, 43, 4, mint);
-    if (touch_buttons & RS_CLK_FLAG)
-        bottom.drawCircleOutline(right_center_x, stick_center_y, 43, 4, mint);
-    const auto draw_stick = [&](int knob_x, int knob_y, const char *label) {
-        bottom.drawCircle(knob_x, knob_y, 21, {45, 58, 67});
-        bottom.drawCircle(knob_x, knob_y, 18, {25, 34, 42});
-        bottom.drawCircleOutline(knob_x, knob_y, 20, 1, ring);
-        const int label_width = bottom.measureLiveText(label, TextStyle::Header);
-        bottom.drawLiveText(knob_x - label_width / 2, knob_y - 7, label,
-                            TextStyle::Header, mint);
-    };
-    draw_stick(left_knob_x, left_knob_y, "L3");
-    draw_stick(right_knob_x, right_knob_y, "R3");
+    if (toolbar_page == 3) {
+        char shift[32];
+        snprintf(shift, sizeof(shift), "SHIFT  %+d", stereo_settings.shift);
+        bottom.drawLiveText(24, 78, "3D PRESENTATION", TextStyle::Header, teal);
+        bottom.drawPanelButton({24, 99, 296, 126},
+                               n3ds_3d_mode_name(stereo_settings.mode),
+                               {35, 48, 60}, ink);
+        bottom.drawPanelButton({24, 132, 148, 159},
+                               n3ds_3d_aspect_name(stereo_settings.aspect),
+                               {35, 48, 60}, ink);
+        bottom.drawPanelButton({156, 132, 296, 159}, shift,
+                               {35, 48, 60}, ink);
+        bottom.drawLiveText(26, 164, "3D OUTPUT REQUIRES SLIDER UP",
+                            TextStyle::Small, muted);
+    } else {
+        const int left_center_x = 78;
+        const int right_center_x = 242;
+        const int stick_center_y = 137;
+        const int left_knob_x = left_center_x + (left_touch_x * 22 / 32767);
+        const int left_knob_y = stick_center_y - (left_touch_y * 22 / 32767);
+        const int right_knob_x = right_center_x + (right_touch_x * 22 / 32767);
+        const int right_knob_y = stick_center_y - (right_touch_y * 22 / 32767);
+        for (const int center_x : {left_center_x, right_center_x}) {
+            bottom.drawCircle(center_x, stick_center_y, 43, ring_shadow);
+            bottom.drawCircle(center_x, stick_center_y, 40, dark);
+            bottom.drawCircleOutline(center_x, stick_center_y, 42, 2, ring);
+        }
+        if (touch_zone == 1)
+            bottom.drawCircleOutline(left_center_x, stick_center_y, 43, 3, mint);
+        if (touch_zone == 2)
+            bottom.drawCircleOutline(right_center_x, stick_center_y, 43, 3, mint);
+        if (touch_buttons & LS_CLK_FLAG)
+            bottom.drawCircleOutline(left_center_x, stick_center_y, 43, 4, mint);
+        if (touch_buttons & RS_CLK_FLAG)
+            bottom.drawCircleOutline(right_center_x, stick_center_y, 43, 4, mint);
+        const auto draw_stick = [&](int knob_x, int knob_y, const char *label) {
+            bottom.drawCircle(knob_x, knob_y, 21, {45, 58, 67});
+            bottom.drawCircle(knob_x, knob_y, 18, {25, 34, 42});
+            bottom.drawCircleOutline(knob_x, knob_y, 20, 1, ring);
+            const int label_width = bottom.measureLiveText(label, TextStyle::Header);
+            bottom.drawLiveText(knob_x - label_width / 2, knob_y - 7, label,
+                                TextStyle::Header, mint);
+        };
+        draw_stick(left_knob_x, left_knob_y, "L3");
+        draw_stick(right_knob_x, right_knob_y, "R3");
 
-    const Color mode_on{29, 176, 98};
-    const Color mode_off{55, 67, 75};
-    bottom.drawPanelButton({132, 83, 188, 103}, "MOVE",
-                           click_mode ? mode_off : mode_on, ink);
-    bottom.drawSwapIcon(160, 112, ring);
-    bottom.drawPanelButton({132, 121, 188, 141}, "CLICK",
-                           click_mode ? mode_on : mode_off, ink);
+        const Color mode_on{29, 176, 98};
+        const Color mode_off{55, 67, 75};
+        bottom.drawPanelButton({132, 83, 188, 103}, "MOVE",
+                               click_mode ? mode_off : mode_on, ink);
+        bottom.drawSwapIcon(160, 112, ring);
+        bottom.drawPanelButton({132, 121, 188, 141}, "CLICK",
+                               click_mode ? mode_on : mode_off, ink);
+    }
     const Color button_ink{231, 241, 246};
     const Color button_fill{35, 48, 60};
     const Color home_fill{21, 85, 92};
-    char page_status[8];
-    snprintf(page_status, sizeof(page_status), "%d/3", toolbar_page + 1);
+    char page_status[16];
+    snprintf(page_status, sizeof(page_status), "%d/4", toolbar_page + 1);
     bottom.drawLiveText(151, 165, page_status, TextStyle::Small, muted);
     bottom.drawPanelButton({8, 184, 42, 228}, "", button_fill, button_ink);
     bottom.drawPanelButton({46, 184, 88, 228}, "", button_fill, button_ink);
@@ -2840,6 +2962,8 @@ static void draw_stream_gamepad_panel(uint32_t rtt_ms, bool rtt_available,
                                 "3D", TextStyle::Header, label_color);
             break;
         }
+        case 9: bottom.drawArrowIcon(center_x, center_y, true, label_color); break;
+        case 10: bottom.drawArrowIcon(center_x, center_y, false, label_color); break;
         default: break;
         }
         const int label_width = bottom.measureLiveText(label, TextStyle::Small);
@@ -2849,7 +2973,7 @@ static void draw_stream_gamepad_panel(uint32_t rtt_ms, bool rtt_available,
 
     if (toolbar_page == 0) {
         draw_toolbar_item(0, "MAG", 0, false);
-        draw_toolbar_item(1, "OFF", 8, true);
+        draw_toolbar_item(1, "3D", 8, false);
         draw_toolbar_item(2, "GAME", 1, false);
         draw_toolbar_item(3, "KEY", 3, false);
     } else if (toolbar_page == 1) {
@@ -2857,12 +2981,17 @@ static void draw_stream_gamepad_panel(uint32_t rtt_ms, bool rtt_available,
         draw_toolbar_item(1, "ABS", 4, false);
         draw_toolbar_item(2, "DS", 4, false);
         draw_toolbar_item(3, "MAG", 0, false);
-    } else {
+    } else if (toolbar_page == 2) {
         draw_toolbar_item(0, "DEBUG", 5, false);
         draw_toolbar_item(1, "PREV", 6, false);
         draw_toolbar_item(2, "NEXT", 6, false);
         draw_toolbar_item(3, quit_armed ? "AGAIN" : "QUIT", 7,
                           quit_armed);
+    } else {
+        draw_toolbar_item(0, "MODE", 8, false);
+        draw_toolbar_item(1, "ASPECT", 5, false);
+        draw_toolbar_item(2, "SHIFT-", 9, false);
+        draw_toolbar_item(3, "SHIFT+", 10, false);
     }
     bottom.present(false);
 }
@@ -3014,7 +3143,8 @@ static inline StreamWorkerThreads stream_loop(PCONFIGURATION config,
                 input_handler ? input_handler->stream_panel_touch_zone() : 0,
                 input_handler ? input_handler->stream_panel_quit_armed() : false,
                 config->sunshine_display_count,
-                config->sunshine_default_display);
+                config->sunshine_default_display,
+                n3ds_3d_settings_snapshot());
         }
     }
     if (input_handler) input_handler->set_stream_panel_enabled(false);
@@ -3049,6 +3179,7 @@ static void limelight_start_call(void *opaque) {
 }
 
 static void stream(PSERVER_DATA server, PCONFIGURATION config, int appId,
+                   const std::string &display_id,
                    std::shared_ptr<N3dsInput> input_handler) {
     int gamepad_mask = 1;
     diag_log("STREAM_START_REQUESTED", "app_id=%d", appId);
@@ -3057,13 +3188,16 @@ static void stream(PSERVER_DATA server, PCONFIGURATION config, int appId,
         PCONFIGURATION config;
         int app_id;
         int gamepad_mask;
+        const char *display_id;
         int status;
-    } start_call{server, config, appId, gamepad_mask, GS_ERROR};
+    } start_call{server, config, appId, gamepad_mask,
+                 display_id.empty() ? NULL : display_id.c_str(), GS_ERROR};
     auto start_app_call = [](void *opaque) {
         StartAppCall *call = static_cast<StartAppCall *>(opaque);
         call->status = gs_start_app(call->server, &call->config->stream,
                                     call->app_id, call->config->sops,
-                                    call->config->localaudio, call->gamepad_mask);
+                                    call->config->localaudio, call->gamepad_mask,
+                                    call->display_id);
     };
     run_gui_call("stream.start_app", "Starting selected app", start_app_call,
                  &start_call, true, false, "Requesting stream startup");
@@ -3195,6 +3329,11 @@ static void print_init_server_error(CONFIGURATION *config, int status) {
 
 static const char *action_stream(CONFIGURATION *config, SERVER_DATA *server) {
     diag_log("SESSION_PHASE", "name=host_display_selection");
+    std::string display_id;
+    if (!prompt_for_display_id(server, &display_id)) {
+        return diag_cancel_requested() ? "user_cancelled"
+                                       : "display_selection_cancelled";
+    }
     int appId = prompt_for_app_id(server);
     if (appId == -1) {
         return diag_cancel_requested() ? "user_cancelled" : "app_list_unavailable";
@@ -3214,7 +3353,7 @@ static const char *action_stream(CONFIGURATION *config, SERVER_DATA *server) {
             config->swap_face_buttons, config->swap_triggers_and_shoulders,
             config->use_triggers_for_mouse);
     }
-    stream(server, config, appId, input_handler);
+    stream(server, config, appId, display_id, input_handler);
     return diag_cancel_requested() ? "stream_cancelled_or_stopped" : "stream_teardown";
 }
 
@@ -3254,7 +3393,7 @@ static void connection_test_start_app_task(void *opaque) {
         static_cast<ConnectionTestStartAppCall *>(opaque);
     call->status = gs_start_app(call->server, &call->config->stream,
                                 call->app_id, call->config->sops,
-                                call->config->localaudio, 1);
+                                call->config->localaudio, 1, NULL);
 }
 
 struct ConnectionTestQuitAppCall {
