@@ -258,6 +258,7 @@ static bool _reset_response(PHTTP_DATA data) {
         }
     }
     data->size = 0;
+    data->response_code = 0;
     data->memory[0] = '\0';
     return true;
 }
@@ -742,6 +743,7 @@ static int _http_request(char *url, PHTTP_DATA data, const char *pin,
         result = curl_easy_perform(curl);
         curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &response_code);
     }
+    data->response_code = response_code;
 
     if (capture_tls) {
         tls_trace_request_active = false;
@@ -829,6 +831,7 @@ PHTTP_DATA http_create_data() {
         return NULL;
     }
     data->size = 0;
+    data->response_code = 0;
 
     return data;
 }

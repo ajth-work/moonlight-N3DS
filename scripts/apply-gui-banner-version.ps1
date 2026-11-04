@@ -2,7 +2,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
-    [ValidatePattern('^\d+\.\d+\.\d+-gui\d+$')]
+    [ValidatePattern('^\d+\.\d+\.\d+-gui\d+(?:\.\d+)?$')]
     [string]$Version,
 
     [string]$OutputPath

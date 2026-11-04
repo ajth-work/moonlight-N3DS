@@ -136,6 +136,28 @@ void N3dsRendererBase::write_px_to_framebuffer_gpu(uint8_t *__restrict source) {
         return;
     }
 
+    const N3ds3DSettings settings = n3ds_3d_settings_snapshot();
+    const int slider_milli =
+        static_cast<int>(osGet3DSliderState() * 1000.0f + 0.5f);
+    const bool gfx_3d_enabled = gfxIs3D();
+    const bool stereo = screen == GFX_TOP && gfx_3d_enabled &&
+                        settings.mode != N3ds3DMode::OFF_2D;
+    const int eye_pass_count = stereo ? 2 : 1;
+    const N3ds3DSettings mono_settings{N3ds3DMode::OFF_2D, settings.aspect, 0};
+    const u32 presentation_frame =
+        screen == GFX_TOP ? ++presentation_frame_counter : 0;
+    const bool trace_presentation_frame =
+        presentation_frame == 1 || (presentation_frame != 0 &&
+                                    presentation_frame % 120 == 0);
+    if (trace_presentation_frame) {
+        diag_log("PRESENTATION_FRAME_BEGIN",
+                 "frame=%u mode=%s aspect=%s shift=%d slider_milli=%d gfx3d=%d stereo=%d eye_passes=%d image=%dx%d",
+                 presentation_frame, n3ds_3d_mode_name(settings.mode),
+                 n3ds_3d_aspect_name(settings.aspect), settings.shift,
+                 slider_milli, gfx_3d_enabled, stereo, eye_pass_count,
+                 image_width, image_height);
+    }
+
     u64 start_ticks = svcGetSystemTick();
 
     // NOTE: At 800x480, we can display the _width_ natively, but the height
@@ -159,11 +181,6 @@ void N3dsRendererBase::write_px_to_framebuffer_gpu(uint8_t *__restrict source) {
     // Render each eye into its own native-size top-screen framebuffer. A
     // mono frame remains a single pass; stereo mode is active only while the
     // 3DS slider is up and a stereo presentation mode is selected.
-    const N3ds3DSettings settings = n3ds_3d_settings_snapshot();
-    const bool stereo = screen == GFX_TOP && gfxIs3D() &&
-                        settings.mode != N3ds3DMode::OFF_2D;
-    const int eye_pass_count = stereo ? 2 : 1;
-    const N3ds3DSettings mono_settings{N3ds3DMode::OFF_2D, settings.aspect, 0};
     for (int eye = 0; eye < eye_pass_count; ++eye) {
         const N3ds3DEyePresentation eye_presentation =
             n3ds_3d_eye_presentation(stereo ? settings : mono_settings,
@@ -405,6 +422,11 @@ void N3dsRendererBase::write_px_to_framebuffer_gpu(uint8_t *__restrict source) {
     }
 
     gfxScreenSwapBuffers(screen, true);
+    if (trace_presentation_frame) {
+        diag_log("PRESENTATION_FRAME_DONE",
+                 "frame=%u stereo=%d eye_passes=%d",
+                 presentation_frame, stereo, eye_pass_count);
+    }
 }
 
 void n3ds_draw_diag_version_overlay() {

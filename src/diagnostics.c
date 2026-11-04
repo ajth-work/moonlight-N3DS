@@ -757,6 +757,7 @@ void diag_http_summary_flush(int result, bool cancelled) {
 
 void diag_http_begin(const char *method, const char *safe_url) {
     bool deferred;
+    char breadcrumb[64];
     size_t used;
     LightLock_Lock(&diag_lock);
     diag_http_active = true;
@@ -780,7 +781,9 @@ void diag_http_begin(const char *method, const char *safe_url) {
             diag_http_dropped++;
         }
     }
-    diag_http_breadcrumb_locked("HTTP_BEGIN method=GET details=bounded");
+    snprintf(breadcrumb, sizeof(breadcrumb),
+             "HTTP_BEGIN method=%s details=bounded", method ? method : "?");
+    diag_http_breadcrumb_locked(breadcrumb);
     LightLock_Unlock(&diag_lock);
     if (!deferred) {
         diag_log("HTTP_REQUEST", "method=%s url=%s", method ? method : "?",
@@ -790,8 +793,11 @@ void diag_http_begin(const char *method, const char *safe_url) {
 
 void diag_http_end(long status_code, int transport_result) {
     bool deferred;
+    char method[16];
     LightLock_Lock(&diag_lock);
     deferred = diag_http_deferred;
+    snprintf(method, sizeof(method), "%s",
+             diag_http_method[0] != '\0' ? diag_http_method : "?");
     if (deferred && diag_http_fact_count > 0 && diag_http_dropped == 0) {
         DiagHttpFact *fact = &diag_http_facts[diag_http_fact_count - 1];
         fact->status = status_code;
@@ -804,8 +810,8 @@ void diag_http_end(long status_code, int transport_result) {
     diag_http_breadcrumb_locked("HTTP_END details=bounded");
     LightLock_Unlock(&diag_lock);
     if (!deferred) {
-        diag_log("HTTP_STATUS", "method=GET status=%ld transport_result=%d",
-                 status_code, transport_result);
+        diag_log("HTTP_STATUS", "method=%s status=%ld transport_result=%d",
+                 method, status_code, transport_result);
     }
 }
 

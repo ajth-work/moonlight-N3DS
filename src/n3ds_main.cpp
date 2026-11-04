@@ -1653,10 +1653,11 @@ static bool build_upload_json(const DIAG_SESSION &session, const char *outcome,
                     strcmp(outcome, "host_init_failed") == 0 ||
                     strcmp(outcome, "pair_action") == 0 || strcmp(outcome, "quit_stream") == 0)
             ? outcome : "manual_current_host";
-    body = "{\"version\":1,\"scope\":\"host\","
+    body = "{\"version\":1"
+        ",\"scope\":\"host\""
         ",\"upload_id\":" + json_quote(upload_id) +
         ",\"session_id\":" + json_quote(normalized_id) +
-        ",\"parent_id\":\"\","
+        ",\"parent_id\":\"\""
         ",\"begin\":" + json_quote(std::to_string(begin_epoch)) +
         ",\"end\":" + json_quote(std::to_string(end_epoch)) +
         ",\"build\":" + json_quote(DIAG_BUILD_VERSION) +
@@ -1664,6 +1665,31 @@ static bool build_upload_json(const DIAG_SESSION &session, const char *outcome,
         ",\"truncated\":" + (truncated ? "true" : "false") +
         ",\"content\":" + json_quote(content) + "}";
     return body.size() <= 256 * 1024;
+}
+
+static void log_upload_attempt(unsigned int attempt, int result,
+                               PHTTP_DATA response) {
+    char response_summary[80] = "none";
+    if (response != NULL && response->memory != NULL && response->size > 0) {
+        size_t written = 0;
+        for (size_t i = 0; i < response->size &&
+                           written + 1 < sizeof(response_summary); ++i) {
+            const unsigned char c =
+                static_cast<unsigned char>(response->memory[i]);
+            if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.') {
+                response_summary[written++] = static_cast<char>(c);
+            } else {
+                response_summary[written++] = '_';
+            }
+        }
+        response_summary[written] = '\0';
+    }
+    diag_log("DIAG_UPLOAD_ATTEMPT",
+             "attempt=%u result=%d http_status=%ld response_bytes=%lu response=%s",
+             attempt, result, response ? response->response_code : 0,
+             response ? static_cast<unsigned long>(response->size) : 0UL,
+             response_summary);
 }
 
 static bool upload_session(PSERVER_DATA server, const DIAG_SESSION &session,
@@ -1679,8 +1705,12 @@ static bool upload_session(PSERVER_DATA server, const DIAG_SESSION &session,
     if (response == NULL) return false;
     http_set_timeout_s(5);
     int result = gs_request_pinned(server, url, response, body.c_str(), body.size());
-    if (result != GS_OK)
+    log_upload_attempt(1, result, response);
+    if (result != GS_OK &&
+        (response->response_code == 0 || response->response_code >= 500)) {
         result = gs_request_pinned(server, url, response, body.c_str(), body.size());
+        log_upload_attempt(2, result, response);
+    }
     http_set_timeout_s(60);
     http_free_data(response);
     return result == GS_OK;
@@ -1698,7 +1728,7 @@ static void finish_session(PSERVER_DATA server, const char *outcome,
                      sent ? "Sunshine acknowledged this session's diagnostics."
                           : "The session log remains saved on the SD card.",
                      sent ? "The local copy is still available in Check Logs."
-                          : "Check pairing, the saved host pin, and host reachability.");
+                          : "See DIAG_UPLOAD_ATTEMPT in Check Logs.");
 }
 
 static void send_current_session(PSERVER_DATA server) {
@@ -1722,7 +1752,7 @@ static void send_current_session(PSERVER_DATA server) {
                      sent ? "Sunshine acknowledged this session's diagnostics."
                           : "The session log remains saved on the SD card.",
                      sent ? "The local copy is still available in Check Logs."
-                          : "Check pairing, the saved host pin, and host reachability.");
+                          : "See DIAG_UPLOAD_ATTEMPT in Check Logs.");
 }
 
 static void toggle_automatic_upload(PSERVER_DATA server) {
