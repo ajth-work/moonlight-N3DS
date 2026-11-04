@@ -277,9 +277,10 @@ struct GuiMenuItem {
 
 static void restore_consoles_after_dual_screen_ui();
 static void show_gui_message(const std::string &title, const std::string &message,
-                             const std::string &detail);
+                             const std::string &detail,
+                             const std::string &headline = "NEXT STEP");
 static bool upload_session(PSERVER_DATA server, const DIAG_SESSION &session,
-                           const char *outcome);
+                           const char *outcome, DIAG_UPLOAD_INFO *upload_info);
 
 class GuiMenuScreen : public MoonlightUi::DualScreenModel {
   public:
@@ -411,49 +412,68 @@ class CheckLogsScreen : public MoonlightUi::DualScreenModel {
             return;
         }
         const std::vector<size_t> visible = visible_indices();
-        top.drawHeader("CHECK LOGS", std::to_string(visible.size()) + " LOGS" +
-                       (show_app_state_ ? " + APP STATE" : ""));
+        top.drawHeader("CHECK LOGS", std::to_string(visible.size()) + " LOGS · NEWEST FIRST");
+        const char *tab_names[] = {"ALL", "HOST", "STREAM"};
+        const int tab_width = (top.width() - 28) / 3;
+        for (int i = 0; i < 3; ++i) {
+            const int left = 14 + i * tab_width;
+            const MoonlightUi::Rect tab{left, 40, left + tab_width - 4, 58};
+            top.drawPanelButton(tab, tab_names[i], i == tab_ ?
+                                MoonlightUi::Color{79, 86, 97} :
+                                MoonlightUi::Color{222, 227, 231}, i == tab_ ?
+                                MoonlightUi::Color{255, 255, 255} :
+                                MoonlightUi::Color{38, 43, 48});
+        }
         const int first = std::max(0, std::min(selected_ - 2,
                                               static_cast<int>(visible.size()) - 5));
         for (int row = 0; row < 5 && first + row < static_cast<int>(visible.size()); ++row) {
             const int index = static_cast<int>(visible[first + row]);
-            MoonlightUi::Rect tile{14, 60 + row * 29, top.width() - 14, 85 + row * 29};
+            MoonlightUi::Rect tile{14, 61 + row * 29, top.width() - 14, 86 + row * 29};
             top.drawFilledTile(tile, first + row + 1);
-            top.drawAutoRateText(tile.left + 26, tile.top + 5, row_label(entries_[index]),
-                                 tile.right - tile.left - 34, {38, 43, 48});
+            top.drawCircle(tile.left + 31, tile.top + 12, 4, status_color(entries_[index]));
+            top.drawAutoRateText(tile.left + 42, tile.top + 5, row_label(entries_[index]),
+                                 tile.right - tile.left - 50, {38, 43, 48});
             if (first + row == selected_) top.drawHighlight(tile);
         }
-        top.drawFooter(DIAG_BUILD_VERSION, "UP/DOWN MOVE A SEND Y STATE B BACK");
+        top.drawFooter(DIAG_BUILD_VERSION, "LEFT/RIGHT TAB UP/DOWN LOG A SEND B BACK");
         bottom.drawHeader("LOG DETAILS", "LOCAL INVENTORY");
         if (visible.empty()) {
             bottom.drawLiveText(20, 72, "No diagnostic logs found.",
                                 MoonlightUi::TextStyle::Small, {38, 43, 48});
         } else {
             const DiagnosticInventory::Entry &e = entries_[visible[selected_]];
-            const std::string lines[] = {
+            const std::vector<std::string> lines = more_details_ ? std::vector<std::string>{
                 "FILE: " + e.filename,
-                std::string("TYPE: ") + (e.app_state ? "application state" : e.scope),
-                "SESSION: " + e.session,
-                "SIZE: " + std::to_string(e.size) + " bytes",
-                "START: " + e.start_local,
-                "END: " + e.end_local,
+                "SESSION: " + (e.session == "unknown" ? "not recorded" : e.session),
+                "UPLOAD ID: " + (e.upload_id.empty() ? "not recorded" : e.upload_id),
+                "LOCAL NOW: " + std::to_string(e.size) + " bytes",
+                "SENT SOURCE: " + (e.upload_source_bytes ? std::to_string(e.upload_source_bytes) + " bytes" : "not recorded"),
+                "FILTERED LOG: " + (e.upload_filtered_bytes ? std::to_string(e.upload_filtered_bytes) + " bytes" : "not recorded"),
+                "HTTP BODY: " + (e.upload_request_bytes ? std::to_string(e.upload_request_bytes) + " bytes" : "not recorded")
+            } : std::vector<std::string>{
+                std::string("TYPE: ") + (e.app_state ? "application state" :
+                    (e.filename == "moonlight.log" ? "application log" : display_scope(e.scope))),
+                "START: " + (e.start_local == "unknown" ? e.modified_local : e.start_local),
+                "AGE: " + DiagnosticInventory::format_relative_age(
+                    e.start_epoch ? e.start_epoch : (e.latest_epoch ? e.latest_epoch : e.modified_epoch)),
                 "DURATION: " + e.duration,
-                "STATUS: " + (e.app_state ? std::string("not a log") : e.completion + " / upload " + e.upload_state)};
-            for (unsigned int i = 0; i < sizeof(lines) / sizeof(lines[0]); ++i)
+                "LOCAL FILE: " + format_size(e.size),
+                "UPLOAD: " + upload_status(e)
+            };
+            for (size_t i = 0; i < lines.size(); ++i)
                 bottom.drawAutoRateText(14, 47 + static_cast<int>(i) * 15, lines[i],
                                         bottom.width() - 28, {38, 43, 48});
-            bottom.drawFilledTile(STATE_TILE, 1);
-            bottom.drawAutoRateText(STATE_TILE.left + 5, STATE_TILE.top + 7,
-                                    show_app_state_ ? "HIDE STATE" : "SHOW STATE",
-                                    STATE_TILE.right - STATE_TILE.left - 10,
-                                    {38, 43, 48});
+            bottom.drawPanelButton(DETAILS_TILE, more_details_ ? "BASIC" : "MORE DETAILS",
+                                   {222, 227, 231}, {38, 43, 48});
             bottom.drawFilledTile(SEND_TILE, 2);
             bottom.drawAutoRateText(SEND_TILE.left + 5, SEND_TILE.top + 7,
                                     e.app_state ? "READ ONLY" : "SEND LOG",
                                     SEND_TILE.right - SEND_TILE.left - 10,
                                     {38, 43, 48});
         }
-        bottom.drawFooter(DIAG_BUILD_VERSION, "A SEND Y STATE B BACK TOUCH");
+        bottom.drawFooter(DIAG_BUILD_VERSION, tab_ == 0 ?
+                          "Y STATE · A SEND · TAP MORE · B BACK" :
+                          "A SEND · TAP MORE · B BACK");
     }
 
     void update(bool *redraw) override {
@@ -470,42 +490,49 @@ class CheckLogsScreen : public MoonlightUi::DualScreenModel {
         if (!loaded_) return true;
         const std::vector<size_t> visible = visible_indices();
         if (event.type == MoonlightUi::InputEvent::Type::AppStateToggle) {
-            show_app_state_ = !show_app_state_;
-            const size_t count = visible_indices().size();
-            selected_ = count ? std::min(selected_, static_cast<int>(count) - 1) : 0;
-            *redraw = true;
-        } else if (event.type == MoonlightUi::InputEvent::Type::Confirm) {
-            result_ = Result::Send;
-            return false;
-        } else if (event.type == MoonlightUi::InputEvent::Type::Touch) {
-            const int x = event.touch.px, y = event.touch.py;
-            if (y >= STATE_TILE.top && y <= STATE_TILE.bottom &&
-                x >= STATE_TILE.left && x <= STATE_TILE.right) {
+            if (tab_ == 0) {
                 show_app_state_ = !show_app_state_;
                 const size_t count = visible_indices().size();
                 selected_ = count ? std::min(selected_, static_cast<int>(count) - 1) : 0;
                 *redraw = true;
-            } else if (y >= SEND_TILE.top && y <= SEND_TILE.bottom &&
-                       x >= SEND_TILE.left && x <= SEND_TILE.right) {
+            }
+        } else if (event.type == MoonlightUi::InputEvent::Type::Confirm) {
+            if (!visible.empty() && !entries_[visible[selected_]].app_state) {
                 result_ = Result::Send;
                 return false;
-            } else if (!visible.empty() && y >= 48 && y < 208) {
-                const int row = (y - 60) / 29;
-                const int first = std::max(0, std::min(selected_ - 2,
-                                                      static_cast<int>(visible.size()) - 5));
-                const int index = first + row;
-                if (row >= 0 && row < 5 && index >= 0 && index < static_cast<int>(visible.size())) {
-                    selected_ = index;
-                    *redraw = true;
-                }
             }
-        } else if (event.type == MoonlightUi::InputEvent::Type::Direction && !visible.empty()) {
+        } else if (event.type == MoonlightUi::InputEvent::Type::Touch) {
+            const int x = event.touch.px, y = event.touch.py;
+            if (y >= DETAILS_TILE.top && y <= DETAILS_TILE.bottom &&
+                x >= DETAILS_TILE.left && x <= DETAILS_TILE.right) {
+                more_details_ = !more_details_;
+                *redraw = true;
+            } else if (y >= SEND_TILE.top && y <= SEND_TILE.bottom &&
+                       x >= SEND_TILE.left && x <= SEND_TILE.right &&
+                       !visible.empty() && !entries_[visible[selected_]].app_state) {
+                result_ = Result::Send;
+                return false;
+            }
+        } else if (event.type == MoonlightUi::InputEvent::Type::Direction) {
             const int before = selected_;
-            if (event.direction == MoonlightUi::Direction::Up)
+            if (event.direction == MoonlightUi::Direction::Left) {
+                tab_ = (tab_ + 2) % 3;
+                selected_ = 0;
+                more_details_ = false;
+                *redraw = true;
+            } else if (event.direction == MoonlightUi::Direction::Right) {
+                tab_ = (tab_ + 1) % 3;
+                selected_ = 0;
+                more_details_ = false;
+                *redraw = true;
+            } else if (!visible.empty() && event.direction == MoonlightUi::Direction::Up)
                 selected_ = selected_ == 0 ? static_cast<int>(visible.size()) - 1 : selected_ - 1;
-            else if (event.direction == MoonlightUi::Direction::Down)
+            else if (!visible.empty() && event.direction == MoonlightUi::Direction::Down)
                 selected_ = (selected_ + 1) % static_cast<int>(visible.size());
-            *redraw = before != selected_;
+            if (before != selected_) {
+                more_details_ = false;
+                *redraw = true;
+            }
         }
         return true;
     }
@@ -520,31 +547,72 @@ class CheckLogsScreen : public MoonlightUi::DualScreenModel {
     }
 
   private:
-    static constexpr MoonlightUi::Rect STATE_TILE{12, 176, 153, 207};
+    static constexpr MoonlightUi::Rect DETAILS_TILE{12, 176, 153, 207};
     static constexpr MoonlightUi::Rect SEND_TILE{166, 176, 307, 207};
     std::vector<DiagnosticInventory::Entry> entries_;
     size_t total_count_ = 0;
     int selected_ = 0;
+    int tab_ = 0;
     bool loaded_ = false;
     bool show_app_state_ = false;
+    bool more_details_ = false;
     Result result_ = Result::Back;
 
     std::vector<size_t> visible_indices() const {
         std::vector<size_t> indices;
-        for (size_t i = 0; i < entries_.size(); ++i)
-            if (show_app_state_ || !entries_[i].app_state) indices.push_back(i);
+        for (size_t i = 0; i < entries_.size(); ++i) {
+            const DiagnosticInventory::Entry &e = entries_[i];
+            if (e.app_state) {
+                if (tab_ == 0 && show_app_state_) indices.push_back(i);
+                continue;
+            }
+            if (tab_ == 0 ||
+                (tab_ == 1 && e.filename != "moonlight.log" && e.scope != "stream") ||
+                (tab_ == 2 && e.scope == "stream")) indices.push_back(i);
+        }
         return indices;
+    }
+
+    static std::string display_scope(const std::string &scope) {
+        return scope == "stream" ? "stream" : "host";
+    }
+
+    static std::string upload_status(const DiagnosticInventory::Entry &e) {
+        if (e.upload_state == "accepted") return "accepted by Sunshine";
+        if (e.upload_state == "failed") return "last attempt failed";
+        if (e.upload_state == "uncertain") return "attempt outcome unknown";
+        return "no accepted upload recorded";
+    }
+
+    static std::string format_size(uint64_t bytes) {
+        if (bytes < 1024) return std::to_string(bytes) + " B";
+        char text[32];
+        snprintf(text, sizeof(text), "%.1f KiB", static_cast<double>(bytes) / 1024.0);
+        return text;
+    }
+
+    static MoonlightUi::Color status_color(const DiagnosticInventory::Entry &e) {
+        if (e.app_state) return {105, 114, 122};
+        if (e.upload_state == "accepted") return {47, 151, 91};
+        if (e.upload_state == "failed" || e.upload_state == "uncertain")
+            return {218, 143, 30};
+        return {194, 55, 61};
     }
 
     static std::string row_label(const DiagnosticInventory::Entry &e) {
         if (e.app_state) return "APP STATE  " + e.filename;
-        if (e.filename == "moonlight.log") return "APPLICATION LOG  Moonlight";
-        std::string label = e.scope == "stream" ? "STREAM " : "HOST ";
-        if (e.start_local != "unknown") label += e.start_local.substr(5, 11) + "  ";
-        if (e.session != "unknown") {
-            label += "ID ";
-            label += e.session.substr(e.session.size() > 6 ? e.session.size() - 6 : 0);
+        if (e.filename == "moonlight.log") {
+            const unsigned long long age_epoch = e.latest_epoch ? e.latest_epoch : e.modified_epoch;
+            return "APPLICATION LOG  " + e.modified_local + " · " +
+                   DiagnosticInventory::format_relative_age(age_epoch);
         }
+        std::string label = e.scope == "stream" ? "STREAM " : "HOST ";
+        if (e.start_local != "unknown") label += e.start_local;
+        else if (e.modified_local != "unknown") label += e.modified_local;
+        const unsigned long long age_epoch = e.start_epoch ? e.start_epoch :
+            (e.latest_epoch ? e.latest_epoch : e.modified_epoch);
+        const std::string age = DiagnosticInventory::format_relative_age(age_epoch);
+        if (!age.empty()) label += " · " + age;
         return label;
     }
 };
@@ -616,17 +684,22 @@ static void send_inventory_log(PSERVER_DATA server,
     session.end_epoch = entry.end_epoch;
     if (session.begin_epoch == 0) session.begin_epoch = session.end_epoch ? session.end_epoch : (unsigned long long)time(NULL);
     if (session.end_epoch < session.begin_epoch) session.end_epoch = session.begin_epoch;
-    const bool sent = upload_session(server, session, "manual_current_host");
+    DIAG_UPLOAD_INFO upload_info = {};
+    const bool sent = upload_session(server, session, "manual_current_host",
+                                     &upload_info);
     if (entry.filename == "moonlight.log") {
-        diag_log("DIAG_UPLOAD", "scope=host session_id=%s state=%s truncated=false",
-                 session.id, sent ? "accepted" : "failed");
+        diag_log("DIAG_UPLOAD", "scope=host session_id=%s upload_id=%s state=%s truncated=false source_bytes=%llu filtered_bytes=%llu request_bytes=%llu",
+                 session.id, upload_info.upload_id, sent ? "accepted" : "failed",
+                 upload_info.source_bytes, upload_info.filtered_bytes,
+                 upload_info.request_bytes);
     } else {
-        diag_session_record_upload(&session, sent);
+        diag_session_record_upload(&session, sent, &upload_info);
     }
     show_gui_message(sent ? "LOG SENT" : "LOG TRANSFER FAILED",
                      sent ? "Sunshine accepted the selected log." : "The log remains saved on the SD card.",
                      sent ? "The local copy is still available in Check Logs." :
-                            "Check host pairing, the saved pin, and host reachability.");
+                            "Check host pairing, the saved pin, and host reachability.",
+                     sent ? "UPLOAD ACCEPTED" : "LOG NOT SENT");
 }
 
 static void show_check_logs(PSERVER_DATA server) {
@@ -1520,13 +1593,19 @@ struct DisplayListTaskContext {
 
 class GuiMessageScreen : public MoonlightUi::DualScreenModel {
   public:
-    GuiMessageScreen(std::string title, std::string message, std::string hint)
+    GuiMessageScreen(std::string title, std::string message, std::string hint,
+                     std::string headline)
         : title_(std::move(title)), message_(std::move(message)),
+          headline_(std::move(headline)),
           hint_(std::move(hint)) {}
     void draw(MoonlightUi::Screen &top, MoonlightUi::Screen &bottom) override {
         top.drawHeader("MOONLIGHT", title_);
-        top.drawLiveText(20, 91, "Something needs attention", MoonlightUi::TextStyle::Header,
-                         {38, 43, 48});
+        top.drawLiveText(20, 91, headline_, MoonlightUi::TextStyle::Header,
+                         headline_ == "UPLOAD ACCEPTED" ?
+                             MoonlightUi::Color{47, 151, 91} :
+                             headline_ == "LOG NOT SENT" ?
+                                 MoonlightUi::Color{194, 55, 61} :
+                                 MoonlightUi::Color{38, 43, 48});
         top.drawFooter(DIAG_BUILD_VERSION, "RETURN TO HOST MENU");
         bottom.drawHeader("NEXT STEP", "YOU CAN GO BACK");
         bottom.drawAutoRateText(20, 82, message_, bottom.width() - 40,
@@ -1542,12 +1621,13 @@ class GuiMessageScreen : public MoonlightUi::DualScreenModel {
         return true;
     }
   private:
-    std::string title_, message_, hint_;
+    std::string title_, message_, headline_, hint_;
 };
 
 static void show_gui_message(const std::string &title, const std::string &message,
-                             const std::string &hint) {
-    GuiMessageScreen screen(title, message, hint);
+                             const std::string &hint,
+                             const std::string &headline) {
+    GuiMessageScreen screen(title, message, hint, headline);
     MoonlightUi::runDualScreen(screen);
     restore_consoles_after_dual_screen_ui();
 }
@@ -1615,8 +1695,13 @@ static bool sensitive_diagnostic_line(const std::string &line) {
 }
 
 static bool build_upload_json(const DIAG_SESSION &session, const char *outcome,
-                              std::string &body) {
+                              std::string &body, DIAG_UPLOAD_INFO *upload_info) {
     std::ifstream input(session.path, std::ios::binary);
+    if (!input) return false;
+    input.seekg(0, std::ios::end);
+    const std::streamoff source_size = input.tellg();
+    if (source_size < 0) return false;
+    input.seekg(0, std::ios::beg);
     if (!input) return false;
     std::string content, line;
     bool truncated = false;
@@ -1639,6 +1724,13 @@ static bool build_upload_json(const DIAG_SESSION &session, const char *outcome,
     for (size_t i = 0; i < sizeof(raw_id); ++i) {
         upload_id[i * 2] = hex[raw_id[i] >> 4];
         upload_id[i * 2 + 1] = hex[raw_id[i] & 0xf];
+    }
+    if (upload_info != NULL) {
+        memset(upload_info, 0, sizeof(*upload_info));
+        snprintf(upload_info->upload_id, sizeof(upload_info->upload_id), "%s",
+                 upload_id.c_str());
+        upload_info->source_bytes = static_cast<unsigned long long>(source_size);
+        upload_info->filtered_bytes = static_cast<unsigned long long>(content.size());
     }
     const std::string normalized_id = make_sunshine_session_id("active-session", session.id,
                                                                session.begin_epoch);
@@ -1664,13 +1756,17 @@ static bool build_upload_json(const DIAG_SESSION &session, const char *outcome,
         ",\"outcome\":" + json_quote(normalized_outcome) +
         ",\"truncated\":" + (truncated ? "true" : "false") +
         ",\"content\":" + json_quote(content) + "}";
-    return body.size() <= 256 * 1024;
+    if (body.size() > 256 * 1024) return false;
+    if (upload_info != NULL)
+        upload_info->request_bytes = static_cast<unsigned long long>(body.size());
+    return true;
 }
 
 static constexpr size_t DIAG_UPLOAD_RESPONSE_BODY_LIMIT = 1024;
 
 static void log_upload_attempt(unsigned int attempt, int result,
-                               PHTTP_DATA response) {
+                               PHTTP_DATA response,
+                               const DIAG_UPLOAD_INFO *upload_info) {
     char response_summary[256] = "none";
     if (response != NULL && response->memory != NULL && response->size > 0) {
         size_t written = 0;
@@ -1688,18 +1784,24 @@ static void log_upload_attempt(unsigned int attempt, int result,
         response_summary[written] = '\0';
     }
     diag_log("DIAG_UPLOAD_ATTEMPT",
-             "attempt=%u result=%d http_status=%ld response_bytes=%lu response_truncated=%s response=%s",
+             "attempt=%u result=%d http_status=%ld upload_id=%s source_bytes=%llu filtered_bytes=%llu request_bytes=%llu response_bytes=%lu response_truncated=%s response=%s",
              attempt, result, response ? response->response_code : 0,
+             upload_info ? upload_info->upload_id : "",
+             upload_info ? upload_info->source_bytes : 0,
+             upload_info ? upload_info->filtered_bytes : 0,
+             upload_info ? upload_info->request_bytes : 0,
              response ? static_cast<unsigned long>(response->size) : 0UL,
              response && response->response_truncated ? "true" : "false",
              response_summary);
 }
 
 static bool upload_session(PSERVER_DATA server, const DIAG_SESSION &session,
-                           const char *outcome) {
+                           const char *outcome, DIAG_UPLOAD_INFO *upload_info) {
     if (server == NULL || !server->paired) return false;
     std::string body;
-    if (!build_upload_json(session, outcome, body)) return false;
+    DIAG_UPLOAD_INFO local_upload_info = {};
+    DIAG_UPLOAD_INFO *info = upload_info != NULL ? upload_info : &local_upload_info;
+    if (!build_upload_json(session, outcome, body, info)) return false;
     char url[1024];
     const int url_length = snprintf(url, sizeof(url), "https://%s:%u/client-diagnostics",
                                     server->serverInfo.address, server->httpsPort);
@@ -1709,11 +1811,11 @@ static bool upload_session(PSERVER_DATA server, const DIAG_SESSION &session,
     http_set_response_limit(response, DIAG_UPLOAD_RESPONSE_BODY_LIMIT);
     http_set_timeout_s(5);
     int result = gs_request_pinned(server, url, response, body.c_str(), body.size());
-    log_upload_attempt(1, result, response);
+    log_upload_attempt(1, result, response, info);
     if (result != GS_OK &&
         (response->response_code == 0 || response->response_code >= 500)) {
         result = gs_request_pinned(server, url, response, body.c_str(), body.size());
-        log_upload_attempt(2, result, response);
+        log_upload_attempt(2, result, response, info);
     }
     http_set_timeout_s(60);
     http_free_data(response);
@@ -1726,13 +1828,15 @@ static void finish_session(PSERVER_DATA server, const char *outcome,
     const bool captured = diag_session_get_info(&session);
     diag_session_end(outcome, reason);
     if (!captured || !auto_upload_enabled(server)) return;
-    const bool sent = upload_session(server, session, outcome);
-    diag_session_record_upload(&session, sent);
+    DIAG_UPLOAD_INFO upload_info = {};
+    const bool sent = upload_session(server, session, outcome, &upload_info);
+    diag_session_record_upload(&session, sent, &upload_info);
     show_gui_message(sent ? "LOGS SENT" : "LOG UPLOAD FAILED",
                      sent ? "Sunshine acknowledged this session's diagnostics."
                           : "The session log remains saved on the SD card.",
                      sent ? "The local copy is still available in Check Logs."
-                          : "See DIAG_UPLOAD_ATTEMPT in Check Logs.");
+                          : "See DIAG_UPLOAD_ATTEMPT in Check Logs.",
+                     sent ? "UPLOAD ACCEPTED" : "LOG NOT SENT");
 }
 
 static void send_current_session(PSERVER_DATA server) {
@@ -1750,13 +1854,15 @@ static void send_current_session(PSERVER_DATA server) {
     int selected = 1;
     if (!run_gui_menu("CONFIRM LOG UPLOAD", "THIS HOST SESSION ONLY",
                       choices, &selected) || selected != 0) return;
-    const bool sent = upload_session(server, session, "manual_send");
-    diag_session_record_upload(&session, sent);
+    DIAG_UPLOAD_INFO upload_info = {};
+    const bool sent = upload_session(server, session, "manual_send", &upload_info);
+    diag_session_record_upload(&session, sent, &upload_info);
     show_gui_message(sent ? "LOGS SENT" : "LOG UPLOAD FAILED",
                      sent ? "Sunshine acknowledged this session's diagnostics."
                           : "The session log remains saved on the SD card.",
                      sent ? "The local copy is still available in Check Logs."
-                          : "See DIAG_UPLOAD_ATTEMPT in Check Logs.");
+                          : "See DIAG_UPLOAD_ATTEMPT in Check Logs.",
+                     sent ? "UPLOAD ACCEPTED" : "LOG NOT SENT");
 }
 
 static void toggle_automatic_upload(PSERVER_DATA server) {

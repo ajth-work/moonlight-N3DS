@@ -62,7 +62,8 @@ If you are using VS Code as your editor, you can use the `Build Docker` and `Run
 Before building from a fresh clone or worktree, initialize the exact pinned dependencies and verify none are missing or at a different revision:
 
 ```bash
-git submodule update --init --recursive
+git submodule sync --recursive
+git submodule update --init --recursive --checkout
 git submodule status --recursive
 ```
 

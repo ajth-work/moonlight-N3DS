@@ -485,9 +485,14 @@ bool diag_session_get_info(DIAG_SESSION *session) {
     return active;
 }
 
-void diag_session_record_upload(const DIAG_SESSION *session, bool accepted) {
+void diag_session_record_upload(const DIAG_SESSION *session, bool accepted,
+                                const DIAG_UPLOAD_INFO *upload_info) {
     FILE *file;
     char wall_time[40];
+    const char *upload_id = upload_info != NULL ? upload_info->upload_id : "";
+    const unsigned long long source_bytes = upload_info != NULL ? upload_info->source_bytes : 0;
+    const unsigned long long filtered_bytes = upload_info != NULL ? upload_info->filtered_bytes : 0;
+    const unsigned long long request_bytes = upload_info != NULL ? upload_info->request_bytes : 0;
     bool active = false;
     if (session == NULL || session->id[0] == '\0' || session->path[0] == '\0')
         return;
@@ -495,15 +500,18 @@ void diag_session_record_upload(const DIAG_SESSION *session, bool accepted) {
     active = diag_session_file != NULL &&
              strcmp(diag_session_id, session->id) == 0;
     LightLock_Unlock(&diag_lock);
-    diag_log("DIAG_UPLOAD", "scope=%s session_id=%s state=%s truncated=false",
-             session->scope, session->id, accepted ? "accepted" : "failed");
+    diag_log("DIAG_UPLOAD", "scope=%s session_id=%s upload_id=%s state=%s truncated=false source_bytes=%llu filtered_bytes=%llu request_bytes=%llu",
+             session->scope, session->id, upload_id,
+             accepted ? "accepted" : "failed", source_bytes, filtered_bytes,
+             request_bytes);
     if (active) return;
     file = fopen(session->path, "a");
     if (file == NULL) return;
     format_wall_time(wall_time, sizeof(wall_time));
-    if (fprintf(file, "%s +%08llums DIAG_UPLOAD scope=%s session_id=%s state=%s truncated=false\n",
+    if (fprintf(file, "%s +%08llums DIAG_UPLOAD scope=%s session_id=%s upload_id=%s state=%s truncated=false source_bytes=%llu filtered_bytes=%llu request_bytes=%llu\n",
                 wall_time, (unsigned long long)diag_elapsed_ms(), session->scope,
-                session->id, accepted ? "accepted" : "failed") >= 0) {
+                session->id, upload_id, accepted ? "accepted" : "failed",
+                source_bytes, filtered_bytes, request_bytes) >= 0) {
         fflush(file);
         fsync(fileno(file));
     }

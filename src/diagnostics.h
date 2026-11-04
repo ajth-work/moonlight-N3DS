@@ -11,7 +11,7 @@ extern "C" {
 #endif
 
 #define DIAG_WATCHDOG_LIMIT_MS 30000ULL
-#define DIAG_BUILD_VERSION "3.6.0-gui23.2"
+#define DIAG_BUILD_VERSION "3.6.0-gui23.3"
 #define DIAG_MAIN_STACK_REQUESTED_SIZE 0x40000U
 /* app.rsf SystemControlInfo.StackSize */
 #define DIAG_LOG_LINE_MAX 512
@@ -36,6 +36,13 @@ typedef struct {
     unsigned long long end_epoch;
 } DIAG_SESSION;
 
+typedef struct {
+    char upload_id[33];
+    unsigned long long source_bytes;
+    unsigned long long filtered_bytes;
+    unsigned long long request_bytes;
+} DIAG_UPLOAD_INFO;
+
 void diag_init(void);
 void diag_close(void);
 void diag_set_enabled(bool enabled);
@@ -44,7 +51,8 @@ bool diag_session_begin(void);
 void diag_session_end(const char *outcome, const char *reason);
 bool diag_session_available(void);
 bool diag_session_get_info(DIAG_SESSION *session);
-void diag_session_record_upload(const DIAG_SESSION *session, bool accepted);
+void diag_session_record_upload(const DIAG_SESSION *session, bool accepted,
+                                const DIAG_UPLOAD_INFO *upload_info);
 void diag_log(const char *event, const char *format, ...);
 void diag_ui_state(const char *screen, const char *state, bool graphical);
 void diag_stack_checkpoint(const char *boundary, uintptr_t stack_pointer);
