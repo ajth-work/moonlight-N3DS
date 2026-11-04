@@ -259,6 +259,7 @@ static bool _reset_response(PHTTP_DATA data) {
     }
     data->size = 0;
     data->response_code = 0;
+    data->response_truncated = 0;
     data->memory[0] = '\0';
     return true;
 }
@@ -478,14 +479,26 @@ static size_t _write_curl(void *contents, size_t size, size_t nmemb,
                           void *userp) {
     size_t realsize = size * nmemb;
     PHTTP_DATA mem = (PHTTP_DATA)userp;
+    size_t stored_size = realsize;
 
-    mem->memory = realloc(mem->memory, mem->size + realsize + 1);
-    if (mem->memory == NULL)
-        return 0;
+    if (mem->max_response_size != 0) {
+        const size_t available = mem->size < mem->max_response_size
+                                     ? mem->max_response_size - mem->size
+                                     : 0;
+        if (stored_size > available) {
+            stored_size = available;
+            mem->response_truncated = 1;
+        }
+    }
 
-    memcpy(&(mem->memory[mem->size]), contents, realsize);
-    mem->size += realsize;
-    mem->memory[mem->size] = 0;
+    if (stored_size > 0) {
+        char *new_memory = realloc(mem->memory, mem->size + stored_size + 1);
+        if (new_memory == NULL) return 0;
+        mem->memory = new_memory;
+        memcpy(&(mem->memory[mem->size]), contents, stored_size);
+        mem->size += stored_size;
+        mem->memory[mem->size] = 0;
+    }
 
     return realsize;
 }
@@ -602,6 +615,12 @@ void http_set_timeout_s(uint32_t connection_timeout_in) {
     connection_timeout_s = connection_timeout_in;
 }
 
+void http_set_response_limit(PHTTP_DATA data, size_t max_response_size) {
+    if (data == NULL) return;
+    data->max_response_size = max_response_size;
+    data->response_truncated = 0;
+}
+
 void http_set_log_level(int log_level_in) { log_level = log_level_in; }
 
 static CURLcode _perform_https_attempt(const char *url, PHTTP_DATA data,
@@ -634,6 +653,9 @@ static CURLcode _perform_https_attempt(const char *url, PHTTP_DATA data,
 
 static int _http_request(char *url, PHTTP_DATA data, const char *pin,
                          const char *post_body, size_t post_size) {
+    if (curl == NULL || url == NULL || data == NULL) return GS_FAILED;
+    if (curl_easy_setopt(curl, CURLOPT_FAILONERROR, post_body == NULL ? 1L : 0L) != CURLE_OK)
+        return GS_FAILED;
     /* Diagnostic-only truncation; CURLOPT_URL still receives the original URL.
      * Per-call storage avoids races without holding a lock across curl. */
     char safe_url[384];
@@ -832,6 +854,8 @@ PHTTP_DATA http_create_data() {
     }
     data->size = 0;
     data->response_code = 0;
+    data->max_response_size = 0;
+    data->response_truncated = 0;
 
     return data;
 }

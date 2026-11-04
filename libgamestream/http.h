@@ -32,6 +32,8 @@ typedef struct _HTTP_DATA {
     char *memory;
     size_t size;
     long response_code;
+    size_t max_response_size;
+    int response_truncated;
 } HTTP_DATA, *PHTTP_DATA;
 
 int http_init(const char *keyDirectory, int logLevel);
@@ -43,6 +45,7 @@ int http_request_post_pinned(char *url, PHTTP_DATA data, const char *public_key_
 void http_cleanup();
 void http_free_data(PHTTP_DATA data);
 void http_set_timeout_s(uint32_t connection_timeout_in);
+void http_set_response_limit(PHTTP_DATA data, size_t max_response_size);
 void http_set_log_level(int log_level_in);
 
 #ifdef __cplusplus

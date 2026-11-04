@@ -566,8 +566,8 @@ static std::string make_sunshine_session_id(const std::string &filename,
     if (SHA256(reinterpret_cast<const unsigned char *>(material.data()), material.size(), digest) == NULL)
         return std::string();
     static const char hex[] = "0123456789abcdef";
-    std::string id(64, '0');
-    for (size_t i = 0; i < sizeof(digest); ++i) {
+    std::string id(32, '0');
+    for (size_t i = 0; i < sizeof(digest) / 2; ++i) {
         id[i * 2] = hex[digest[i] >> 4];
         id[i * 2 + 1] = hex[digest[i] & 0x0f];
     }
@@ -1667,9 +1667,11 @@ static bool build_upload_json(const DIAG_SESSION &session, const char *outcome,
     return body.size() <= 256 * 1024;
 }
 
+static constexpr size_t DIAG_UPLOAD_RESPONSE_BODY_LIMIT = 1024;
+
 static void log_upload_attempt(unsigned int attempt, int result,
                                PHTTP_DATA response) {
-    char response_summary[80] = "none";
+    char response_summary[256] = "none";
     if (response != NULL && response->memory != NULL && response->size > 0) {
         size_t written = 0;
         for (size_t i = 0; i < response->size &&
@@ -1686,9 +1688,10 @@ static void log_upload_attempt(unsigned int attempt, int result,
         response_summary[written] = '\0';
     }
     diag_log("DIAG_UPLOAD_ATTEMPT",
-             "attempt=%u result=%d http_status=%ld response_bytes=%lu response=%s",
+             "attempt=%u result=%d http_status=%ld response_bytes=%lu response_truncated=%s response=%s",
              attempt, result, response ? response->response_code : 0,
              response ? static_cast<unsigned long>(response->size) : 0UL,
+             response && response->response_truncated ? "true" : "false",
              response_summary);
 }
 
@@ -1703,6 +1706,7 @@ static bool upload_session(PSERVER_DATA server, const DIAG_SESSION &session,
     if (url_length < 0 || (size_t)url_length >= sizeof(url)) return false;
     PHTTP_DATA response = http_create_data();
     if (response == NULL) return false;
+    http_set_response_limit(response, DIAG_UPLOAD_RESPONSE_BODY_LIMIT);
     http_set_timeout_s(5);
     int result = gs_request_pinned(server, url, response, body.c_str(), body.size());
     log_upload_attempt(1, result, response);
