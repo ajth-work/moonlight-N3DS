@@ -417,7 +417,7 @@ class CheckLogsScreen : public MoonlightUi::DualScreenModel {
         const int tab_width = (top.width() - 28) / 3;
         for (int i = 0; i < 3; ++i) {
             const int left = 14 + i * tab_width;
-            const MoonlightUi::Rect tab{left, 40, left + tab_width - 4, 58};
+            const MoonlightUi::Rect tab{left, 50, left + tab_width - 4, 68};
             top.drawPanelButton(tab, tab_names[i], i == tab_ ?
                                 MoonlightUi::Color{79, 86, 97} :
                                 MoonlightUi::Color{222, 227, 231}, i == tab_ ?
@@ -428,28 +428,30 @@ class CheckLogsScreen : public MoonlightUi::DualScreenModel {
                                               static_cast<int>(visible.size()) - 5));
         for (int row = 0; row < 5 && first + row < static_cast<int>(visible.size()); ++row) {
             const int index = static_cast<int>(visible[first + row]);
-            MoonlightUi::Rect tile{14, 61 + row * 29, top.width() - 14, 86 + row * 29};
+            MoonlightUi::Rect tile{14, 70 + row * 29, top.width() - 14, 95 + row * 29};
             top.drawFilledTile(tile, first + row + 1);
             top.drawCircle(tile.left + 31, tile.top + 12, 4, status_color(entries_[index]));
             top.drawAutoRateText(tile.left + 42, tile.top + 5, row_label(entries_[index]),
                                  tile.right - tile.left - 50, {38, 43, 48});
             if (first + row == selected_) top.drawHighlight(tile);
         }
-        top.drawFooter(DIAG_BUILD_VERSION, "LEFT/RIGHT TAB UP/DOWN LOG A SEND B BACK");
+        top.drawFooter(DIAG_BUILD_VERSION, "D-PAD L/R TAB · U/D LOG · A SEND · B BACK");
         bottom.drawHeader("LOG DETAILS", "LOCAL INVENTORY");
         if (visible.empty()) {
             bottom.drawLiveText(20, 72, "No diagnostic logs found.",
                                 MoonlightUi::TextStyle::Small, {38, 43, 48});
         } else {
             const DiagnosticInventory::Entry &e = entries_[visible[selected_]];
+            const std::string no_upload_record = e.app_state ? "not applicable" :
+                (e.upload_state == "unknown" ? "no send attempt in log" : "not recorded");
             const std::vector<std::string> lines = more_details_ ? std::vector<std::string>{
                 "FILE: " + e.filename,
                 "SESSION: " + (e.session == "unknown" ? "not recorded" : e.session),
-                "UPLOAD ID: " + (e.upload_id.empty() ? "not recorded" : e.upload_id),
+                "UPLOAD ID: " + (e.upload_id.empty() ? no_upload_record : e.upload_id),
                 "LOCAL NOW: " + std::to_string(e.size) + " bytes",
-                "SENT SOURCE: " + (e.upload_source_bytes ? std::to_string(e.upload_source_bytes) + " bytes" : "not recorded"),
-                "FILTERED LOG: " + (e.upload_filtered_bytes ? std::to_string(e.upload_filtered_bytes) + " bytes" : "not recorded"),
-                "HTTP BODY: " + (e.upload_request_bytes ? std::to_string(e.upload_request_bytes) + " bytes" : "not recorded")
+                "SENT SOURCE: " + (e.upload_source_bytes ? std::to_string(e.upload_source_bytes) + " bytes" : no_upload_record),
+                "FILTERED LOG: " + (e.upload_filtered_bytes ? std::to_string(e.upload_filtered_bytes) + " bytes" : no_upload_record),
+                "HTTP BODY: " + (e.upload_request_bytes ? std::to_string(e.upload_request_bytes) + " bytes" : no_upload_record)
             } : std::vector<std::string>{
                 std::string("TYPE: ") + (e.app_state ? "application state" :
                     (e.filename == "moonlight.log" ? "application log" : display_scope(e.scope))),
@@ -465,11 +467,9 @@ class CheckLogsScreen : public MoonlightUi::DualScreenModel {
                                         bottom.width() - 28, {38, 43, 48});
             bottom.drawPanelButton(DETAILS_TILE, more_details_ ? "BASIC" : "MORE DETAILS",
                                    {222, 227, 231}, {38, 43, 48});
-            bottom.drawFilledTile(SEND_TILE, 2);
-            bottom.drawAutoRateText(SEND_TILE.left + 5, SEND_TILE.top + 7,
-                                    e.app_state ? "READ ONLY" : "SEND LOG",
-                                    SEND_TILE.right - SEND_TILE.left - 10,
-                                    {38, 43, 48});
+            bottom.drawPanelButton(SEND_TILE,
+                                   e.app_state ? "READ ONLY" : "SEND LOG",
+                                   {222, 227, 231}, {38, 43, 48});
         }
         bottom.drawFooter(DIAG_BUILD_VERSION, tab_ == 0 ?
                           "Y STATE · A SEND · TAP MORE · B BACK" :
@@ -581,7 +581,7 @@ class CheckLogsScreen : public MoonlightUi::DualScreenModel {
         if (e.upload_state == "accepted") return "accepted by Sunshine";
         if (e.upload_state == "failed") return "last attempt failed";
         if (e.upload_state == "uncertain") return "attempt outcome unknown";
-        return "no accepted upload recorded";
+        return "no send attempt in log";
     }
 
     static std::string format_size(uint64_t bytes) {
