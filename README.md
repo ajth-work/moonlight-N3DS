@@ -59,6 +59,15 @@ More information about installing and runnning Moonlight Embedded is available o
 
 I have included a Dockerfile which has all of the required build dependencies pre-installed. The easiest way to build moonlight.cia is by building and running the docker image.
 If you are using VS Code as your editor, you can use the `Build Docker` and `Run Docker` tasks for this.
+Before building from a fresh clone or worktree, initialize the exact pinned dependencies and verify none are missing or at a different revision:
+
+```bash
+git submodule update --init --recursive
+git submodule status --recursive
+```
+
+In the status output, no submodule line should begin with `-` (uninitialized) or `+` (wrong revision). Resolve that before starting Docker.
+
 If you are not using VS Code, you can build and run the docker image with the following terminal commands from the root of the repository:
 
 ```bash
