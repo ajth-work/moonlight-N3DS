@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <map>
 #include <dirent.h>
 #include <sys/stat.h>
 #include <time.h>
@@ -158,7 +159,8 @@ bool is_diagnostic_filename(const std::string &filename) {
     return leaf.size() > 4 && leaf.compare(leaf.size() - 4, 4, ".log") == 0;
 }
 
-void scan_upload_state(const std::string &path, Entry &entry) {
+void scan_upload_state(const std::string &path, Entry &entry,
+                       std::map<std::string, Entry> *receipts = NULL) {
     FILE *f = fopen(path.c_str(), "rb");
     if (!f) return;
     char buffer[MAX_LINE];
@@ -173,14 +175,24 @@ void scan_upload_state(const std::string &path, Entry &entry) {
         const size_t n = strlen(buffer);
         consumed += n;
         if (strstr(buffer, " DIAG_UPLOAD ") != NULL ||
-            strstr(buffer, " DIAG_UPLOAD_ATTEMPT ") != NULL)
-            parse_line(entry, std::string(buffer, n));
+            strstr(buffer, " DIAG_UPLOAD_ATTEMPT ") != NULL) {
+            const std::string line(buffer, n);
+            const std::string session = value_for(line, "session_id");
+            if (receipts != NULL && !session.empty()) {
+                Entry receipt;
+                parse_line(receipt, line);
+                receipt.session = session;
+                (*receipts)[session] = receipt;
+            }
+            parse_line(entry, line);
+        }
     }
     fclose(f);
 }
 
 void add_directory(const std::string &path, std::vector<Entry> &out,
-                   size_t &total_count) {
+                   size_t &total_count,
+                   std::map<std::string, Entry> *receipts) {
     DIR *dir = opendir(path.c_str());
     if (!dir) return;
     struct dirent *item;
@@ -201,7 +213,7 @@ void add_directory(const std::string &path, std::vector<Entry> &out,
         e.modified_local = format_epoch_local(st.st_mtime);
         /* The append-only application log can contain many sessions; do not
          * misattribute its last session's facts to the whole file. */
-        if (e.filename == "moonlight.log") scan_upload_state(full, e);
+        if (e.filename == "moonlight.log") scan_upload_state(full, e, receipts);
         else if (!e.app_state) {
             scan_file(full, e);
             scan_upload_state(full, e);
@@ -230,6 +242,7 @@ void add_directory(const std::string &path, std::vector<Entry> &out,
 void parse_line(Entry &e, const std::string &line) {
     const std::string event = line.find(" SESSION_BEGIN ") != std::string::npos ? "SESSION_BEGIN" :
                               line.find(" SESSION_END ") != std::string::npos ? "SESSION_END" :
+                              line.find(" STREAM_BEGIN ") != std::string::npos ? "STREAM_BEGIN" :
                               line.find(" DIAG_UPLOAD_ATTEMPT ") != std::string::npos ? "DIAG_UPLOAD_ATTEMPT" :
                               line.find(" DIAG_UPLOAD ") != std::string::npos ? "DIAG_UPLOAD" : "";
     if (event.empty()) return;
@@ -239,6 +252,7 @@ void parse_line(Entry &e, const std::string &line) {
                                     ? value_for(line, "session")
                                     : value_for(line, "session_id");
     if (!scope.empty()) e.scope = scope;
+    if (event == "STREAM_BEGIN" || scope == "stream") e.has_stream = true;
     if (event != "DIAG_UPLOAD" && event != "DIAG_UPLOAD_ATTEMPT" && !session.empty())
         e.session = session;
     time_t event_time;
@@ -302,9 +316,21 @@ std::vector<Entry> list(const std::string &root, size_t limit,
                         size_t *total_count) {
     std::vector<Entry> entries;
     size_t count = 0;
+    std::map<std::string, Entry> receipts;
     limit = std::min(limit, MAX_FILES);
-    add_directory(root, entries, count);
-    add_directory(root + "/sessions", entries, count);
+    add_directory(root, entries, count, &receipts);
+    add_directory(root + "/sessions", entries, count, &receipts);
+    for (size_t i = 0; i < entries.size(); ++i) {
+        Entry &entry = entries[i];
+        const std::map<std::string, Entry>::const_iterator receipt =
+            receipts.find(entry.session);
+        if (entry.session == "unknown" || receipt == receipts.end()) continue;
+        entry.upload_state = receipt->second.upload_state;
+        entry.upload_id = receipt->second.upload_id;
+        entry.upload_source_bytes = receipt->second.upload_source_bytes;
+        entry.upload_filtered_bytes = receipt->second.upload_filtered_bytes;
+        entry.upload_request_bytes = receipt->second.upload_request_bytes;
+    }
     std::sort(entries.begin(), entries.end(), [](const Entry &a, const Entry &b) {
         const unsigned long long a_time = a.start_epoch ? a.start_epoch : a.modified_epoch;
         const unsigned long long b_time = b.start_epoch ? b.start_epoch : b.modified_epoch;

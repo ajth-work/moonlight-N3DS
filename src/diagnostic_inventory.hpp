@@ -10,6 +10,7 @@ namespace DiagnosticInventory {
 struct Entry {
     std::string filename;
     bool app_state = false;
+    bool has_stream = false;
     std::string scope = "unknown";
     std::string session = "unknown";
     uint64_t size = 0;

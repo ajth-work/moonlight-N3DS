@@ -412,8 +412,9 @@ class CheckLogsScreen : public MoonlightUi::DualScreenModel {
             return;
         }
         const std::vector<size_t> visible = visible_indices();
-        top.drawHeader("CHECK LOGS", std::to_string(visible.size()) + " LOGS · NEWEST FIRST");
-        const char *tab_names[] = {"ALL", "HOST", "STREAM"};
+        const int latest_session = latest_session_position(visible);
+        top.drawHeader("CHECK LOGS", std::to_string(visible.size()) + " CLIENT LOGS · NEWEST FIRST");
+        const char *tab_names[] = {"ALL", "CONNECT", "STREAM"};
         const int tab_width = (top.width() - 28) / 3;
         for (int i = 0; i < 3; ++i) {
             const int left = 14 + i * tab_width;
@@ -430,13 +431,15 @@ class CheckLogsScreen : public MoonlightUi::DualScreenModel {
             const int index = static_cast<int>(visible[first + row]);
             MoonlightUi::Rect tile{14, 70 + row * 29, top.width() - 14, 95 + row * 29};
             top.drawFilledTile(tile, first + row + 1);
+            if (first + row == latest_session)
+                top.drawCircle(tile.left + 31, tile.top + 12, 7, {28, 143, 255});
             top.drawCircle(tile.left + 31, tile.top + 12, 4, status_color(entries_[index]));
-            top.drawAutoRateText(tile.left + 42, tile.top + 5, row_label(entries_[index]),
+            top.drawAutoRateText(tile.left + 42, tile.top + 5, row_label(entries_[index], tab_),
                                  tile.right - tile.left - 50, {38, 43, 48});
             if (first + row == selected_) top.drawHighlight(tile);
         }
         top.drawFooter(DIAG_BUILD_VERSION, "D-PAD L/R TAB · U/D LOG · A SEND · B BACK");
-        bottom.drawHeader("LOG DETAILS", "LOCAL INVENTORY");
+        bottom.drawHeader("LOG DETAILS", "MOONLIGHT 3DS · SUNSHINE LOGS ON PC");
         if (visible.empty()) {
             bottom.drawLiveText(20, 72, "No diagnostic logs found.",
                                 MoonlightUi::TextStyle::Small, {38, 43, 48});
@@ -444,26 +447,36 @@ class CheckLogsScreen : public MoonlightUi::DualScreenModel {
             const DiagnosticInventory::Entry &e = entries_[visible[selected_]];
             const std::string no_upload_record = e.app_state ? "not applicable" :
                 (e.upload_state == "unknown" ? "no send attempt in log" : "not recorded");
+            const bool is_session_file = !e.app_state && e.filename != "moonlight.log";
+            const bool is_latest = is_session_file && selected_ == latest_session;
+            const std::string recency = !is_session_file ? "not a session record" :
+                (is_latest ? "newest session in this view" : "older session record");
             const std::vector<std::string> lines = more_details_ ? std::vector<std::string>{
                 "FILE: " + e.filename,
                 "SESSION: " + (e.session == "unknown" ? "not recorded" : e.session),
+                "RECENCY: " + recency,
+                "UPLOAD RESULT: " + upload_status(e),
                 "UPLOAD ID: " + (e.upload_id.empty() ? no_upload_record : e.upload_id),
-                "LOCAL NOW: " + std::to_string(e.size) + " bytes",
+                "LOCAL FILE: " + std::to_string(e.size) + " bytes",
                 "SENT SOURCE: " + (e.upload_source_bytes ? std::to_string(e.upload_source_bytes) + " bytes" : no_upload_record),
                 "FILTERED LOG: " + (e.upload_filtered_bytes ? std::to_string(e.upload_filtered_bytes) + " bytes" : no_upload_record),
                 "HTTP BODY: " + (e.upload_request_bytes ? std::to_string(e.upload_request_bytes) + " bytes" : no_upload_record)
             } : std::vector<std::string>{
+                std::string("SOURCE: ") + (e.app_state ? "Moonlight 3DS app state" :
+                    (e.filename == "moonlight.log" ? "Moonlight 3DS app log" : "Moonlight client session")),
                 std::string("TYPE: ") + (e.app_state ? "application state" :
-                    (e.filename == "moonlight.log" ? "application log" : display_scope(e.scope))),
+                    (e.filename == "moonlight.log" ? "application log" : display_scope(e))),
                 "START: " + (e.start_local == "unknown" ? e.modified_local : e.start_local),
                 "AGE: " + DiagnosticInventory::format_relative_age(
                     e.start_epoch ? e.start_epoch : (e.latest_epoch ? e.latest_epoch : e.modified_epoch)),
                 "DURATION: " + e.duration,
                 "LOCAL FILE: " + format_size(e.size),
-                "UPLOAD: " + upload_status(e)
+                "UPLOAD: " + upload_status(e),
+                std::string("RECENCY: ") + (is_latest ? "newest session · blue ring" : recency)
             };
+            const int detail_line_spacing = more_details_ ? 14 : 15;
             for (size_t i = 0; i < lines.size(); ++i)
-                bottom.drawAutoRateText(14, 47 + static_cast<int>(i) * 15, lines[i],
+                bottom.drawAutoRateText(14, 47 + static_cast<int>(i) * detail_line_spacing, lines[i],
                                         bottom.width() - 28, {38, 43, 48});
             bottom.drawPanelButton(DETAILS_TILE, more_details_ ? "BASIC" : "MORE DETAILS",
                                    {222, 227, 231}, {38, 43, 48});
@@ -568,13 +581,29 @@ class CheckLogsScreen : public MoonlightUi::DualScreenModel {
             }
             if (tab_ == 0 ||
                 (tab_ == 1 && e.filename != "moonlight.log" && e.scope != "stream") ||
-                (tab_ == 2 && e.scope == "stream")) indices.push_back(i);
+                (tab_ == 2 && (e.scope == "stream" || e.has_stream))) indices.push_back(i);
         }
         return indices;
     }
 
-    static std::string display_scope(const std::string &scope) {
-        return scope == "stream" ? "stream" : "host";
+    int latest_session_position(const std::vector<size_t> &visible) const {
+        int latest_position = -1;
+        unsigned long long latest_time = 0;
+        for (size_t position = 0; position < visible.size(); ++position) {
+            const DiagnosticInventory::Entry &e = entries_[visible[position]];
+            if (e.app_state || e.filename == "moonlight.log") continue;
+            const unsigned long long timestamp = e.start_epoch ? e.start_epoch : e.modified_epoch;
+            if (latest_position < 0 || timestamp > latest_time) {
+                latest_position = static_cast<int>(position);
+                latest_time = timestamp;
+            }
+        }
+        return latest_position;
+    }
+
+    static std::string display_scope(const DiagnosticInventory::Entry &e) {
+        if (e.has_stream || e.scope == "stream") return "connection + stream activity";
+        return "host connection";
     }
 
     static std::string upload_status(const DiagnosticInventory::Entry &e) {
@@ -599,14 +628,17 @@ class CheckLogsScreen : public MoonlightUi::DualScreenModel {
         return {194, 55, 61};
     }
 
-    static std::string row_label(const DiagnosticInventory::Entry &e) {
+    static std::string row_label(const DiagnosticInventory::Entry &e, int tab) {
         if (e.app_state) return "APP STATE  " + e.filename;
         if (e.filename == "moonlight.log") {
             const unsigned long long age_epoch = e.latest_epoch ? e.latest_epoch : e.modified_epoch;
             return "APPLICATION LOG  " + e.modified_local + " · " +
                    DiagnosticInventory::format_relative_age(age_epoch);
         }
-        std::string label = e.scope == "stream" ? "STREAM " : "HOST ";
+        std::string label;
+        if (tab == 2) label = "STREAM ";
+        else if (tab == 1) label = "CONNECT ";
+        else label = e.has_stream ? "CONNECT + STREAM " : "CONNECT ";
         if (e.start_local != "unknown") label += e.start_local;
         else if (e.modified_local != "unknown") label += e.modified_local;
         const unsigned long long age_epoch = e.start_epoch ? e.start_epoch :
