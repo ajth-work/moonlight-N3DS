@@ -2,8 +2,9 @@
 
 Originally updated by Rocky on 2026-10-26. Updated by Codex at
 AJ's request on 2026-11-03 to record the GUI22 baseline and GUI23+
-direction. This file is the shared understanding. Codex: read this
-before starting work, along with AGENTS.md.
+direction. Updated on 2026-11-05 to record the GUI23.7 human-test gate
+and conditional GUI24 sequencing. This file is the shared understanding.
+Codex: read this before starting work, along with AGENTS.md.
 
 ## Branch map and consolidation status — 2026-11-01 snapshot
 
@@ -93,6 +94,7 @@ GUI24 is a later, focused color-alignment pass across pre-stream and in-stream s
 - Review the rest of the pre-stream and in-stream colors for a consistent Moonlight visual language. This is color placement and alignment, not a page-structure redesign.
 - The earlier neutral gray/white reference is under “GUI6 in-stream presentation variant” in `docs/GUI_PLAN.md`; the implementation commit is `ed856489d3ad2bf51a246477a5eafeab9c0c6e90` (`src/ui/ui.cpp`, gray ramp from RGB 12–22 with divider gray 96). It is a separate, unmerged variant and is historical reference only; it does not replace AJ's selected swatch.
 - AJ has confirmed the hero-banner gray (`#4F5661`) as the intended reference swatch. GUI24 implementation timing and scope remain tentative until separately prioritized.
+- **Sequencing after GUI23.7:** Version `3.6.0-gui23.7` is published with linear minification and magnification filtering as a candidate fix for high-frequency top-screen artifacts (issue #30). AJ has downloaded it but has not completed the hardware retest. If the same-scene 2D/HSBS comparison confirms the artifacts are fixed or acceptably reduced, GUI24 becomes the next intended version with this color-alignment scope. Until AJ reports the result, the filter change and image-quality improvement remain unverified.
 
 ### GUI25 — pixel-aware visual polish proposal
 
