@@ -42,3 +42,7 @@ Update these checkboxes only when the corresponding evidence has been reviewed:
 - [ ] Select one evidence-backed fix, add a focused regression test, and verify the appropriate host/device behavior.
 
 Keep each Bridge job scoped to one repository, wait for the queue to drain, and stop for review before starting a follow-up. Physical device acceptance remains distinct from unit-test and host-integration results.
+
+## Build and publish are one job
+
+Build and publish are ONE job. Every build job includes publishing in the same job — UniStore feed entry updated (revision bumped, other entries preserved), CIA on the build shelf, published bytes verified against the built artifact (size + SHA-256) — before the job may report done. A built-but-unpublished candidate is an UNFINISHED job, never a result, and never a stopping point that asks AJ to trigger publishing separately. Console hardware testing is AJ's step after install; it is never a reason to hold a publish.
