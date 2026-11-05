@@ -2,7 +2,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $false)]
-    [ValidatePattern('^\d+\.\d+\.\d+-gui\d+(?:\.\d+)?(?:-[a-z0-9]+)?$')]
+    [ValidatePattern('^\d+\.\d+\.\d+-gui\d+(?:\.\d+)*(?:-[a-z0-9]+)?$')]
     [string]$Version,
 
     [string]$OutputPath
@@ -22,7 +22,7 @@ if ([string]::IsNullOrWhiteSpace($Version)) {
     }
     $Version = $match.Groups[1].Value
 }
-if ($Version -notmatch '^\d+\.\d+\.\d+-gui\d+(?:\.\d+)?(?:-[a-z0-9]+)?$') {
+if ($Version -notmatch '^\d+\.\d+\.\d+-gui\d+(?:\.\d+)*(?:-[a-z0-9]+)?$') {
     throw "Unsupported GUI version: $Version"
 }
 if ([string]::IsNullOrWhiteSpace($OutputPath)) {
@@ -56,7 +56,7 @@ try {
     $format.LineAlignment = [System.Drawing.StringAlignment]::Center
 
     # The fixed text field centers the version under the Moonlight wordmark.
-    $textField = [System.Drawing.RectangleF]::new(115.0, 107.5, 99.0, 16.0)
+    $textField = [System.Drawing.RectangleF]::new(104.5, 107.5, 120.0, 16.0)
     $graphics.DrawString($Version, $font, $brush, $textField, $format)
 
     $outputDirectory = [System.IO.Path]::GetDirectoryName($outputFullPath)
