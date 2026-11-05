@@ -19,6 +19,7 @@
 
 #include "ffmpeg.h"
 #include "video.hpp"
+#include "../diagnostics.h"
 
 #include "../util.h"
 
@@ -153,6 +154,9 @@ int SoftVideoDecoder::submit_decode_unit(PDECODE_UNIT decodeUnit) {
     ffmpeg_decode((unsigned char *)ffmpeg_buffer, length);
 
     AVFrame *frame = ffmpeg_get_frame(false);
+    if (frame != NULL) {
+        diag_video_frame_decoded();
+    }
     int status = _write_yuv_to_framebuffer(
         (const u8 **)frame->data, image_width, image_height, pixel_size);
 

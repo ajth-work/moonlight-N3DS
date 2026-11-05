@@ -163,6 +163,14 @@ void N3dsRendererBase::write_px_to_framebuffer_gpu(uint8_t *__restrict source) {
     const bool trace_presentation_frame =
         presentation_settings_changed || presentation_frame == 1 ||
         (presentation_frame != 0 && presentation_frame % 120 == 0);
+    DIAG_VIDEO_COUNTERS counters_before = {};
+    if (screen == GFX_TOP) {
+        diag_video_counters_snapshot(&counters_before);
+    }
+    const bool trace_top_presentation_diagnostics =
+        screen == GFX_TOP &&
+        (presentation_settings_changed ||
+         ((counters_before.completed_presentations + 1) % 300 == 0));
     if (trace_presentation_frame) {
         diag_log("PRESENTATION_FRAME_BEGIN",
                  "frame=%u mode=%s aspect=%s shift=%d slider_milli=%d gfx3d=%d stereo=%d eye_passes=%d image=%dx%d",
@@ -170,6 +178,15 @@ void N3dsRendererBase::write_px_to_framebuffer_gpu(uint8_t *__restrict source) {
                  n3ds_3d_aspect_name(settings.aspect), settings.shift,
                  slider_milli, gfx_3d_enabled, stereo, eye_pass_count,
                  image_width, image_height);
+    }
+    if (trace_top_presentation_diagnostics) {
+        diag_log("TOP_PRESENTATION_DIAG_BEGIN",
+                 "frame=%u mode=%s aspect=%s decoded_frames=%u top_renderer_draw_calls=%u completed_presentations=%u",
+                 presentation_frame, n3ds_3d_mode_name(settings.mode),
+                 n3ds_3d_aspect_name(settings.aspect),
+                 counters_before.decoded_frames,
+                 counters_before.top_renderer_draw_calls,
+                 counters_before.completed_presentations);
     }
 
     u64 start_ticks = svcGetSystemTick();
@@ -191,6 +208,16 @@ void N3dsRendererBase::write_px_to_framebuffer_gpu(uint8_t *__restrict source) {
         GX_TRANSFER_FLIP_VERT(1) | GX_TRANSFER_OUT_TILED(1) |
             GX_TRANSFER_IN_FORMAT(GX_TRANSFER_FMT_RGB565) |
             GX_TRANSFER_OUT_FORMAT(GX_TRANSFER_FMT_RGB565));
+
+    float sampled_u_min[2] = {1.0f, 1.0f};
+    float sampled_u_max[2] = {0.0f, 0.0f};
+    float sampled_v_min[2] = {1.0f, 1.0f};
+    float sampled_v_max[2] = {0.0f, 0.0f};
+    float destination_left[2] = {0.0f, 0.0f};
+    float destination_right[2] = {0.0f, 0.0f};
+    float destination_top[2] = {0.0f, 0.0f};
+    float destination_bottom[2] = {0.0f, 0.0f};
+    const u32 texture_sampler_param = GPU_LINEAR | (GPU_LINEAR << 1);
 
     // Render both top-screen eyes on every frame so switching into a stereo
     // mode cannot expose an uninitialized or stale right-eye framebuffer.
@@ -251,7 +278,7 @@ void N3dsRendererBase::write_px_to_framebuffer_gpu(uint8_t *__restrict source) {
     C(GPUREG_TEXUNIT0_DIM, MOON_CTR_VIDEO_TEX_H | (MOON_CTR_VIDEO_TEX_W << 16));
     C(GPUREG_TEXUNIT0_ADDR1, osConvertVirtToPhys(vramTex) >> 3);
     C(GPUREG_TEXUNIT0_PARAM,
-      GPU_LINEAR | (GPU_LINEAR << 1)); // Linear minification and magnification filters
+      texture_sampler_param); // Linear minification and magnification filters
 
     // Shading
     // GPUCMD_AddMaskedWrite(GPUREG_SH_OUTATTR_CLOCK, 0x2, 1 << 8); // No Z, Yes
@@ -370,6 +397,37 @@ void N3dsRendererBase::write_px_to_framebuffer_gpu(uint8_t *__restrict source) {
     const float right = eye_presentation.horizontal_scale +
                         eye_presentation.horizontal_offset;
 
+    float eye_sampled_u0 = eye_presentation.u0;
+    float eye_sampled_u1 = eye_presentation.u1;
+    float eye_sampled_v0 = eye_presentation.v0;
+    float eye_sampled_v1 = eye_presentation.v1;
+    if (screen == GFX_TOP && top_screen_magnified.load()) {
+        const float center_u =
+            (eye_presentation.u0 + eye_presentation.u1) * 0.5f;
+        const float center_v =
+            (eye_presentation.v0 + eye_presentation.v1) * 0.5f;
+        eye_sampled_u0 = center_u + (eye_sampled_u0 - center_u) / 1.35f;
+        eye_sampled_u1 = center_u + (eye_sampled_u1 - center_u) / 1.35f;
+        eye_sampled_v0 = center_v + (eye_sampled_v0 - center_v) / 1.35f;
+        eye_sampled_v1 = center_v + (eye_sampled_v1 - center_v) / 1.35f;
+    }
+    sampled_u_min[eye] = eye_sampled_u0 < eye_sampled_u1
+                             ? eye_sampled_u0
+                             : eye_sampled_u1;
+    sampled_u_max[eye] = eye_sampled_u0 > eye_sampled_u1
+                             ? eye_sampled_u0
+                             : eye_sampled_u1;
+    sampled_v_min[eye] = eye_sampled_v0 < eye_sampled_v1
+                             ? eye_sampled_v0
+                             : eye_sampled_v1;
+    sampled_v_max[eye] = eye_sampled_v0 > eye_sampled_v1
+                             ? eye_sampled_v0
+                             : eye_sampled_v1;
+    destination_left[eye] = left;
+    destination_right[eye] = right;
+    destination_top[eye] = top;
+    destination_bottom[eye] = bottom;
+
     ATTR_POS(top, left); // TR
     ATTR_TEX(eye_presentation.u1, eye_presentation.v0);
 
@@ -425,6 +483,9 @@ void N3dsRendererBase::write_px_to_framebuffer_gpu(uint8_t *__restrict source) {
                          __ctru_linear_heap_size, NULL, 0);
 
     GX_ProcessCommandList(cmdlist, cmdlist_len * 4, 2);
+    if (screen == GFX_TOP) {
+        diag_video_top_draw_call();
+    }
 
     gspWaitForEvent(GSPGPU_EVENT_P3D, 0);
 
@@ -462,10 +523,65 @@ void N3dsRendererBase::write_px_to_framebuffer_gpu(uint8_t *__restrict source) {
     }
 
     gfxScreenSwapBuffers(screen, true);
+    if (screen == GFX_TOP) {
+        diag_video_presentation_completed();
+    }
     if (trace_presentation_frame) {
         diag_log("PRESENTATION_FRAME_DONE",
                  "frame=%u stereo=%d eye_passes=%d",
                  presentation_frame, stereo, eye_pass_count);
+    }
+    if (trace_top_presentation_diagnostics) {
+        DIAG_VIDEO_COUNTERS counters_after = {};
+        diag_video_counters_snapshot(&counters_after);
+        const char *min_filter =
+            (texture_sampler_param & 0x1) == GPU_LINEAR ? "GPU_LINEAR"
+                                                        : "GPU_NEAREST";
+        const char *mag_filter =
+            ((texture_sampler_param >> 1) & 0x1) == GPU_LINEAR
+                ? "GPU_LINEAR"
+                : "GPU_NEAREST";
+        for (int diag_eye = 0; diag_eye < eye_pass_count; ++diag_eye) {
+            const float source_width =
+                (sampled_u_max[diag_eye] - sampled_u_min[diag_eye]) *
+                MOON_CTR_VIDEO_TEX_W;
+            const float source_height =
+                (sampled_v_max[diag_eye] - sampled_v_min[diag_eye]) *
+                MOON_CTR_VIDEO_TEX_H;
+            const float destination_width =
+                (destination_right[diag_eye] - destination_left[diag_eye]) *
+                (GSP_SCREEN_WIDTH / 2.0f);
+            const float destination_height =
+                (destination_top[diag_eye] - destination_bottom[diag_eye]) *
+                (GSP_SCREEN_HEIGHT_TOP / 2.0f);
+            const float scale_x = destination_width > 0.0f
+                                      ? source_width / destination_width
+                                      : 0.0f;
+            const float scale_y = destination_height > 0.0f
+                                      ? source_height / destination_height
+                                      : 0.0f;
+            diag_log(
+                "TOP_PRESENTATION_DIAG",
+                "frame=%u completed=%u mode=%s aspect=%s eye=%s image=%dx%d uv=[%.6f,%.6f,%.6f,%.6f] dst_ndc=[%.4f,%.4f,%.4f,%.4f] dst_screen=400x240 scale_xy=[%.3f,%.3f] texture=%dx%d texture_layout=tiled texture_stride=tile_encoded source_stride_bytes=%d sampler_source=unit0_draw_command sampler_param=0x%08x min=%s mag=%s input_transfer=GX_DisplayTransfer:%dx%d->%dx%d:RGB565:flipV:out_tiled1:no_scale output_transfer=GX_DisplayTransfer:%dx%d->%dx%d:RGB565:out_tiled0:no_scale decoded_frames=%u top_renderer_draw_calls=%u completed_presentations=%u",
+                presentation_frame,
+                counters_after.completed_presentations,
+                n3ds_3d_mode_name(settings.mode),
+                n3ds_3d_aspect_name(settings.aspect),
+                diag_eye == 0 ? "left" : "right", image_width, image_height,
+                sampled_u_min[diag_eye], sampled_v_min[diag_eye],
+                sampled_u_max[diag_eye], sampled_v_max[diag_eye],
+                destination_left[diag_eye], destination_bottom[diag_eye],
+                destination_right[diag_eye], destination_top[diag_eye],
+                scale_x, scale_y, MOON_CTR_VIDEO_TEX_W,
+                MOON_CTR_VIDEO_TEX_H, MOON_CTR_VIDEO_TEX_W * px_size,
+                (unsigned int)texture_sampler_param, min_filter, mag_filter,
+                MOON_CTR_VIDEO_TEX_W, MOON_CTR_VIDEO_TEX_H,
+                MOON_CTR_VIDEO_TEX_W, MOON_CTR_VIDEO_TEX_H, surface_height,
+                surface_width, surface_height, surface_width,
+                counters_after.decoded_frames,
+                counters_after.top_renderer_draw_calls,
+                counters_after.completed_presentations);
+        }
     }
 }
 
@@ -474,6 +590,6 @@ void n3ds_draw_diag_version_overlay() {
         consoleSelect(&DebugTouchHandler::bottomScreen);
     DebugTouchHandler::bottomScreen.frameBuffer =
         (u16 *)gfxGetFramebuffer(GFX_BOTTOM, GFX_LEFT, NULL, NULL);
-    printf("\x1b[30;1HMoonlight " DIAG_BUILD_VERSION);
+    printf("\x1b[30;1HMoonlight GamePad " DIAG_BUILD_VERSION);
     consoleSelect(previous_console);
 }

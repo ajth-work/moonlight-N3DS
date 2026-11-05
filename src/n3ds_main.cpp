@@ -3343,6 +3343,7 @@ struct LimelightStartCall {
 
 static void limelight_start_call(void *opaque) {
     LimelightStartCall *call = static_cast<LimelightStartCall *>(opaque);
+    diag_video_counters_reset();
     call->status = LiStartConnection(
         &call->server->serverInfo, &call->config->stream,
         call->listener_callbacks, call->video_callbacks,
@@ -3403,9 +3404,10 @@ static void stream(PSERVER_DATA server, PCONFIGURATION config, int appId,
         break;
     }
 
-    diag_log("STREAM_CONFIG", "resolution=%dx%d fps=%d bitrate=%d",
-             config->stream.width, config->stream.height, config->stream.fps,
-             config->stream.bitrate);
+    diag_log("STREAM_CONFIG",
+             "identity=Moonlight_GamePad build=%s config_source=client_request resolution=%dx%d fps=%d bitrate_kbps=%d",
+             DIAG_BUILD_VERSION, config->stream.width, config->stream.height,
+             config->stream.fps, config->stream.bitrate);
 
     auto connection_listener =
         N3dsConnectionListener::create_instance(config->motion_controls);

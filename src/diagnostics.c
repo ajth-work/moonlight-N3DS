@@ -65,6 +65,9 @@ static char diag_stack_record[DIAG_STACK_RECORD_CAPACITY];
 static size_t diag_stack_record_length = 0;
 static char diag_ui_top_state[32];
 static char diag_ui_bottom_state[32];
+static volatile uint32_t diag_video_decoded_frames = 0;
+static volatile uint32_t diag_video_top_draw_calls = 0;
+static volatile uint32_t diag_video_completed_presentations = 0;
 
 bool diag_cert_fingerprint(X509 *certificate, char *out,
                            unsigned int out_capacity) {
@@ -371,6 +374,34 @@ static void format_wall_time(char *out, size_t capacity) {
              wall_tm.tm_year + 1900, wall_tm.tm_mon + 1, wall_tm.tm_mday,
              wall_tm.tm_hour, wall_tm.tm_min, wall_tm.tm_sec,
              (unsigned long long)(wall_ms % 1000ULL));
+}
+
+void diag_video_counters_reset(void) {
+    __atomic_store_n(&diag_video_decoded_frames, 0, __ATOMIC_RELEASE);
+    __atomic_store_n(&diag_video_top_draw_calls, 0, __ATOMIC_RELEASE);
+    __atomic_store_n(&diag_video_completed_presentations, 0, __ATOMIC_RELEASE);
+}
+
+void diag_video_frame_decoded(void) {
+    __atomic_add_fetch(&diag_video_decoded_frames, 1, __ATOMIC_RELAXED);
+}
+
+void diag_video_top_draw_call(void) {
+    __atomic_add_fetch(&diag_video_top_draw_calls, 1, __ATOMIC_RELAXED);
+}
+
+void diag_video_presentation_completed(void) {
+    __atomic_add_fetch(&diag_video_completed_presentations, 1, __ATOMIC_RELAXED);
+}
+
+void diag_video_counters_snapshot(DIAG_VIDEO_COUNTERS *counters) {
+    if (counters == NULL) return;
+    counters->decoded_frames =
+        __atomic_load_n(&diag_video_decoded_frames, __ATOMIC_ACQUIRE);
+    counters->top_renderer_draw_calls =
+        __atomic_load_n(&diag_video_top_draw_calls, __ATOMIC_ACQUIRE);
+    counters->completed_presentations =
+        __atomic_load_n(&diag_video_completed_presentations, __ATOMIC_ACQUIRE);
 }
 
 void diag_log(const char *event, const char *format, ...) {

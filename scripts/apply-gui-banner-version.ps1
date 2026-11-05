@@ -2,7 +2,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $false)]
-    [ValidatePattern('^\d+\.\d+\.\d+-gui\d+(?:\.\d+)?$')]
+    [ValidatePattern('^\d+\.\d+\.\d+-gui\d+(?:\.\d+)?(?:-[a-z0-9]+)?$')]
     [string]$Version,
 
     [string]$OutputPath
@@ -22,7 +22,7 @@ if ([string]::IsNullOrWhiteSpace($Version)) {
     }
     $Version = $match.Groups[1].Value
 }
-if ($Version -notmatch '^\d+\.\d+\.\d+-gui\d+(?:\.\d+)?$') {
+if ($Version -notmatch '^\d+\.\d+\.\d+-gui\d+(?:\.\d+)?(?:-[a-z0-9]+)?$') {
     throw "Unsupported GUI version: $Version"
 }
 if ([string]::IsNullOrWhiteSpace($OutputPath)) {

@@ -23,6 +23,7 @@
 #include "menu_bgr.h"
 #include "touchpad_bgr.h"
 #include "video.hpp"
+#include "../diagnostics.h"
 
 #include <3ds.h>
 #include <stdio.h>
@@ -39,6 +40,12 @@ VideoDecoderBase::VideoDecoderBase(int width, int height) {
 
     GSPGPU_FramebufferFormat px_fmt = gfxGetScreenFormat(GFX_TOP);
     pixel_size = gspGetBytesPerPixel(px_fmt);
+
+    diag_log("VIDEO_DECODER_SETUP",
+             "decoder_output=%dx%d capped_image=%dx%d texture=%dx%d source_stride_bytes=%d pixel_bytes=%d",
+             width, height, image_width, image_height, MOON_CTR_VIDEO_TEX_W,
+             MOON_CTR_VIDEO_TEX_H, MOON_CTR_VIDEO_TEX_W * pixel_size,
+             pixel_size);
 
     renderer = std::make_unique<N3dsRendererMock>();
 

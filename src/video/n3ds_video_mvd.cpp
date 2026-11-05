@@ -18,6 +18,7 @@
  */
 
 #include "video.hpp"
+#include "../diagnostics.h"
 
 #include <3ds.h>
 
@@ -142,7 +143,11 @@ int MvdDecoder::submit_decode_unit(PDECODE_UNIT decodeUnit) {
     }
     GSPGPU_FlushDataCache(nal_unit_buffer, length);
 
-    _decode((unsigned char *)nal_unit_buffer, length);
+    const DecodeReturnStatus decode_status =
+        _decode((unsigned char *)nal_unit_buffer, length);
+    if (decode_status == DecodeReturnStatus::SUCCESS) {
+        diag_video_frame_decoded();
+    }
 
     renderer_lock.lock();
     renderer->set_perf_decode_ticks(svcGetSystemTick() - start_ticks);
