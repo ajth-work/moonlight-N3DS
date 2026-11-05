@@ -74,7 +74,7 @@ Expected host-connection, stream-start, active-stream, and teardown failures sho
 
 - Keep recovery context-specific: before streaming, return to the host/display/app step that can be retried; after a stream interruption or teardown problem, show a recovery menu with clear retry/reconnect and return-to-host/menu actions.
 - Identify the last completed step and the step that failed or is still waiting. Cover the relevant lifecycle stage (such as host reachability, pairing/authentication, display selection, app launch, stream setup, video/audio/input flow, or teardown).
-- Show actionable error detail when available. When the cause is unknown, say which stage was reached and that the cause is unknown instead of using a generic failure message.
+- When an active stream stops, show a prominent client-side message in front of the failed stream that says streaming stopped and gives the most likely reason when evidence supports one (for example, “High latency may have interrupted the stream”). Clearly label an inference as suspected, not confirmed. Include the last confirmed pipeline event and when it occurred, plus retry/reconnect and return actions. Record the last events before termination in the local session log so the diagnosis can be reviewed. If the cause remains unknown, say which stage was reached and that the cause is unknown instead of showing a generic failure message.
 - Preserve host selection, settings, and diagnostic logs during recovery. If the process does hit a fatal failure, preserve the last available diagnostic checkpoint for the next launch.
 
 Current GitHub branch tips checked on 2026-11-03:
