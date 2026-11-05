@@ -68,10 +68,25 @@ static void prefilter_rgb565(const u16 *source, u16 *destination,
                         ++count;
                     }
                 }
+                const bool power_of_two =
+                    count != 0 && (count & (count - 1)) == 0;
+                unsigned int divisor_shift = 0;
+                if (power_of_two) {
+                    for (unsigned int divisor = count; divisor > 1;
+                         divisor >>= 1)
+                        ++divisor_shift;
+                }
+                const unsigned int red_average = power_of_two
+                    ? (red + count / 2) >> divisor_shift
+                    : (red + count / 2) / count;
+                const unsigned int green_average = power_of_two
+                    ? (green + count / 2) >> divisor_shift
+                    : (green + count / 2) / count;
+                const unsigned int blue_average = power_of_two
+                    ? (blue + count / 2) >> divisor_shift
+                    : (blue + count / 2) / count;
                 const u16 average = static_cast<u16>(
-                    (((red + count / 2) / count) << 11) |
-                    (((green + count / 2) / count) << 5) |
-                    ((blue + count / 2) / count));
+                    (red_average << 11) | (green_average << 5) | blue_average);
                 // Repeat each reduced sample over its original source-cell
                 // footprint. This preserves the existing normalized UVs.
                 for (int sy = y; sy < y_end; ++sy)
@@ -247,6 +262,11 @@ void N3dsRendererBase::write_px_to_framebuffer_gpu(uint8_t *__restrict source) {
                  counters_before.completed_presentations);
     }
 
+    u64 prefilter_copy_ticks = 0;
+    u64 prefilter_filter_ticks = 0;
+    u64 prefilter_flush_ticks = 0;
+    size_t prefilter_texture_bytes = 0;
+    bool prefilter_ran = false;
     u64 start_ticks = svcGetSystemTick();
 
     // NOTE: At 800x480, we can display the _width_ natively, but the height
@@ -288,18 +308,30 @@ void N3dsRendererBase::write_px_to_framebuffer_gpu(uint8_t *__restrict source) {
             1, static_cast<int>(region_width / (400.0f * fit_x) + 0.5f));
         const int reduction_y = std::max(
             1, static_cast<int>(region_height / (240.0f * fit_y) + 0.5f));
+        prefilter_ran = true;
         const size_t texture_bytes =
             MOON_CTR_VIDEO_TEX_W * MOON_CTR_VIDEO_TEX_H * px_size;
+        prefilter_texture_bytes = texture_bytes;
+        const u64 copy_start_ticks = trace_top_presentation_diagnostics
+                                         ? svcGetSystemTick()
+                                         : 0;
         memcpy(prefilterBuffer, source, texture_bytes);
+        const u64 filter_start_ticks = trace_top_presentation_diagnostics
+                                           ? svcGetSystemTick()
+                                           : 0;
+        if (trace_top_presentation_diagnostics)
+            prefilter_copy_ticks = filter_start_ticks - copy_start_ticks;
         prefilter_rgb565(upload_source, prefilterBuffer, image_width,
                          image_height, reduction_x, reduction_y,
                          settings.mode);
+        const u64 flush_start_ticks = trace_top_presentation_diagnostics
+                                          ? svcGetSystemTick()
+                                          : 0;
+        if (trace_top_presentation_diagnostics)
+            prefilter_filter_ticks = flush_start_ticks - filter_start_ticks;
         GSPGPU_FlushDataCache(prefilterBuffer, texture_bytes);
-        diag_log("PREFILTER_STAGE",
-                 "state=on mode=%s aspect=%s reduction_xy=[%d,%d] area_average=rgb565",
-                 n3ds_3d_mode_name(settings.mode),
-                 n3ds_3d_aspect_name(settings.aspect), reduction_x,
-                 reduction_y);
+        if (trace_top_presentation_diagnostics)
+            prefilter_flush_ticks = svcGetSystemTick() - flush_start_ticks;
         upload_source = prefilterBuffer;
     }
     GX_DisplayTransfer(
@@ -689,6 +721,24 @@ void N3dsRendererBase::write_px_to_framebuffer_gpu(uint8_t *__restrict source) {
                      counters_after.decoder_accepted,
                      counters_after.decoder_failed,
                      counters_after.decoder_last_failure);
+        }
+        if (settings.prefilter) {
+            const char *stage = prefilter_ran
+                                    ? "complete"
+                                    : settings.aspect == N3ds3DAspect::CROP
+                                          ? "skipped_crop"
+                                          : "skipped_invalid_input_or_buffer";
+            diag_log(
+                "PREFILTER_STAGE",
+                "frame=%u state=on stage=%s mode=%s aspect=%s copy_bytes=%lu copy_ticks=%llu rgb565_filter_ticks=%llu cache_flush_bytes=%lu cache_flush_ticks=%llu",
+                presentation_frame, stage,
+                n3ds_3d_mode_name(settings.mode),
+                n3ds_3d_aspect_name(settings.aspect),
+                static_cast<unsigned long>(prefilter_texture_bytes),
+                static_cast<unsigned long long>(prefilter_copy_ticks),
+                static_cast<unsigned long long>(prefilter_filter_ticks),
+                static_cast<unsigned long>(prefilter_texture_bytes),
+                static_cast<unsigned long long>(prefilter_flush_ticks));
         }
     }
 }

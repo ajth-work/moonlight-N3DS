@@ -489,12 +489,13 @@ class CheckLogsScreen : public MoonlightUi::DualScreenModel {
                           "A SEND · TAP MORE · B BACK");
     }
 
-    void update(bool *redraw) override {
+    bool update(bool *redraw) override {
         *redraw = false;
-        if (loaded_) return;
+        if (loaded_) return true;
         entries_ = DiagnosticInventory::list("sdmc:/3ds/moonlight", 64, &total_count_);
         loaded_ = true;
         *redraw = true;
+        return true;
     }
 
     bool handleInput(const MoonlightUi::InputEvent &event, bool *redraw) override {
@@ -674,6 +675,14 @@ static std::string make_sunshine_session_id(const std::string &filename,
     return id;
 }
 
+static bool upload_pin_available(PSERVER_DATA server) {
+    char pin[53];
+    return server != NULL && server->paired &&
+           server->serverInfo.address != NULL &&
+           host_pin_store_load(server->serverInfo.address, server->httpPort,
+                               pin, sizeof(pin));
+}
+
 static void send_inventory_log(PSERVER_DATA server,
                                const DiagnosticInventory::Entry &entry) {
     if (!is_diagnostic_log(entry)) {
@@ -685,6 +694,15 @@ static void send_inventory_log(PSERVER_DATA server,
     if (server == NULL || !server->paired) {
         show_gui_message("HOST NOT PAIRED", "Pair this 3DS with the selected Sunshine host first.",
                          "The local log remains on the SD card.");
+        return;
+    }
+    if (!upload_pin_available(server)) {
+        diag_log("DIAG_UPLOAD_BLOCKED",
+                 "reason=missing_host_certificate_pin recovery=repair_upload_trust");
+        show_gui_message(
+            "UPLOAD TRUST NEEDS REPAIR",
+            "This host has no saved Sunshine certificate pin.",
+            "Choose Repair Upload Trust; this log stays on the SD card.");
         return;
     }
     const std::vector<GuiMenuItem> choices = {
@@ -727,10 +745,14 @@ static void send_inventory_log(PSERVER_DATA server,
     } else {
         diag_session_record_upload(&session, sent, &upload_info);
     }
-    show_gui_message(sent ? "LOG SENT" : "LOG TRANSFER FAILED",
-                     sent ? "Sunshine accepted the selected log." : "The log remains saved on the SD card.",
+    const bool pin_available = upload_pin_available(server);
+    show_gui_message(sent ? "LOG SENT" : (pin_available ? "LOG TRANSFER FAILED" : "UPLOAD TRUST NEEDS REPAIR"),
+                     sent ? "Sunshine accepted the selected log." :
+                         (pin_available ? "The log remains saved on the SD card." :
+                                          "The log remains saved locally; no host pin is stored."),
                      sent ? "The local copy is still available in Check Logs." :
-                            "Check host pairing, the saved pin, and host reachability.",
+                         (pin_available ? "Check host pairing, the saved pin, and host reachability." :
+                                          "Choose Repair Upload Trust, then send this log again."),
                      sent ? "UPLOAD ACCEPTED" : "LOG NOT SENT");
 }
 
@@ -748,22 +770,33 @@ static void show_check_logs(PSERVER_DATA server) {
 static std::string prompt_for_action(PSERVER_DATA server) {
     std::vector<GuiMenuItem> actions;
     if (server->paired) {
+        const bool pin_available = upload_pin_available(server);
         bool upload_consent_known = false;
         bool upload_enabled = false;
         host_upload_consent_get(server->serverInfo.address, server->httpPort,
                                 &upload_consent_known, &upload_enabled);
+        if (!pin_available) {
+            upload_consent_known = false;
+            upload_enabled = false;
+        }
         actions = {
             {"Stream", "Start streaming from the selected host. The host app list opens next.", "Ready"},
             {"Stream Profile", "Choose a saved resolution and bitrate profile for this host.", "Host-specific"},
             {"Connection Test", "Measure frame timing and staged bitrate stability without changing saved settings.", "Diagnostic"},
             {"Check Logs", "Browse diagnostic files stored on this 3DS.", "Local only"},
             {"Send Logs to this PC", "Send this host-selection session to the paired Sunshine host over pinned HTTPS.", "Manual upload"},
-            {"Automatic Log Upload", "Upload each host-selection session after it ends.", upload_consent_known ? (upload_enabled ? "Enabled" : "Disabled") : "Consent required"},
+            {"Automatic Log Upload", "Upload each host-selection session after it ends.", !pin_available ? "Repair trust first" : (upload_consent_known ? (upload_enabled ? "Enabled" : "Disabled") : "Consent required")},
             {"Quit Stream", "Ask the host to close its currently active streaming app.", "Host request"},
             {"Stream Settings", "Edit video, audio, input, decoder, and diagnostic log options.", "Preferences"},
             {"Unpair", "Remove this device's pairing from the selected host.", "Destructive host change"},
             {"Exit to 3DS HOME", "Close Moonlight cleanly and return to the Nintendo 3DS HOME Menu.", "Exit app"},
         };
+        if (!pin_available) {
+            actions.insert(actions.begin() + 4,
+                           {"Repair Upload Trust",
+                            "Pair again to save the Sunshine certificate pin needed for uploads.",
+                            "PIN required"});
+        }
     } else {
         actions = {
             {"Pair", "Pair this 3DS with the selected host using the displayed PIN.", "Not paired"},
@@ -778,6 +811,7 @@ static std::string prompt_for_action(PSERVER_DATA server) {
     if (label == "Stream Profile") return "stream profile";
     if (label == "Connection Test") return "connection test";
     if (label == "Check Logs") return "check logs";
+    if (label == "Repair Upload Trust") return "repair upload trust";
     if (label == "Send Logs to this PC") return "send logs";
     if (label == "Automatic Log Upload") return "toggle automatic logs";
     if (label == "Quit Stream") return "quit stream";
@@ -792,6 +826,8 @@ class HostPickerScreen : public MoonlightUi::DualScreenModel {
     enum class Result {
         Back,
         AddHost,
+        EditHost,
+        DeleteHost,
         SelectedHost,
         ExitToHome,
     };
@@ -863,15 +899,22 @@ class HostPickerScreen : public MoonlightUi::DualScreenModel {
         bottom.drawLiveText((bottom.width() - connect_label_width) / 2, 134,
                             connect_label, MoonlightUi::TextStyle::Tile,
                             connect_color);
-        bottom.drawFilledTile(ADD_HOST_TILE, 2);
-        bottom.drawLiveText(94, 185, "ADD NEW HOST",
-                            MoonlightUi::TextStyle::Tile,
-                            {38, 43, 48});
+        if (!add_host_selected && !exit_selected) {
+            bottom.drawPanelButton(EDIT_HOST_TILE, "EDIT",
+                                   {222, 227, 231}, {38, 43, 48});
+            bottom.drawPanelButton(DELETE_HOST_TILE, "DELETE X",
+                                   {222, 227, 231}, {38, 43, 48});
+        } else {
+            bottom.drawFilledTile(ADD_HOST_TILE, 2);
+            bottom.drawLiveText(94, 185, "ADD NEW HOST",
+                                MoonlightUi::TextStyle::Tile,
+                                {38, 43, 48});
+        }
         bottom.drawFooter(
             DIAG_BUILD_VERSION,
             add_host_selected ? "A ADD HOST  B BACK  TOUCH"
             : exit_selected ? "A EXIT HOME  B BACK  TOUCH"
-                            : "A CONNECT  B BACK  TOUCH");
+                            : "A CONNECT  TOUCH EDIT OR DELETE");
     }
 
     bool handleInput(const MoonlightUi::InputEvent &event,
@@ -898,6 +941,16 @@ class HostPickerScreen : public MoonlightUi::DualScreenModel {
                     result_ = Result::SelectedHost;
                     return false;
                 }
+            } else if (!addresses_.empty() &&
+                       selected_index_ < static_cast<int>(addresses_.size()) &&
+                       touch_in_rect(event.touch, EDIT_HOST_TILE)) {
+                result_ = Result::EditHost;
+                return false;
+            } else if (!addresses_.empty() &&
+                       selected_index_ < static_cast<int>(addresses_.size()) &&
+                       touch_in_rect(event.touch, DELETE_HOST_TILE)) {
+                result_ = Result::DeleteHost;
+                return false;
             } else if (touch_in_rect(event.touch, ADD_HOST_TILE)) {
                 result_ = Result::AddHost;
                 return false;
@@ -934,6 +987,8 @@ class HostPickerScreen : public MoonlightUi::DualScreenModel {
     static constexpr int HOST_LIST_ROW_STEP = 31;
     static constexpr MoonlightUi::Rect CONNECT_TILE = {14, 119, 306, 165};
     static constexpr MoonlightUi::Rect ADD_HOST_TILE = {14, 173, 306, 218};
+    static constexpr MoonlightUi::Rect EDIT_HOST_TILE = {14, 173, 155, 218};
+    static constexpr MoonlightUi::Rect DELETE_HOST_TILE = {165, 173, 306, 218};
 
     std::vector<std::string> addresses_;
     int selected_index_;
@@ -981,36 +1036,110 @@ static void restore_consoles_after_dual_screen_ui() {
     n3ds_draw_diag_version_overlay();
 }
 
-static std::string prompt_for_address() {
-    HostPickerScreen screen(list_paired_addresses());
-    if (!MoonlightUi::runDualScreen(screen)) {
-        exit(0);
-    }
-    restore_consoles_after_dual_screen_ui();
-
-    if (screen.result() == HostPickerScreen::Result::Back) {
-        return "";
-    }
-    if (screen.result() == HostPickerScreen::Result::SelectedHost) {
-        return screen.selected_address();
-    }
-    if (screen.result() == HostPickerScreen::Result::ExitToHome)
-        return "__EXIT_TO_HOME__";
-
-    // Prompt users for a custom address
+static std::string prompt_for_host_text(const std::string &initial_text) {
     diag_ui_state("TOP", "native system UI", true);
     diag_ui_state("BOTTOM", "native system UI", true);
     SwkbdState swkbd;
-    char *addr_buff = (char *)malloc(MAX_INPUT_CHAR);
+    char addr_buff[MAX_INPUT_CHAR] = {};
     swkbdInit(&swkbd, SWKBD_TYPE_NORMAL, 3, -1);
-    swkbdSetHintText(&swkbd, "Address of host to connect to");
-    swkbdInputText(&swkbd, addr_buff, MAX_INPUT_CHAR);
-    std::string addr_string = std::string(addr_buff);
-    free(addr_buff);
+    swkbdSetHintText(&swkbd, "Host address, optionally followed by :port");
+    if (!initial_text.empty())
+        swkbdSetInitialText(&swkbd, initial_text.c_str());
+    const SwkbdButton button = swkbdInputText(&swkbd, addr_buff, MAX_INPUT_CHAR);
     diag_ui_state("TOP", "toolkit GUI", true);
     diag_ui_state("BOTTOM", "toolkit GUI", true);
+    if (button != SWKBD_BUTTON_CONFIRM) return "";
+    std::string addr_string(addr_buff);
     trim(addr_string);
     return addr_string;
+}
+
+static bool split_host_endpoint(const std::string &input,
+                                uint16_t fallback_port,
+                                std::string *address, uint16_t *port) {
+    std::string value = input;
+    trim(value);
+    if (value.empty() || address == NULL || port == NULL) return false;
+    const size_t separator = value.rfind(':');
+    if (separator != std::string::npos) {
+        if (separator + 1 >= value.size()) return false;
+        const std::string port_text = value.substr(separator + 1);
+        const bool numeric = std::all_of(
+            port_text.begin(), port_text.end(),
+            [](unsigned char ch) { return ch >= '0' && ch <= '9'; });
+        if (!numeric) return false;
+        const unsigned long parsed = std::strtoul(port_text.c_str(), NULL, 10);
+        if (parsed == 0 || parsed > 65535) return false;
+        *address = value.substr(0, separator);
+        *port = static_cast<uint16_t>(parsed);
+        return !address->empty();
+    }
+    *address = value;
+    *port = fallback_port;
+    return true;
+}
+
+static std::string prompt_for_address() {
+    for (;;) {
+        HostPickerScreen screen(list_saved_host_entries());
+        if (!MoonlightUi::runDualScreen(screen)) exit(0);
+        restore_consoles_after_dual_screen_ui();
+
+        if (screen.result() == HostPickerScreen::Result::Back) return "";
+        if (screen.result() == HostPickerScreen::Result::SelectedHost)
+            return screen.selected_address();
+        if (screen.result() == HostPickerScreen::Result::ExitToHome)
+            return "__EXIT_TO_HOME__";
+        if (screen.result() == HostPickerScreen::Result::AddHost)
+            return prompt_for_host_text("");
+        if (screen.result() == HostPickerScreen::Result::EditHost) {
+            const std::string old_entry = screen.selected_address();
+            const std::string edited = prompt_for_host_text(old_entry);
+            if (edited.empty()) continue;
+            std::string address;
+            uint16_t port = 47989;
+            std::string old_address;
+            uint16_t old_port = 47989;
+            split_host_endpoint(old_entry, old_port, &old_address, &old_port);
+            if (!split_host_endpoint(edited, old_port, &address, &port)) {
+                show_gui_message("HOST ADDRESS INVALID",
+                                 "The address or port is not valid.",
+                                 "The original saved host was kept.");
+                continue;
+            }
+            const std::string replacement =
+                address + ":" + std::to_string(port);
+            if (!replace_saved_host_entry(old_entry, replacement)) {
+                show_gui_message("HOST ADDRESS NOT CHANGED",
+                                 "This address is already saved or could not be written.",
+                                 "The original host entry was kept.");
+            } else {
+                diag_log("HOST_ENTRY_EDITED", "result=saved");
+            }
+            continue;
+        }
+        if (screen.result() == HostPickerScreen::Result::DeleteHost) {
+            const std::string entry = screen.selected_address();
+            const std::vector<GuiMenuItem> choices = {
+                {"Delete Saved Address", "Remove this entry from the host picker. Pairing on Sunshine is unchanged.", "Cannot undo"},
+                {"Keep Host", "Leave the saved address in the host picker.", "No changes"},
+            };
+            int selected = 1;
+            if (run_gui_menu("DELETE SAVED HOST", entry, choices, &selected) &&
+                selected == 0) {
+                if (remove_saved_host_entry(entry)) {
+                    diag_log("HOST_ENTRY_DELETED", "result=saved_address_removed");
+                    show_gui_message("HOST REMOVED",
+                                     "The address was removed from the host picker.",
+                                     "Sunshine pairing remains until you unpair separately.");
+                } else {
+                    show_gui_message("HOST NOT REMOVED",
+                                     "Moonlight could not update the saved host list.",
+                                     "The existing entry was kept.");
+                }
+            }
+        }
+    }
 }
 static int prompt_for_int(std::string initial_text) {
     const int previous = std::stoi(initial_text);
@@ -1667,12 +1796,26 @@ static void show_gui_message(const std::string &title, const std::string &messag
 static bool ensure_upload_consent(PSERVER_DATA server) {
     bool known = false;
     bool enabled = false;
-    if (server == NULL || !server->paired ||
-        !host_upload_consent_get(server->serverInfo.address, server->httpPort,
+    if (server == NULL || !server->paired) {
+        show_gui_message("HOST NOT PAIRED",
+                         "Automatic uploads need this Sunshine host paired first.",
+                         "Pair the host; local logs remain on the SD card.");
+        return false;
+    }
+    if (!upload_pin_available(server)) {
+        diag_log("UPLOAD_TRUST_UNAVAILABLE",
+                 "reason=missing_host_certificate_pin recovery=repair_upload_trust");
+        show_gui_message(
+            "UPLOAD TRUST NEEDS REPAIR",
+            "This host is paired, but its Sunshine certificate pin is missing.",
+            "Choose Repair Upload Trust. Streaming works; logs stay local.");
+        return false;
+    }
+    if (!host_upload_consent_get(server->serverInfo.address, server->httpPort,
                                  &known, &enabled)) {
-        show_gui_message("UPLOAD TRUST UNAVAILABLE",
-                         "No saved paired Sunshine certificate pin is available.",
-                         "Logs stay on the SD card until this host is paired again.");
+        show_gui_message("UPLOAD CONSENT UNAVAILABLE",
+                         "Moonlight could not read this host's upload choice.",
+                         "Automatic uploads remain disabled; local logs are safe.");
         return false;
     }
     if (known) return enabled;
@@ -1830,6 +1973,11 @@ static void log_upload_attempt(unsigned int attempt, int result,
 static bool upload_session(PSERVER_DATA server, const DIAG_SESSION &session,
                            const char *outcome, DIAG_UPLOAD_INFO *upload_info) {
     if (server == NULL || !server->paired) return false;
+    if (!upload_pin_available(server)) {
+        diag_log("DIAG_UPLOAD_BLOCKED",
+                 "reason=missing_host_certificate_pin recovery=repair_upload_trust");
+        return false;
+    }
     std::string body;
     DIAG_UPLOAD_INFO local_upload_info = {};
     DIAG_UPLOAD_INFO *info = upload_info != NULL ? upload_info : &local_upload_info;
@@ -2167,6 +2315,151 @@ static bool run_gui_call(const char *phase, const std::string &title,
     diag_phase_outcome(phase, screen.cancelled() ? "cancelled" : "returned",
                        screen.cancelled() ? -1 : GS_OK);
     restore_bottom_console();
+    return screen.cancelled() || !screen_finished;
+}
+
+class PairingProgressScreen : public MoonlightUi::DualScreenModel {
+  public:
+    PairingProgressScreen(GuiCallTask *task, const std::string &pin,
+                          bool version_two)
+        : task_(task), pin_(pin), version_two_(version_two) {}
+
+    void draw(MoonlightUi::Screen &top,
+              MoonlightUi::Screen &bottom) override {
+        top.drawHeader("MOONLIGHT", version_two_ ? "PAIR WITH SUNSHINE"
+                                                   : "PAIRING IN PROGRESS");
+        if (version_two_) {
+            const std::string instruction = "ENTER THIS PIN ON YOUR PC";
+            const int instruction_x =
+                (top.width() - top.measureLiveText(
+                                   instruction, MoonlightUi::TextStyle::Header)) /
+                2;
+            top.drawLiveText(instruction_x, 73, instruction,
+                             MoonlightUi::TextStyle::Header, {38, 43, 48});
+            const int pin_width = top.measureLiveText(
+                                     pin_, MoonlightUi::TextStyle::Tile) * 3;
+            top.drawLiveTextScaled((top.width() - pin_width) / 2, 108, pin_,
+                                   MoonlightUi::TextStyle::Tile,
+                                   {0, 137, 153}, 3);
+            top.drawLiveText(72, 178, "Enter it in Sunshine to pair.",
+                             MoonlightUi::TextStyle::Small, {105, 114, 122});
+        } else {
+            top.drawLiveText(24, 85, "PAIR WITH YOUR SUNSHINE HOST",
+                             MoonlightUi::TextStyle::Header, {38, 43, 48});
+            top.drawLiveText(24, 116, "Version 2 shows the PIN larger.",
+                             MoonlightUi::TextStyle::Small, {105, 114, 122});
+        }
+        top.drawFooter(DIAG_BUILD_VERSION,
+                       task_->cancellable_http ? "B CANCEL" : "PLEASE WAIT");
+
+        bottom.drawHeader("PAIRING", version_two_ ? "VERSION 2" : "VERSION 1");
+        if (version_two_) {
+            bottom.drawLiveText(20, 76, cancelling_ ? "Cancelling pairing..."
+                                                     : "Waiting for Sunshine...",
+                                MoonlightUi::TextStyle::Header, {38, 43, 48});
+            bottom.drawAutoRateText(
+                20, 111,
+                "Type the large four-digit PIN from the top screen into Sunshine.",
+                bottom.width() - 40, {105, 114, 122});
+        } else {
+            bottom.drawHeader("CONNECTING", "PAIRING WITH HOST");
+            bottom.drawLiveText(20, 98, cancelling_ ? "Cancelling request..."
+                                                     : "Waiting for the host...",
+                                MoonlightUi::TextStyle::Header, {38, 43, 48});
+            bottom.drawAutoRateText(
+                20, 137, "Enter the PIN shown on this screen: " + pin_,
+                bottom.width() - 40, {105, 114, 122});
+        }
+
+        const MoonlightUi::Rect version_one{16, 176, 158, 211};
+        const MoonlightUi::Rect version_two{162, 176, 304, 211};
+        const MoonlightUi::Color active_fill{79, 86, 97};
+        const MoonlightUi::Color inactive_fill{222, 227, 231};
+        const MoonlightUi::Color active_text{255, 255, 255};
+        const MoonlightUi::Color inactive_text{38, 43, 48};
+        bottom.drawPanelButton(version_one, "VERSION 1",
+                               version_two_ ? inactive_fill : active_fill,
+                               version_two_ ? inactive_text : active_text);
+        bottom.drawPanelButton(version_two, "VERSION 2",
+                               version_two_ ? active_fill : inactive_fill,
+                               version_two_ ? active_text : inactive_text);
+        bottom.drawFooter(DIAG_BUILD_VERSION, "L/R SWITCH  B CANCEL");
+    }
+
+    bool update(bool *redraw) override {
+        ++frames_;
+        *redraw = frames_ % 15 == 0;
+        return !task_->done.load();
+    }
+
+    bool handleInput(const MoonlightUi::InputEvent &event,
+                     bool *redraw) override {
+        *redraw = false;
+        if (event.type == MoonlightUi::InputEvent::Type::Back &&
+            !cancelling_ && task_->cancellable_http) {
+            cancelling_ = true;
+            diag_request_cancel();
+            *redraw = true;
+        } else if (event.type == MoonlightUi::InputEvent::Type::Direction &&
+                   (event.direction == MoonlightUi::Direction::Left ||
+                    event.direction == MoonlightUi::Direction::Right)) {
+            set_version(event.direction == MoonlightUi::Direction::Right,
+                        redraw);
+        } else if (event.type == MoonlightUi::InputEvent::Type::Touch &&
+                   event.touch.py >= 176 && event.touch.py <= 211 &&
+                   event.touch.px >= 16 && event.touch.px <= 304) {
+            set_version(event.touch.px >= 160, redraw);
+        }
+        return true;
+    }
+
+    bool cancelled() const { return cancelling_; }
+
+  private:
+    GuiCallTask *task_;
+    std::string pin_;
+    unsigned int frames_ = 0;
+    bool version_two_ = false;
+    bool cancelling_ = false;
+
+    void set_version(bool version_two, bool *redraw) {
+        if (version_two_ == version_two) return;
+        version_two_ = version_two;
+        if (!set_pairing_layout_v2_preferred(version_two_)) {
+            diag_log("PAIRING_LAYOUT_PREFERENCE",
+                     "version=%d saved=false", version_two_ ? 2 : 1);
+        } else {
+            diag_log("PAIRING_LAYOUT_PREFERENCE",
+                     "version=%d saved=true", version_two_ ? 2 : 1);
+        }
+        *redraw = true;
+    }
+};
+
+static bool run_pairing_gui_call(const char *phase,
+                                 DiagnosticTaskFunction function,
+                                 void *context, const std::string &pin,
+                                 bool version_two) {
+    GuiCallTask task{function, context, {false}, true, false};
+    s32 priority = 0x30;
+    svcGetThreadPriority(&priority, CUR_THREAD_HANDLE);
+    diag_cancel_reset();
+    diag_set_phase(phase);
+    Thread worker = threadCreate(gui_call_entry, &task, 0x20000, priority, -1,
+                                 false);
+    if (worker == NULL) {
+        diag_log("GUI_TASK_ERROR", "phase=%s reason=threadCreate failed",
+                 phase);
+        return false;
+    }
+    PairingProgressScreen screen(&task, pin, version_two);
+    const bool screen_finished = MoonlightUi::runDualScreen(screen);
+    if (!screen_finished && !task.done.load()) diag_request_cancel();
+    threadJoin(worker, 0xFFFFFFFFFFFFFFFFULL);
+    threadFree(worker);
+    diag_phase_outcome(phase, screen.cancelled() ? "cancelled" : "returned",
+                       screen.cancelled() ? -1 : GS_OK);
+    restore_consoles_after_dual_screen_ui();
     return screen.cancelled() || !screen_finished;
 }
 
@@ -3471,13 +3764,6 @@ static int init_server(CONFIGURATION *config, SERVER_DATA *server) {
     }
 
     diag_phase_outcome("connect.server_init", "success", status);
-    diag_set_phase("connect.host_state");
-    if (server->paired) {
-        add_pair_address(config->address, config->port);
-    } else {
-        remove_pair_address(config->address, config->port);
-    }
-    diag_phase_outcome("connect.host_state", "success", GS_OK);
     return GS_OK;
 }
 
@@ -3855,8 +4141,8 @@ static bool action_pair(CONFIGURATION *config, SERVER_DATA *server) {
     sprintf(pin, "%d%d%d%d", (unsigned)random() % 10, (unsigned)random() % 10,
             (unsigned)random() % 10, (unsigned)random() % 10);
     PairTaskContext task{server, &pin[0], GS_ERROR};
-    run_gui_call("pair", "Pairing with host", pair_task, &task, true, false,
-                 "Enter the PIN shown on this screen: " + std::string(pin));
+    run_pairing_gui_call("pair", pair_task, &task, pin,
+                         pairing_layout_v2_preferred());
     bool cancelled = diag_cancel_requested();
     if (cancelled) {
         diag_log("PAIR_CANCELLED", "returning to host list after watchdog cancellation");
@@ -3866,7 +4152,7 @@ static bool action_pair(CONFIGURATION *config, SERVER_DATA *server) {
                          "Check the PIN and host, then try again.");
     } else {
         diag_log("PAIR_SUCCESS", "host pairing completed");
-        add_pair_address(config->address, config->port);
+        add_saved_host_entry(config->address, config->port);
         show_gui_message("PAIRING COMPLETE", "This 3DS is paired with the host.",
                          "Return to the host menu to continue.");
     }
@@ -3876,17 +4162,52 @@ static bool action_pair(CONFIGURATION *config, SERVER_DATA *server) {
     return cancelled;
 }
 
-static void action_unpair(CONFIGURATION *config, SERVER_DATA *server) {
+static void action_unpair(SERVER_DATA *server) {
     if (gs_unpair(server) != GS_OK) {
         diag_log("UNPAIR_ERROR", "detail=%s", gs_error);
         show_gui_message("UNPAIR FAILED", "Moonlight could not remove pairing.",
                          "Check the host connection, then try again.");
     } else {
         diag_log("UNPAIR_SUCCESS", "host unpaired");
-        remove_pair_address(config->address, config->port);
         show_gui_message("UNPAIRED", "This 3DS is no longer paired with the host.",
-                         "Return to the host list to continue.");
+                         "The saved address stays in the host picker; pair again any time.");
     }
+}
+
+static bool action_repair_upload_trust(CONFIGURATION *config,
+                                      SERVER_DATA *server) {
+    if (config == NULL || server == NULL || !server->paired) {
+        show_gui_message("HOST NOT PAIRED",
+                         "Pair this 3DS with Sunshine before repairing upload trust.",
+                         "Local logs remain available in Check Logs.");
+        return false;
+    }
+    if (upload_pin_available(server)) {
+        show_gui_message("UPLOAD TRUST AVAILABLE",
+                         "This host already has a saved Sunshine certificate pin.",
+                         "No pairing change is needed for uploads.");
+        return false;
+    }
+    const std::vector<GuiMenuItem> choices = {
+        {"Unpair and Pair Again", "Refresh the trusted Sunshine certificate pin using a new PIN.", "Local logs stay on SD"},
+        {"Cancel", "Leave the current host pairing unchanged.", "No changes"},
+    };
+    int selected = 1;
+    if (!run_gui_menu("REPAIR UPLOAD TRUST", "SUNSHINE PAIRING",
+                      choices, &selected) || selected != 0)
+        return false;
+
+    diag_log("UPLOAD_TRUST_REPAIR", "phase=unpair_begin");
+    if (gs_unpair(server) != GS_OK) {
+        diag_log("UPLOAD_TRUST_REPAIR", "phase=unpair_failed detail=%s",
+                 gs_error ? gs_error : "unknown");
+        show_gui_message("TRUST REPAIR FAILED",
+                         "Sunshine did not complete the unpair request.",
+                         "The existing pairing and local logs remain available.");
+        return false;
+    }
+    diag_log("UPLOAD_TRUST_REPAIR", "phase=pair_begin");
+    return action_pair(config, server);
 }
 
 static void action_quit_stream(SERVER_DATA *server) {
@@ -3919,14 +4240,27 @@ int main_loop(int argc, char *argv[]) {
         if (address_string.empty()) {
             continue;
         }
-        // Split address and port (if specified)
-        uint32_t port_delim_pos = address_string.find(':');
-        if (port_delim_pos != std::string::npos) {
-            std::string port_string = address_string.substr(port_delim_pos + 1);
-            address_string = address_string.substr(0, port_delim_pos);
-            config.port = std::stoi(port_string);
+        std::string parsed_address;
+        uint16_t parsed_port = static_cast<uint16_t>(config.port);
+        if (!split_host_endpoint(address_string, parsed_port, &parsed_address,
+                                 &parsed_port)) {
+            show_gui_message("HOST ADDRESS INVALID",
+                             "The host address or port is not valid.",
+                             "Use a hostname or IP address with an optional :port.");
+            continue;
         }
+        address_string = parsed_address;
+        config.port = parsed_port;
         config.address = (char *)address_string.c_str();
+        const bool address_saved =
+            add_saved_host_entry(config.address, config.port);
+        diag_log("HOST_ENTRY_SELECTED", "saved=%s port=%d",
+                 address_saved ? "true" : "false", config.port);
+        if (!address_saved) {
+            show_gui_message("HOST LIST SAVE FAILED",
+                             "Moonlight could not save this address to the host picker.",
+                             "You can try connecting now; the entry may not persist.");
+        }
         const std::string profile_host_key =
             std::string(config.address) + ":" + std::to_string(config.port);
         diag_session_begin();
@@ -3980,6 +4314,11 @@ int main_loop(int argc, char *argv[]) {
                 finish_session(&server, cancelled ? "cancelled" : "complete",
                                "pair_action_selected");
                 break;
+            } else if (strcmp("repair upload trust", config.action) == 0) {
+                bool cancelled = action_repair_upload_trust(&config, &server);
+                finish_session(&server, cancelled ? "cancelled" : "complete",
+                               "upload_trust_repair_selected");
+                break;
             } else if (strcmp("stream settings", config.action) == 0) {
                 prompt_for_stream_settings(&config);
             } else if (strcmp("stream profile", config.action) == 0) {
@@ -3994,7 +4333,7 @@ int main_loop(int argc, char *argv[]) {
                 toggle_automatic_upload(&server);
             } else if (strcmp("unpair", config.action) == 0) {
                 finish_session(&server, "complete", "unpair_action_selected");
-                action_unpair(&config, &server);
+                action_unpair(&server);
                 break;
             } else if (strcmp("quit stream", config.action) == 0) {
                 action_quit_stream(&server);

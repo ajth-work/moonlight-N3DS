@@ -88,6 +88,8 @@ class Screen {
     void drawDisplaySelector(int selected, int count, bool configure_count);
     void drawLiveText(int x, int y, const std::string &text, TextStyle style,
                       Color color);
+    void drawLiveTextScaled(int x, int y, const std::string &text,
+                            TextStyle style, Color color, int scale);
     void drawAutoRateText(int x, int y, const std::string &text,
                           int max_width, Color color);
     int measureLiveText(const std::string &text, TextStyle style) const;
@@ -104,7 +106,7 @@ class Screen {
     void blendPixel(int x, int y, Color color, unsigned int coverage);
     void fillRoundedRect(const Rect &rect, int radius, uint16_t color);
     void drawTextStyle(int x, int y, const std::string &text, int font_id,
-                       Color color);
+                       Color color, int scale = 1);
 };
 
 class ScreenModel {
@@ -129,7 +131,10 @@ class DualScreenModel {
     virtual ~DualScreenModel() = default;
     virtual void draw(Screen &top, Screen &bottom) = 0;
     // Called after each presented frame; set redraw when visible state changed.
-    virtual void update(bool *redraw) { *redraw = false; }
+    virtual bool update(bool *redraw) {
+        *redraw = false;
+        return true;
+    }
     // Return false to leave the screen. Set redraw when visible state changed.
     virtual bool handleInput(const InputEvent &event, bool *redraw) = 0;
 };

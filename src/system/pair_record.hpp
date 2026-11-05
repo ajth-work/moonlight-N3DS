@@ -28,9 +28,13 @@
 #include <vector>
 
 void trim(std::string &s);
-void add_pair_address(std::string address, uint16_t port);
-void remove_pair_address(std::string address, uint16_t port);
-std::vector<std::string> list_paired_addresses();
+bool add_saved_host_entry(std::string address, uint16_t port);
+bool remove_saved_host_entry(const std::string &entry);
+bool replace_saved_host_entry(const std::string &old_entry,
+                             const std::string &new_entry);
+std::vector<std::string> list_saved_host_entries();
+bool pairing_layout_v2_preferred();
+bool set_pairing_layout_v2_preferred(bool enabled);
 bool save_host_public_key_pin(std::string address, uint16_t port,
                               const char *pin);
 bool load_host_public_key_pin(std::string address, uint16_t port,

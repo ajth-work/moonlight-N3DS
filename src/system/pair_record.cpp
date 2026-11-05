@@ -52,56 +52,96 @@ void trim(std::string &s) {
     ltrim(s);
 }
 
-void add_pair_address(std::string address, uint16_t port) {
+static std::string paired_address_file_path() {
+    return std::string(MOONLIGHT_3DS_PATH) + "/paired";
+}
+
+static bool write_paired_addresses(const std::vector<std::string> &addresses) {
+    const std::string path = paired_address_file_path();
+    const std::string temporary = path + ".tmp";
+    FILE *file = fopen(temporary.c_str(), "w");
+    if (file == NULL) return false;
+    bool ok = true;
+    for (const auto &address : addresses) {
+        if (fprintf(file, "%s\n", address.c_str()) < 0) {
+            ok = false;
+            break;
+        }
+    }
+    if (fclose(file) != 0) ok = false;
+    if (!ok || rename(temporary.c_str(), path.c_str()) != 0) {
+        remove(temporary.c_str());
+        return false;
+    }
+    return true;
+}
+
+bool add_saved_host_entry(std::string address, uint16_t port) {
     address += ":" + std::to_string(port);
 
     // Prevent duplicates
-    auto address_list = list_paired_addresses();
+    auto address_list = list_saved_host_entries();
     for (auto entry : address_list) {
         if (entry == address) {
-            return;
+            return true;
         }
     }
     address_list.push_back(address);
 
-    char *address_file = (char *)MOONLIGHT_3DS_PATH "/paired";
-    remove(address_file);
-
-    FILE *fd = fopen(address_file, "w");
-    for (auto addr_string : address_list) {
-        trim(addr_string);
-        fprintf(fd, "%s\n", addr_string.c_str());
-    }
-    fclose(fd);
+    return write_paired_addresses(address_list);
 }
 
-void remove_pair_address(std::string address, uint16_t port) {
-    address += ":" + std::to_string(port);
-
-    auto address_list = list_paired_addresses();
-
-    char *address_file = (char *)MOONLIGHT_3DS_PATH "/paired";
-    remove(address_file);
-
-    FILE *fd = fopen(address_file, "w");
-    for (auto addr_string : address_list) {
-        if (addr_string != address) {
-            trim(addr_string);
-            fprintf(fd, "%s\n", addr_string.c_str());
-        }
-    }
-    fclose(fd);
+bool remove_saved_host_entry(const std::string &entry) {
+    if (entry.empty()) return false;
+    auto addresses = list_saved_host_entries();
+    const size_t old_size = addresses.size();
+    addresses.erase(std::remove(addresses.begin(), addresses.end(), entry),
+                    addresses.end());
+    return addresses.size() != old_size && write_paired_addresses(addresses);
 }
 
-std::vector<std::string> list_paired_addresses() {
+bool replace_saved_host_entry(const std::string &old_entry,
+                              const std::string &new_entry) {
+    if (old_entry.empty() || new_entry.empty()) return false;
+    auto addresses = list_saved_host_entries();
+    auto old_position = std::find(addresses.begin(), addresses.end(), old_entry);
+    if (old_position == addresses.end()) return false;
+    if (old_entry == new_entry) return true;
+    if (std::find(addresses.begin(), addresses.end(), new_entry) != addresses.end())
+        return false;
+    *old_position = new_entry;
+    return write_paired_addresses(addresses);
+}
+
+std::vector<std::string> list_saved_host_entries() {
     std::vector<std::string> addresses = std::vector<std::string>();
-    std::ifstream pair_file(MOONLIGHT_3DS_PATH "/paired");
+    std::ifstream pair_file(paired_address_file_path());
     std::string line;
     while (std::getline(pair_file, line)) {
         trim(line);
         addresses.push_back(line);
     }
     return addresses;
+}
+
+bool pairing_layout_v2_preferred() {
+    std::ifstream file(std::string(MOONLIGHT_3DS_PATH) + "/pairing-layout");
+    int version = 1;
+    return (file >> version) && version == 2;
+}
+
+bool set_pairing_layout_v2_preferred(bool enabled) {
+    const std::string path = std::string(MOONLIGHT_3DS_PATH) + "/pairing-layout";
+    const std::string temporary = path + ".tmp";
+    FILE *file = fopen(temporary.c_str(), "w");
+    if (file == NULL) return false;
+    const bool wrote = fprintf(file, "%d\n", enabled ? 2 : 1) >= 0;
+    const bool closed = fclose(file) == 0;
+    if (!wrote || !closed || rename(temporary.c_str(), path.c_str()) != 0) {
+        remove(temporary.c_str());
+        return false;
+    }
+    return true;
 }
 
 static std::string pin_file_path() {

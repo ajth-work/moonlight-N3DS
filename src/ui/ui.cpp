@@ -584,12 +584,13 @@ void Screen::drawDisplaySelector(int selected, int count, bool configure_count) 
 }
 
 void Screen::drawTextStyle(int x, int y, const std::string &text, int font_id,
-                           Color color) {
+                           Color color, int scale) {
     if (framebuffer_ == nullptr || FONT_DATA[0] != 'M' || FONT_DATA[1] != 'L' ||
         FONT_DATA[2] != 'G' || FONT_DATA[3] != 'F' || font_id < 0 ||
         font_id >= font_count()) {
         return;
     }
+    if (scale < 1) scale = 1;
 
     int pen_x_64 = 0;
     int line_y = y;
@@ -601,7 +602,7 @@ void Screen::drawTextStyle(int x, int y, const std::string &text, int font_id,
         const uint32_t codepoint = next_codepoint(&cursor, end);
         if (codepoint == '\n') {
             pen_x_64 = 0;
-            line_y += font_pixel_size(static_cast<uint8_t>(font_id));
+            line_y += font_pixel_size(static_cast<uint8_t>(font_id)) * scale;
             previous_char = -1;
             continue;
         }
@@ -620,8 +621,8 @@ void Screen::drawTextStyle(int x, int y, const std::string &text, int font_id,
         }
         const Glyph glyph = glyph_for(static_cast<uint8_t>(font_id), index);
         const int fractional_x = pen_x_64 & 63;
-        const int origin_x = x + (pen_x_64 >> 6) + glyph.x_offset;
-        const int origin_y = line_y + glyph.y_offset;
+        const int origin_x = x + ((pen_x_64 >> 6) + glyph.x_offset) * scale;
+        const int origin_y = line_y + glyph.y_offset * scale;
         for (int gy = 0; gy < glyph.height; ++gy) {
             for (int gx = 0; gx < glyph.width; ++gx) {
                 const size_t pixel_index =
@@ -633,14 +634,22 @@ void Screen::drawTextStyle(int x, int y, const std::string &text, int font_id,
                 if (coverage == 0) {
                     continue;
                 }
-                const unsigned int left_coverage =
-                    coverage * static_cast<unsigned int>(64 - fractional_x) /
-                    64;
-                const unsigned int right_coverage = coverage - left_coverage;
-                blendPixel(origin_x + gx, origin_y + gy, color,
-                           left_coverage);
-                blendPixel(origin_x + gx + 1, origin_y + gy, color,
-                           right_coverage);
+                if (scale == 1) {
+                    const unsigned int left_coverage =
+                        coverage * static_cast<unsigned int>(64 - fractional_x) /
+                        64;
+                    const unsigned int right_coverage = coverage - left_coverage;
+                    blendPixel(origin_x + gx, origin_y + gy, color,
+                               left_coverage);
+                    blendPixel(origin_x + gx + 1, origin_y + gy, color,
+                               right_coverage);
+                } else {
+                    for (int sy = 0; sy < scale; ++sy)
+                        for (int sx = 0; sx < scale; ++sx)
+                            blendPixel(origin_x + gx * scale + sx,
+                                       origin_y + gy * scale + sy, color,
+                                       coverage);
+                }
             }
         }
         pen_x_64 += glyph.advance_64;
@@ -777,6 +786,15 @@ void Screen::drawLiveText(int x, int y, const std::string &text,
     drawTextStyle(x, y, text, font_id, color);
 }
 
+void Screen::drawLiveTextScaled(int x, int y, const std::string &text,
+                                TextStyle style, Color color, int scale) {
+    const int font_id = style == TextStyle::Small
+                            ? FONT_SMALL
+                            : (style == TextStyle::Header ? FONT_HEADER
+                                                          : FONT_TILE);
+    drawTextStyle(x, y, text, font_id, color, scale);
+}
+
 int Screen::measureLiveText(const std::string &text, TextStyle style) const {
     const int font_id = style == TextStyle::Small
                             ? FONT_SMALL
@@ -870,7 +888,9 @@ bool runDualScreen(DualScreenModel &model) {
         }
 
         bool updated = false;
-        model.update(&updated);
+        if (!model.update(&updated)) {
+            return true;
+        }
         redraw = redraw || updated;
 
         InputEvent event{};
