@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <map>
 #include <dirent.h>
 #include <sys/stat.h>
 #include <time.h>
@@ -68,6 +69,65 @@ bool parse_utc(const std::string &s, time_t *seconds_out) {
     return static_cast<long long>(*seconds_out) == epoch;
 }
 
+bool device_utc_offset(int *offset_minutes) {
+    static bool checked = false;
+    static bool available = false;
+    static int cached_offset = 0;
+    if (!checked) {
+        checked = true;
+        FILE *f = fopen("sdmc:/luma/config.ini", "r");
+        if (f != NULL) {
+            char line[256];
+            while (fgets(line, sizeof(line), f) != NULL) {
+                if (line[0] == ';' || line[0] == '#' ||
+                    strncmp(line, "ntp_tz_offset_min", 17) != 0) continue;
+                char *equals = strchr(line, '=');
+                if (equals == NULL) continue;
+                char *value = equals + 1;
+                while (*value == ' ' || *value == '\t') ++value;
+                char *end = NULL;
+                const long parsed = strtol(value, &end, 10);
+                while (end != NULL && (*end == ' ' || *end == '\t' ||
+                                        *end == '\r' || *end == '\n')) ++end;
+                if (end != value && end != NULL && *end == '\0' &&
+                    parsed >= -779 && parsed <= 899) {
+                    cached_offset = static_cast<int>(parsed);
+                    available = true;
+                    break;
+                }
+            }
+            fclose(f);
+        }
+    }
+    if (available && offset_minutes != NULL) *offset_minutes = cached_offset;
+    return available;
+}
+
+std::string format_epoch_local(time_t seconds) {
+    struct tm local;
+    char out[40];
+    int offset_minutes = 0;
+    if (device_utc_offset(&offset_minutes)) {
+        seconds += static_cast<time_t>(offset_minutes) * 60;
+        if (gmtime_r(&seconds, &local) == NULL ||
+            strftime(out, sizeof(out), "%m/%d %I:%M %p", &local) == 0)
+            return "unknown";
+        char zone[24];
+        const int absolute_offset = offset_minutes < 0 ? -offset_minutes : offset_minutes;
+        snprintf(zone, sizeof(zone), " UTC%c%02d:%02d",
+                 offset_minutes < 0 ? '-' : '+', absolute_offset / 60,
+                 absolute_offset % 60);
+        return std::string(out) + zone;
+    }
+    if (localtime_r(&seconds, &local) == NULL ||
+        strftime(out, sizeof(out), "%m/%d %I:%M %p", &local) == 0)
+        return "unknown";
+    char zone[8];
+    if (strftime(zone, sizeof(zone), "%z", &local) != 0 &&
+        strcmp(zone, "+0000") == 0) return std::string(out) + " UTC";
+    return out;
+}
+
 std::string timestamp_prefix(const std::string &line) {
     if (line.size() < 20 || line[19] != '.') return "";
     const size_t z = line.find('Z', 20);
@@ -99,7 +159,8 @@ bool is_diagnostic_filename(const std::string &filename) {
     return leaf.size() > 4 && leaf.compare(leaf.size() - 4, 4, ".log") == 0;
 }
 
-void scan_upload_state(const std::string &path, Entry &entry) {
+void scan_upload_state(const std::string &path, Entry &entry,
+                       std::map<std::string, Entry> *receipts = NULL) {
     FILE *f = fopen(path.c_str(), "rb");
     if (!f) return;
     char buffer[MAX_LINE];
@@ -113,14 +174,25 @@ void scan_upload_state(const std::string &path, Entry &entry) {
     while (consumed < MAX_SCAN_BYTES && fgets(buffer, sizeof(buffer), f)) {
         const size_t n = strlen(buffer);
         consumed += n;
-        if (strstr(buffer, " DIAG_UPLOAD ") != NULL)
-            parse_line(entry, std::string(buffer, n));
+        if (strstr(buffer, " DIAG_UPLOAD ") != NULL ||
+            strstr(buffer, " DIAG_UPLOAD_ATTEMPT ") != NULL) {
+            const std::string line(buffer, n);
+            const std::string session = value_for(line, "session_id");
+            if (receipts != NULL && !session.empty()) {
+                Entry receipt;
+                parse_line(receipt, line);
+                receipt.session = session;
+                (*receipts)[session] = receipt;
+            }
+            parse_line(entry, line);
+        }
     }
     fclose(f);
 }
 
 void add_directory(const std::string &path, std::vector<Entry> &out,
-                   size_t limit, size_t &total_count) {
+                   size_t &total_count,
+                   std::map<std::string, Entry> *receipts) {
     DIR *dir = opendir(path.c_str());
     if (!dir) return;
     struct dirent *item;
@@ -130,23 +202,22 @@ void add_directory(const std::string &path, std::vector<Entry> &out,
         struct stat st;
         if (lstat(full.c_str(), &st) != 0 || !S_ISREG(st.st_mode)) continue;
         ++total_count;
-        if (out.size() >= limit) continue;
         Entry e;
         e.filename = path.size() >= 9 && path.compare(path.size() - 9, 9, "/sessions") == 0
                          ? std::string("sessions/") + item->d_name
                          : item->d_name;
         e.size = static_cast<uint64_t>(st.st_size);
+        e.modified_epoch = st.st_mtime > 0 ? static_cast<unsigned long long>(st.st_mtime) : 0;
         e.app_state = !is_diagnostic_filename(e.filename);
         if (e.filename == "moonlight.log") e.scope = "application log";
-        struct tm modified;
-        char modified_text[40];
-        if (localtime_r(&st.st_mtime, &modified) != NULL &&
-            strftime(modified_text, sizeof(modified_text), "%Y-%m-%d %H:%M:%S %z", &modified) != 0)
-            e.modified_local = modified_text;
+        e.modified_local = format_epoch_local(st.st_mtime);
         /* The append-only application log can contain many sessions; do not
          * misattribute its last session's facts to the whole file. */
-        if (e.filename == "moonlight.log") scan_upload_state(full, e);
-        else if (!e.app_state) scan_file(full, e);
+        if (e.filename == "moonlight.log") scan_upload_state(full, e, receipts);
+        else if (!e.app_state) {
+            scan_file(full, e);
+            scan_upload_state(full, e);
+        }
         if (e.start_local != "unknown" && e.end_local == "unknown") {
             e.completion = "interrupted/incomplete";
             e.partial = "yes";
@@ -171,6 +242,8 @@ void add_directory(const std::string &path, std::vector<Entry> &out,
 void parse_line(Entry &e, const std::string &line) {
     const std::string event = line.find(" SESSION_BEGIN ") != std::string::npos ? "SESSION_BEGIN" :
                               line.find(" SESSION_END ") != std::string::npos ? "SESSION_END" :
+                              line.find(" STREAM_BEGIN ") != std::string::npos ? "STREAM_BEGIN" :
+                              line.find(" DIAG_UPLOAD_ATTEMPT ") != std::string::npos ? "DIAG_UPLOAD_ATTEMPT" :
                               line.find(" DIAG_UPLOAD ") != std::string::npos ? "DIAG_UPLOAD" : "";
     if (event.empty()) return;
     const std::string ts = timestamp_prefix(line);
@@ -179,7 +252,13 @@ void parse_line(Entry &e, const std::string &line) {
                                     ? value_for(line, "session")
                                     : value_for(line, "session_id");
     if (!scope.empty()) e.scope = scope;
-    if (!session.empty()) e.session = session;
+    if (event == "STREAM_BEGIN" || scope == "stream") e.has_stream = true;
+    if (event != "DIAG_UPLOAD" && event != "DIAG_UPLOAD_ATTEMPT" && !session.empty())
+        e.session = session;
+    time_t event_time;
+    if (!ts.empty() && parse_utc(ts, &event_time) && event_time > 0 &&
+        static_cast<unsigned long long>(event_time) > e.latest_epoch)
+        e.latest_epoch = static_cast<unsigned long long>(event_time);
     if (event == "SESSION_BEGIN" && !ts.empty()) {
         e.start_local = ts;
         time_t epoch;
@@ -193,32 +272,72 @@ void parse_line(Entry &e, const std::string &line) {
     const std::string truncated = value_for(line, "truncated");
     if (!truncated.empty()) e.partial = truncated == "1" || truncated == "true" ? "yes" : "no";
     const std::string state = value_for(line, "state");
+    if (event == "DIAG_UPLOAD_ATTEMPT") e.upload_state = "uncertain";
     if (event == "DIAG_UPLOAD" && (state == "accepted" || state == "failed"))
         e.upload_state = state;
+    if (event == "DIAG_UPLOAD" || event == "DIAG_UPLOAD_ATTEMPT") {
+        const std::string upload_id = value_for(line, "upload_id");
+        if (!upload_id.empty()) e.upload_id = upload_id;
+        const auto read_count = [&line](const char *key, uint64_t *target) {
+            const std::string value = value_for(line, key);
+            if (value.empty()) return;
+            char *end = NULL;
+            const unsigned long long parsed = strtoull(value.c_str(), &end, 10);
+            if (end != value.c_str() && end != NULL && *end == '\0')
+                *target = static_cast<uint64_t>(parsed);
+        };
+        read_count("source_bytes", &e.upload_source_bytes);
+        read_count("filtered_bytes", &e.upload_filtered_bytes);
+        read_count("request_bytes", &e.upload_request_bytes);
+    }
 }
 
 std::string format_local_timestamp(const std::string &utc) {
     time_t seconds;
     if (!parse_utc(utc, &seconds)) return "unknown";
-    struct tm local;
-    if (localtime_r(&seconds, &local) == NULL) return "unknown";
-    char out[40];
-    if (strftime(out, sizeof(out), "%Y-%m-%d %H:%M:%S %z", &local) == 0)
-        return "unknown";
-    return out;
+    return format_epoch_local(seconds);
+}
+
+std::string format_relative_age(unsigned long long epoch_seconds) {
+    if (epoch_seconds == 0) return "age unknown";
+    const time_t now = time(NULL);
+    if (now <= 0) return "age unknown";
+    const long long delta = static_cast<long long>(now) -
+                            static_cast<long long>(epoch_seconds);
+    if (delta < -60) return "clock ahead";
+    const unsigned long long age = delta > 0 ? static_cast<unsigned long long>(delta) : 0;
+    if (age < 60) return "just now";
+    if (age < 3600) return std::to_string(age / 60) + "m ago";
+    if (age < 86400) return std::to_string(age / 3600) + "h ago";
+    return std::to_string(age / 86400) + "d ago";
 }
 
 std::vector<Entry> list(const std::string &root, size_t limit,
                         size_t *total_count) {
     std::vector<Entry> entries;
     size_t count = 0;
+    std::map<std::string, Entry> receipts;
     limit = std::min(limit, MAX_FILES);
-    add_directory(root, entries, limit, count);
-    add_directory(root + "/sessions", entries, limit, count);
+    add_directory(root, entries, count, &receipts);
+    add_directory(root + "/sessions", entries, count, &receipts);
+    for (size_t i = 0; i < entries.size(); ++i) {
+        Entry &entry = entries[i];
+        const std::map<std::string, Entry>::const_iterator receipt =
+            receipts.find(entry.session);
+        if (entry.session == "unknown" || receipt == receipts.end()) continue;
+        entry.upload_state = receipt->second.upload_state;
+        entry.upload_id = receipt->second.upload_id;
+        entry.upload_source_bytes = receipt->second.upload_source_bytes;
+        entry.upload_filtered_bytes = receipt->second.upload_filtered_bytes;
+        entry.upload_request_bytes = receipt->second.upload_request_bytes;
+    }
     std::sort(entries.begin(), entries.end(), [](const Entry &a, const Entry &b) {
-        if (a.app_state != b.app_state) return !a.app_state;
+        const unsigned long long a_time = a.start_epoch ? a.start_epoch : a.modified_epoch;
+        const unsigned long long b_time = b.start_epoch ? b.start_epoch : b.modified_epoch;
+        if (a_time != b_time) return a_time > b_time;
         return a.filename < b.filename;
     });
+    if (entries.size() > limit) entries.resize(limit);
     if (total_count) *total_count = count;
     return entries;
 }

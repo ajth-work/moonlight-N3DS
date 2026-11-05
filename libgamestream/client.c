@@ -831,7 +831,104 @@ int gs_applist(PSERVER_DATA server, PAPP_LIST *list) {
   return ret;
 }
 
-int gs_start_app(PSERVER_DATA server, STREAM_CONFIGURATION *config, int appId, bool sops, bool localaudio, int gamepad_mask) {
+int gs_display_list(PSERVER_DATA server, PDISPLAY_INFO *list) {
+  char url[4096];
+  char uuid_str[UUID_STRLEN];
+  uuid_t uuid;
+  int ret;
+  if (server == NULL || list == NULL || server->serverInfo.address == NULL) {
+    gs_error = "Invalid display list request";
+    return GS_INVALID;
+  }
+  *list = NULL;
+  PHTTP_DATA data = http_create_data();
+  if (data == NULL)
+    return GS_OUT_OF_MEMORY;
+
+  uuid_generate_random(uuid);
+  uuid_unparse(uuid, uuid_str);
+  int url_length = snprintf(url, sizeof(url),
+      "https://%s:%u/displayinfo?uniqueid=%s&uuid=%s",
+      server->serverInfo.address, server->httpsPort, unique_id, uuid_str);
+  if (url_length < 0 || (size_t) url_length >= sizeof(url)) {
+    gs_error = "Display list URL is too long";
+    ret = GS_INVALID;
+    goto cleanup_display_list;
+  }
+
+  ret = http_request(url, data);
+  if (ret != GS_OK)
+    goto cleanup_display_list;
+
+  int status_code = 0;
+  int has_status_code = 0;
+  char status_message[96] = {0};
+  ret = xml_status_details(data->memory, data->size, &status_code,
+                           &has_status_code, status_message,
+                           sizeof(status_message));
+  if (ret == GS_OK) {
+    ret = xml_display_list(data->memory, data->size, list);
+  } else if (ret == GS_ERROR && !has_status_code) {
+    // Some GameStream-compatible hosts omit status_code on this optional endpoint.
+    // Accept only valid XML; explicit non-200 statuses still fail.
+    ret = xml_display_list(data->memory, data->size, list);
+  } else if (ret == GS_ERROR) {
+    static char display_status_error[160];
+    snprintf(display_status_error, sizeof(display_status_error),
+             "GameStream status_code=%d message=%s", status_code,
+             status_message[0] ? status_message : "(missing)");
+    gs_error = display_status_error;
+  }
+
+cleanup_display_list:
+  if (ret != GS_OK) {
+    gs_free_display_list(*list);
+    *list = NULL;
+  }
+  http_free_data(data);
+  return ret;
+}
+
+void gs_free_display_list(PDISPLAY_INFO display_list) {
+  while (display_list != NULL) {
+    PDISPLAY_INFO next = display_list->next;
+    free(display_list->id);
+    free(display_list->name);
+    free(display_list);
+    display_list = next;
+  }
+}
+
+static bool url_encode_component(const char *input, char *output,
+                                 size_t output_size) {
+  static const char hex[] = "0123456789ABCDEF";
+  size_t used = 0;
+  if (input == NULL || output == NULL || output_size == 0)
+    return false;
+  for (const unsigned char *p = (const unsigned char *) input; *p != 0; ++p) {
+    const unsigned char ch = *p;
+    const bool safe = (ch >= 'A' && ch <= 'Z') ||
+                      (ch >= 'a' && ch <= 'z') ||
+                      (ch >= '0' && ch <= '9') || ch == '-' || ch == '_' ||
+                      ch == '.' || ch == '~';
+    const size_t needed = safe ? 1 : 3;
+    if (used + needed >= output_size) {
+      output[0] = '\0';
+      return false;
+    }
+    if (safe) {
+      output[used++] = (char) ch;
+    } else {
+      output[used++] = '%';
+      output[used++] = hex[ch >> 4];
+      output[used++] = hex[ch & 0x0F];
+    }
+  }
+  output[used] = '\0';
+  return true;
+}
+
+int gs_start_app(PSERVER_DATA server, STREAM_CONFIGURATION *config, int appId, bool sops, bool localaudio, int gamepad_mask, const char *display_id) {
   int ret = GS_OK;
   uuid_t uuid;
   char* result = NULL;
@@ -861,6 +958,24 @@ int gs_start_app(PSERVER_DATA server, STREAM_CONFIGURATION *config, int appId, b
   memset(config->remoteInputAesIv, 0, sizeof(config->remoteInputAesIv));
 
   char url[4096];
+  char display_id_encoded[1024] = {0};
+  char display_id_arg[1040] = {0};
+  if (display_id != NULL && display_id[0] != '\0') {
+    if (!url_encode_component(display_id, display_id_encoded,
+                              sizeof(display_id_encoded))) {
+      gs_error = "Selected display ID is too long to encode";
+      diag_phase_outcome("stream.start_app", "failed", GS_INVALID);
+      return GS_INVALID;
+    }
+    const int display_arg_length = snprintf(display_id_arg,
+        sizeof(display_id_arg), "&display_id=%s", display_id_encoded);
+    if (display_arg_length < 0 ||
+        (size_t) display_arg_length >= sizeof(display_id_arg)) {
+      gs_error = "Selected display ID is too long";
+      diag_phase_outcome("stream.start_app", "failed", GS_INVALID);
+      return GS_INVALID;
+    }
+  }
   u_int32_t rikeyid = 0;
   RAND_bytes(config->remoteInputAesIv, sizeof(rikeyid));
   memcpy(&rikeyid, config->remoteInputAesIv, sizeof(rikeyid));
@@ -883,8 +998,9 @@ int gs_start_app(PSERVER_DATA server, STREAM_CONFIGURATION *config, int appId, b
   uuid_generate_random(uuid);
   uuid_unparse(uuid, uuid_str);
   int surround_info = SURROUNDAUDIOINFO_FROM_AUDIO_CONFIGURATION(config->audioConfiguration);
-  snprintf(url, sizeof(url), "https://%s:%u/%s?uniqueid=%s&uuid=%s&appid=%d&mode=%dx%dx%d&additionalStates=1&sops=%d&rikey=%s&rikeyid=%d&localAudioPlayMode=%d&surroundAudioInfo=%d&remoteControllersBitmap=%d&gcmap=%d%s%s",
+  snprintf(url, sizeof(url), "https://%s:%u/%s?uniqueid=%s&uuid=%s&appid=%d&mode=%dx%dx%d&additionalStates=1&sops=%d&rikey=%s&rikeyid=%d&localAudioPlayMode=%d&surroundAudioInfo=%d&remoteControllersBitmap=%d&gcmap=%d%s%s%s",
            server->serverInfo.address, server->httpsPort, server->currentGame ? "resume" : "launch", unique_id, uuid_str, appId, config->width, config->height, fps, sops, rikey_hex, rikeyid, localaudio, surround_info, gamepad_mask, gamepad_mask,
+           display_id_arg,
            (config->supportedVideoFormats & VIDEO_FORMAT_MASK_10BIT) ? "&hdrMode=1&clientHdrCapVersion=0&clientHdrCapSupportedFlagsInUint32=0&clientHdrCapMetaDataId=NV_STATIC_METADATA_TYPE_1&clientHdrCapDisplayData=0x0x0x0x0x0x0x0x0x0x0" : "",
            LiGetLaunchUrlQueryParameters());
   current_phase = "stream.start_app_request";

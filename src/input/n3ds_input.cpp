@@ -21,6 +21,7 @@
 #include "../diagnostics.h"
 #include "../system/dispatcher.hpp"
 #include "touch/TouchHandler.hpp"
+#include "../video/renderer/N3ds3DPresentation.hpp"
 
 #include <3ds.h>
 #include <Limelight.h>
@@ -327,13 +328,17 @@ void N3dsInput::n3dsinput_handle_event() {
             } else if (touch.py >= 184 && touch.py < 230) {
                 int page = panel_toolbar_page.load();
                 if (touch.px < 42) {
-                    panel_toolbar_page.store((page + 2) % 3);
+                    panel_toolbar_page.store((page + 3) % 4);
                     panel_quit_armed.store(false);
                 } else if (touch.px >= 278) {
-                    panel_toolbar_page.store((page + 1) % 3);
+                    panel_toolbar_page.store((page + 1) % 4);
                     panel_quit_armed.store(false);
                 } else if (touch.px >= 136 && touch.px < 184) {
-                    panel_settings_requested.store(true);
+                    if (page == 3) {
+                        panel_toolbar_page.store(0);
+                    } else {
+                        panel_settings_requested.store(true);
+                    }
                     panel_quit_armed.store(false);
                 } else {
                     int slot = -1;
@@ -344,6 +349,7 @@ void N3dsInput::n3dsinput_handle_event() {
 
                     if (page == 0) {
                         if (slot == 0) panel_display_action.store(3);
+                        else if (slot == 1) panel_toolbar_page.store(3);
                         else if (slot == 2)
                             panel_touch_mode_request.store(
                                 static_cast<int>(N3dsTouchType::GAMEPAD));
@@ -382,6 +388,30 @@ void N3dsInput::n3dsinput_handle_event() {
                                 diag_log("PANEL_QUIT", "state=confirmed");
                             }
                         }
+                    } else if (page == 3) {
+                        const char *control = "unknown";
+                        if (slot == 0) {
+                            control = "mode";
+                            n3ds_3d_cycle_mode();
+                        } else if (slot == 1) {
+                            control = "aspect";
+                            n3ds_3d_cycle_aspect();
+                        } else if (slot == 2) {
+                            control = "shift_minus";
+                            n3ds_3d_adjust_shift(-1);
+                        } else if (slot == 3) {
+                            control = "shift_plus";
+                            n3ds_3d_adjust_shift(1);
+                        }
+                        const N3ds3DSettings settings =
+                            n3ds_3d_settings_snapshot();
+                        const int slider_milli = static_cast<int>(
+                            osGet3DSliderState() * 1000.0f + 0.5f);
+                        diag_log("PRESENTATION_CONTROL",
+                                 "control=%s mode=%s aspect=%s shift=%d slider_milli=%d gfx3d=%d",
+                                 control, n3ds_3d_mode_name(settings.mode),
+                                 n3ds_3d_aspect_name(settings.aspect),
+                                 settings.shift, slider_milli, gfxIs3D());
                     }
                     if (!(page == 2 && slot == 3))
                         panel_quit_armed.store(false);

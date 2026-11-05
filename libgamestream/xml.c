@@ -21,7 +21,11 @@
 #include "errors.h"
 
 #include <expat.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <ctype.h>
+#include <limits.h>
 
 #define STATUS_OK 200
 
@@ -110,14 +114,26 @@ static void XMLCALL _xml_end_mode_element(void *userData, const char *name) {
   }
 }
 
+struct xml_status_info {
+  int status_code;
+  int has_status_code;
+  char *status_message;
+  size_t status_message_size;
+};
+
 static void XMLCALL _xml_start_status_element(void *userData, const char *name, const char **atts) {
   if (strcmp("root", name) == 0) {
-    int* status = (int*) userData;
+    struct xml_status_info *status = (struct xml_status_info*) userData;
     for (int i = 0; atts[i]; i += 2) {
-      if (strcmp("status_code", atts[i]) == 0)
-        *status = atoi(atts[i + 1]);
-      else if (*status != STATUS_OK && strcmp("status_message", atts[i]) == 0)
-        gs_error = strdup(atts[i + 1]);
+      if (strcmp("status_code", atts[i]) == 0) {
+        status->status_code = atoi(atts[i + 1]);
+        status->has_status_code = 1;
+      } else if (strcmp("status_message", atts[i]) == 0 &&
+                 status->status_message != NULL &&
+                 status->status_message_size > 0) {
+        snprintf(status->status_message, status->status_message_size, "%s",
+                 atts[i + 1]);
+      }
     }
   }
 }
@@ -135,6 +151,147 @@ static void XMLCALL _xml_write_data(void *userData, const XML_Char *s, int len) 
     search->size += len;
     search->memory[search->size] = 0;
   }
+}
+
+enum display_field { DISPLAY_FIELD_NONE, DISPLAY_FIELD_ID, DISPLAY_FIELD_NAME };
+
+struct display_query {
+  XML_Parser parser;
+  PDISPLAY_INFO head;
+  PDISPLAY_INFO tail;
+  PDISPLAY_INFO current;
+  char *value;
+  size_t value_size;
+  enum display_field field;
+  int failed;
+};
+
+static void free_display_nodes(PDISPLAY_INFO display) {
+  while (display != NULL) {
+    PDISPLAY_INFO next = display->next;
+    free(display->id);
+    free(display->name);
+    free(display);
+    display = next;
+  }
+}
+
+static void XMLCALL _xml_start_display_element(void *userData, const char *name,
+                                                const char **atts) {
+  struct display_query *query = (struct display_query*) userData;
+  if (strcmp("display", name) == 0) {
+    PDISPLAY_INFO display = (PDISPLAY_INFO) calloc(1, sizeof(DISPLAY_INFO));
+    if (display == NULL) {
+      query->failed = 1;
+      XML_StopParser(query->parser, XML_FALSE);
+      return;
+    }
+    if (query->tail == NULL)
+      query->head = display;
+    else
+      query->tail->next = display;
+    query->tail = display;
+    query->current = display;
+  } else if (query->current != NULL &&
+             (strcmp("id", name) == 0 || strcmp("name", name) == 0)) {
+    free(query->value);
+    query->value = (char*) calloc(1, 1);
+    if (query->value == NULL) {
+      query->failed = 1;
+      XML_StopParser(query->parser, XML_FALSE);
+      return;
+    }
+    query->value_size = 0;
+    query->field = strcmp("id", name) == 0 ? DISPLAY_FIELD_ID
+                                             : DISPLAY_FIELD_NAME;
+  }
+}
+
+static void XMLCALL _xml_end_display_element(void *userData, const char *name) {
+  struct display_query *query = (struct display_query*) userData;
+  if (query->field != DISPLAY_FIELD_NONE && query->value != NULL &&
+      ((query->field == DISPLAY_FIELD_ID && strcmp("id", name) == 0) ||
+       (query->field == DISPLAY_FIELD_NAME && strcmp("name", name) == 0))) {
+    char *start = query->value;
+    while (*start != '\0' && isspace((unsigned char) *start)) ++start;
+    char *end = start + strlen(start);
+    while (end > start && isspace((unsigned char) end[-1])) --end;
+    *end = '\0';
+    if (start != query->value)
+      memmove(query->value, start, (size_t) (end - start) + 1);
+    if (query->field == DISPLAY_FIELD_ID) {
+      free(query->current->id);
+      query->current->id = query->value;
+    } else {
+      free(query->current->name);
+      query->current->name = query->value;
+    }
+    query->value = NULL;
+    query->value_size = 0;
+    query->field = DISPLAY_FIELD_NONE;
+  } else if (strcmp("display", name) == 0) {
+    query->current = NULL;
+  }
+}
+
+static void XMLCALL _xml_write_display_data(void *userData, const XML_Char *s,
+                                             int len) {
+  struct display_query *query = (struct display_query*) userData;
+  if (query->field == DISPLAY_FIELD_NONE || query->failed || len <= 0)
+    return;
+  char *expanded = (char*) realloc(query->value, query->value_size + (size_t) len + 1);
+  if (expanded == NULL) {
+    query->failed = 1;
+    XML_StopParser(query->parser, XML_FALSE);
+    return;
+  }
+  query->value = expanded;
+  memcpy(query->value + query->value_size, s, (size_t) len);
+  query->value_size += (size_t) len;
+  query->value[query->value_size] = '\0';
+}
+
+int xml_display_list(char* data, size_t len, PDISPLAY_INFO *display_list) {
+  struct display_query query = {0};
+  if (display_list == NULL || data == NULL || len > INT_MAX)
+    return GS_INVALID;
+  *display_list = NULL;
+
+  query.parser = XML_ParserCreate("UTF-8");
+  if (query.parser == NULL)
+    return GS_OUT_OF_MEMORY;
+  XML_SetUserData(query.parser, &query);
+  XML_SetElementHandler(query.parser, _xml_start_display_element,
+                        _xml_end_display_element);
+  XML_SetCharacterDataHandler(query.parser, _xml_write_display_data);
+  const int parsed = XML_Parse(query.parser, data, (int) len, XML_TRUE);
+  if (!parsed && !query.failed)
+    gs_error = XML_ErrorString(XML_GetErrorCode(query.parser));
+  XML_ParserFree(query.parser);
+  free(query.value);
+
+  if (query.failed || !parsed) {
+    free_display_nodes(query.head);
+    return query.failed ? GS_OUT_OF_MEMORY : GS_INVALID;
+  }
+
+  // Ignore malformed entries without a stable ID. The UI uses the ID as a
+  // readable fallback when a host omits a display name.
+  PDISPLAY_INFO *link = &query.head;
+  query.tail = NULL;
+  while (*link != NULL) {
+    PDISPLAY_INFO current = *link;
+    if (current->id == NULL || current->id[0] == '\0') {
+      *link = current->next;
+      current->next = NULL;
+      free_display_nodes(current);
+      continue;
+    }
+    query.tail = current;
+    link = &current->next;
+  }
+  *display_list = query.head;
+  return GS_OK;
 }
 
 int xml_search(char* data, size_t len, char* node, char** result) {
@@ -208,9 +365,22 @@ int xml_modelist(char* data, size_t len, PDISPLAY_MODE *mode_list) {
 
 }
 
-int xml_status(char* data, size_t len) {
-  int status = 0;
+int xml_status_details(char* data, size_t len, int *status_code,
+                       int *has_status_code, char *status_message,
+                       size_t status_message_size) {
+  static char status_error[160];
+  struct xml_status_info status = {0};
+  if (status_code != NULL)
+    *status_code = 0;
+  if (has_status_code != NULL)
+    *has_status_code = 0;
+  if (status_message != NULL && status_message_size > 0)
+    status_message[0] = '\0';
+  status.status_message = status_message;
+  status.status_message_size = status_message_size;
   XML_Parser parser = XML_ParserCreate("UTF-8");
+  if (parser == NULL)
+    return GS_OUT_OF_MEMORY;
   XML_SetUserData(parser, &status);
   XML_SetElementHandler(parser, _xml_start_status_element, _xml_end_status_element);
   if (!XML_Parse(parser, data, len, 1)) {
@@ -221,5 +391,20 @@ int xml_status(char* data, size_t len) {
   }
 
   XML_ParserFree(parser);
-  return status == STATUS_OK ? GS_OK : GS_ERROR;
+  if (status_code != NULL)
+    *status_code = status.status_code;
+  if (has_status_code != NULL)
+    *has_status_code = status.has_status_code;
+  if (status.status_code != STATUS_OK && status.has_status_code) {
+    snprintf(status_error, sizeof(status_error),
+             "GameStream status_code=%d message=%s", status.status_code,
+             status.status_message != NULL && status.status_message[0]
+                 ? status.status_message : "(missing)");
+    gs_error = status_error;
+  }
+  return status.status_code == STATUS_OK ? GS_OK : GS_ERROR;
+}
+
+int xml_status(char* data, size_t len) {
+  return xml_status_details(data, len, NULL, NULL, NULL, 0);
 }

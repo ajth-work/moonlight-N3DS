@@ -67,6 +67,7 @@ class N3dsRendererBase {
     int surface_height;
     int image_width;
     int image_height;
+    u32 presentation_frame_counter = 0;
     int px_size;
     bool debug;
     u32 *cmdlist = NULL;

@@ -18,6 +18,7 @@
  */
 
 #include "N3dsRenderer.hpp"
+#include "N3ds3DPresentation.hpp"
 
 #include <3ds.h>
 #include <cstdlib>
@@ -32,9 +33,9 @@ N3dsRendererTop::N3dsRendererTop(int dest_width, int dest_height, int src_width,
                        px_size, debug_in) {}
 
 void N3dsRendererTop::write_px_to_framebuffer(uint8_t *source) {
-    // TODO: Add logic for stretching 400px images to fit 2 400px screen buffers
+    const N3ds3DSettings settings = n3ds_3d_settings_snapshot();
     if (osGet3DSliderState() > 0.0 &&
-        surface_width >= GSP_SCREEN_HEIGHT_TOP_2X) {
+        settings.mode != N3ds3DMode::OFF_2D) {
         ensure_3d_enabled();
     } else {
         ensure_3d_disabled();

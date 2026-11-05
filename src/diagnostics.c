@@ -485,9 +485,14 @@ bool diag_session_get_info(DIAG_SESSION *session) {
     return active;
 }
 
-void diag_session_record_upload(const DIAG_SESSION *session, bool accepted) {
+void diag_session_record_upload(const DIAG_SESSION *session, bool accepted,
+                                const DIAG_UPLOAD_INFO *upload_info) {
     FILE *file;
     char wall_time[40];
+    const char *upload_id = upload_info != NULL ? upload_info->upload_id : "";
+    const unsigned long long source_bytes = upload_info != NULL ? upload_info->source_bytes : 0;
+    const unsigned long long filtered_bytes = upload_info != NULL ? upload_info->filtered_bytes : 0;
+    const unsigned long long request_bytes = upload_info != NULL ? upload_info->request_bytes : 0;
     bool active = false;
     if (session == NULL || session->id[0] == '\0' || session->path[0] == '\0')
         return;
@@ -495,15 +500,18 @@ void diag_session_record_upload(const DIAG_SESSION *session, bool accepted) {
     active = diag_session_file != NULL &&
              strcmp(diag_session_id, session->id) == 0;
     LightLock_Unlock(&diag_lock);
-    diag_log("DIAG_UPLOAD", "scope=%s session_id=%s state=%s truncated=false",
-             session->scope, session->id, accepted ? "accepted" : "failed");
+    diag_log("DIAG_UPLOAD", "scope=%s session_id=%s upload_id=%s state=%s truncated=false source_bytes=%llu filtered_bytes=%llu request_bytes=%llu",
+             session->scope, session->id, upload_id,
+             accepted ? "accepted" : "failed", source_bytes, filtered_bytes,
+             request_bytes);
     if (active) return;
     file = fopen(session->path, "a");
     if (file == NULL) return;
     format_wall_time(wall_time, sizeof(wall_time));
-    if (fprintf(file, "%s +%08llums DIAG_UPLOAD scope=%s session_id=%s state=%s truncated=false\n",
+    if (fprintf(file, "%s +%08llums DIAG_UPLOAD scope=%s session_id=%s upload_id=%s state=%s truncated=false source_bytes=%llu filtered_bytes=%llu request_bytes=%llu\n",
                 wall_time, (unsigned long long)diag_elapsed_ms(), session->scope,
-                session->id, accepted ? "accepted" : "failed") >= 0) {
+                session->id, upload_id, accepted ? "accepted" : "failed",
+                source_bytes, filtered_bytes, request_bytes) >= 0) {
         fflush(file);
         fsync(fileno(file));
     }
@@ -757,6 +765,7 @@ void diag_http_summary_flush(int result, bool cancelled) {
 
 void diag_http_begin(const char *method, const char *safe_url) {
     bool deferred;
+    char breadcrumb[64];
     size_t used;
     LightLock_Lock(&diag_lock);
     diag_http_active = true;
@@ -780,7 +789,9 @@ void diag_http_begin(const char *method, const char *safe_url) {
             diag_http_dropped++;
         }
     }
-    diag_http_breadcrumb_locked("HTTP_BEGIN method=GET details=bounded");
+    snprintf(breadcrumb, sizeof(breadcrumb),
+             "HTTP_BEGIN method=%s details=bounded", method ? method : "?");
+    diag_http_breadcrumb_locked(breadcrumb);
     LightLock_Unlock(&diag_lock);
     if (!deferred) {
         diag_log("HTTP_REQUEST", "method=%s url=%s", method ? method : "?",
@@ -790,8 +801,11 @@ void diag_http_begin(const char *method, const char *safe_url) {
 
 void diag_http_end(long status_code, int transport_result) {
     bool deferred;
+    char method[16];
     LightLock_Lock(&diag_lock);
     deferred = diag_http_deferred;
+    snprintf(method, sizeof(method), "%s",
+             diag_http_method[0] != '\0' ? diag_http_method : "?");
     if (deferred && diag_http_fact_count > 0 && diag_http_dropped == 0) {
         DiagHttpFact *fact = &diag_http_facts[diag_http_fact_count - 1];
         fact->status = status_code;
@@ -804,8 +818,8 @@ void diag_http_end(long status_code, int transport_result) {
     diag_http_breadcrumb_locked("HTTP_END details=bounded");
     LightLock_Unlock(&diag_lock);
     if (!deferred) {
-        diag_log("HTTP_STATUS", "method=GET status=%ld transport_result=%d",
-                 status_code, transport_result);
+        diag_log("HTTP_STATUS", "method=%s status=%ld transport_result=%d",
+                 method, status_code, transport_result);
     }
 }
 

@@ -18,6 +18,7 @@
  */
 
 #include "N3dsRenderer.hpp"
+#include "N3ds3DPresentation.hpp"
 #include "../../diagnostics.h"
 #include "vshader_shbin.h"
 #include "../../input/touch/TouchHandler.hpp"
@@ -55,13 +56,21 @@ N3dsRendererBase::~N3dsRendererBase() {
     vramFree(vramFb);
     vramFree(vramTex);
 
-    // Clear target screen
-    u8 *framebuf = gfxGetFramebuffer(screen, GFX_LEFT, NULL, NULL);
-    memset(framebuf, 0, surface_width * surface_height * px_size);
-    gfxScreenSwapBuffers(screen, true);
+    // Restore mono output before returning to the host menu. Skip graphics
+    // calls after HOME has taken GPU ownership; rendering already follows this
+    // guard to avoid waiting on a framebuffer the app no longer owns.
+    if (screen == GFX_TOP && gspHasGpuRight()) {
+        if (gfxIs3D()) gfxSet3D(false);
+        gfxSetWide(false);
+    }
+    if (gspHasGpuRight()) {
+        u8 *framebuf = gfxGetFramebuffer(screen, GFX_LEFT, NULL, NULL);
+        memset(framebuf, 0, surface_width * surface_height * px_size);
+        gfxScreenSwapBuffers(screen, true);
+    }
 
-    // Return to the default display width before exiting
-    if (surface_width == GSP_SCREEN_HEIGHT_TOP_2X) {
+    // Return to the default display width before exiting.
+    if (surface_width == GSP_SCREEN_HEIGHT_TOP_2X && gspHasGpuRight()) {
         gfxSetWide(false);
     }
 }
@@ -127,6 +136,28 @@ void N3dsRendererBase::write_px_to_framebuffer_gpu(uint8_t *__restrict source) {
         return;
     }
 
+    const N3ds3DSettings settings = n3ds_3d_settings_snapshot();
+    const int slider_milli =
+        static_cast<int>(osGet3DSliderState() * 1000.0f + 0.5f);
+    const bool gfx_3d_enabled = gfxIs3D();
+    const bool stereo = screen == GFX_TOP && gfx_3d_enabled &&
+                        settings.mode != N3ds3DMode::OFF_2D;
+    const int eye_pass_count = stereo ? 2 : 1;
+    const N3ds3DSettings mono_settings{N3ds3DMode::OFF_2D, settings.aspect, 0};
+    const u32 presentation_frame =
+        screen == GFX_TOP ? ++presentation_frame_counter : 0;
+    const bool trace_presentation_frame =
+        presentation_frame == 1 || (presentation_frame != 0 &&
+                                    presentation_frame % 120 == 0);
+    if (trace_presentation_frame) {
+        diag_log("PRESENTATION_FRAME_BEGIN",
+                 "frame=%u mode=%s aspect=%s shift=%d slider_milli=%d gfx3d=%d stereo=%d eye_passes=%d image=%dx%d",
+                 presentation_frame, n3ds_3d_mode_name(settings.mode),
+                 n3ds_3d_aspect_name(settings.aspect), settings.shift,
+                 slider_milli, gfx_3d_enabled, stereo, eye_pass_count,
+                 image_width, image_height);
+    }
+
     u64 start_ticks = svcGetSystemTick();
 
     // NOTE: At 800x480, we can display the _width_ natively, but the height
@@ -147,9 +178,17 @@ void N3dsRendererBase::write_px_to_framebuffer_gpu(uint8_t *__restrict source) {
             GX_TRANSFER_IN_FORMAT(GX_TRANSFER_FMT_RGB565) |
             GX_TRANSFER_OUT_FORMAT(GX_TRANSFER_FMT_RGB565));
 
-    // While the transfer is running, create a temporary command list to rotate
-    // the framebuffer into source
-    GPUCMD_SetBuffer(cmdlist, CMDLIST_SZ, 0);
+    // Render each eye into its own native-size top-screen framebuffer. A
+    // mono frame remains a single pass; stereo mode is active only while the
+    // 3DS slider is up and a stereo presentation mode is selected.
+    for (int eye = 0; eye < eye_pass_count; ++eye) {
+        const N3ds3DEyePresentation eye_presentation =
+            n3ds_3d_eye_presentation(stereo ? settings : mono_settings,
+                                     image_width, image_height, eye);
+
+        // While the transfer is running, create a temporary command list to
+        // rotate the framebuffer into source.
+        GPUCMD_SetBuffer(cmdlist, CMDLIST_SZ, 0);
 
     // TODO: Verify this mitigates rounding errors due to f24 precision issues.
 
@@ -283,15 +322,8 @@ void N3dsRendererBase::write_px_to_framebuffer_gpu(uint8_t *__restrict source) {
 
 #define ATTR(X, Y, Z, W)                                                       \
     {                                                                          \
-        float tex_x = (X);                                                     \
-        float tex_y = (Y);                                                     \
-        if (screen == GFX_TOP && top_screen_magnified.load()) {                \
-            tex_x = sw * 0.5f + (tex_x - sw * 0.5f) / 1.35f;                  \
-            const float tex_center_y = (sh - hh) * 0.5f;                     \
-            tex_y = tex_center_y + (tex_y - tex_center_y) / 1.35f;           \
-        }                                                                      \
-        write24(param.x, f32tof24(tex_x));                                    \
-        write24(param.y, f32tof24(tex_y));                                    \
+        write24(param.x, f32tof24(X));                                         \
+        write24(param.y, f32tof24(Y));                                         \
         write24(param.z, f32tof24(Z));                                         \
         write24(param.w, f32tof24(W));                                         \
                                                                                \
@@ -301,24 +333,40 @@ void N3dsRendererBase::write_px_to_framebuffer_gpu(uint8_t *__restrict source) {
         GPUCMD_AddIncrementalWrites(GPUREG_FIXEDATTRIB_DATA0, param.packed,    \
                                     3);                                        \
     }
+#define ATTR_POS(X, Y) ATTR(X, Y, 0.0, 0.0)
+#define ATTR_TEX(U, V)                                                         \
+    {                                                                          \
+        float tex_u = (U);                                                     \
+        float tex_v = (V);                                                     \
+        if (screen == GFX_TOP && top_screen_magnified.load()) {                \
+            const float center_u =                                              \
+                (eye_presentation.u0 + eye_presentation.u1) * 0.5f;            \
+            const float center_v =                                              \
+                (eye_presentation.v0 + eye_presentation.v1) * 0.5f;            \
+            tex_u = center_u + (tex_u - center_u) / 1.35f;                     \
+            tex_v = center_v + (tex_v - center_v) / 1.35f;                     \
+        }                                                                      \
+        ATTR(tex_u, tex_v, 0.0, 0.0);                                          \
+    }
 
-    float sw = image_width / ((float)MOON_CTR_VIDEO_TEX_W);
-    float sh = image_height / ((float)MOON_CTR_VIDEO_TEX_H);
+    const float top = eye_presentation.vertical_scale;
+    const float bottom = -eye_presentation.vertical_scale;
+    const float left = -eye_presentation.horizontal_scale +
+                       eye_presentation.horizontal_offset;
+    const float right = eye_presentation.horizontal_scale +
+                        eye_presentation.horizontal_offset;
 
-    // float hw = 2.0f / surface_height;
-    float hh = 2.0f / surface_width;
+    ATTR_POS(top, left); // TR
+    ATTR_TEX(eye_presentation.u1, eye_presentation.v0);
 
-    ATTR(1.0, -1.0, 0.0, 0.0); // TR
-    ATTR(sw, -hh, 0.0, 0.0);
+    ATTR_POS(bottom, left); // TL
+    ATTR_TEX(eye_presentation.u1, eye_presentation.v1);
 
-    ATTR(-1.0, -1.0, 0.0, 0.0); // TL
-    ATTR(sw, sh, 0.0, 0.0);
+    ATTR_POS(top, right); // BR
+    ATTR_TEX(eye_presentation.u0, eye_presentation.v0);
 
-    ATTR(1.0, 1.0, 0.0, 0.0); // BR
-    ATTR(0.0, -hh, 0.0, 0.0);
-
-    ATTR(-1.0, 1.0, 0.0, 0.0); // BL
-    ATTR(0.0, sh, 0.0, 0.0);
+    ATTR_POS(bottom, right); // BL
+    ATTR_TEX(eye_presentation.u0, eye_presentation.v1);
 
     // End Geometry Pipeline
     GPUCMD_AddMaskedWrite(GPUREG_START_DRAW_FUNC0, 1, 1);
@@ -331,6 +379,8 @@ void N3dsRendererBase::write_px_to_framebuffer_gpu(uint8_t *__restrict source) {
     C(GPUREG_FRAMEBUFFER_INVALIDATE, 1);
 
 #undef C
+#undef ATTR_POS
+#undef ATTR_TEX
 
     gspWaitForEvent(GSPGPU_EVENT_PPF, 0);
 
@@ -348,44 +398,19 @@ void N3dsRendererBase::write_px_to_framebuffer_gpu(uint8_t *__restrict source) {
 
     gspWaitForEvent(GSPGPU_EVENT_P3D, 0);
 
-    // Copy into framebuffer, untiled
-    if ((screen == GFX_TOP) && gfxIs3D()) {
-        // Left
-        u32 *dest_left =
-            (u32 *)gfxGetFramebuffer(GFX_TOP, GFX_LEFT, NULL, NULL);
-        auto surface_width_3d = surface_width / 2;
-        GX_DisplayTransfer(
-            (u32 *)vramFb, GX_BUFFER_DIM(surface_height, surface_width_3d),
-            dest_left, GX_BUFFER_DIM(surface_height, surface_width_3d),
-            GX_TRANSFER_OUT_TILED(0) |
-                GX_TRANSFER_IN_FORMAT(GX_TRANSFER_FMT_RGB565) |
-                GX_TRANSFER_OUT_FORMAT(GX_TRANSFER_FMT_RGB565) |
-                GX_TRANSFER_SCALING(GX_TRANSFER_SCALE_NO));
-
-        // Right
-        u32 *dest_right =
-            (u32 *)gfxGetFramebuffer(GFX_TOP, GFX_RIGHT, NULL, NULL);
-        auto surface_offset_3d =
-            surface_height * surface_width * px_size / (sizeof(u32) * 2);
-        GX_DisplayTransfer((u32 *)vramFb + surface_offset_3d,
-                           GX_BUFFER_DIM(surface_height, surface_width_3d),
-                           dest_right,
-                           GX_BUFFER_DIM(surface_height, surface_width_3d),
-                           GX_TRANSFER_OUT_TILED(0) |
-                               GX_TRANSFER_IN_FORMAT(GX_TRANSFER_FMT_RGB565) |
-                               GX_TRANSFER_OUT_FORMAT(GX_TRANSFER_FMT_RGB565) |
-                               GX_TRANSFER_SCALING(GX_TRANSFER_SCALE_NO));
-    } else {
-        u32 *dest = (u32 *)gfxGetFramebuffer(screen, GFX_LEFT, NULL, NULL);
-        GX_DisplayTransfer((u32 *)vramFb,
-                           GX_BUFFER_DIM(surface_height, surface_width), dest,
-                           GX_BUFFER_DIM(surface_height, surface_width),
-                           GX_TRANSFER_OUT_TILED(0) |
-                               GX_TRANSFER_IN_FORMAT(GX_TRANSFER_FMT_RGB565) |
-                               GX_TRANSFER_OUT_FORMAT(GX_TRANSFER_FMT_RGB565) |
-                               GX_TRANSFER_SCALING(GX_TRANSFER_SCALE_NO));
-    }
+    // Copy this rendered eye into its corresponding hardware framebuffer.
+    const bool use_right_eye = stereo && eye == 1;
+    u32 *dest = (u32 *)gfxGetFramebuffer(
+        screen, use_right_eye ? GFX_RIGHT : GFX_LEFT, NULL, NULL);
+    GX_DisplayTransfer((u32 *)vramFb,
+                       GX_BUFFER_DIM(surface_height, surface_width), dest,
+                       GX_BUFFER_DIM(surface_height, surface_width),
+                       GX_TRANSFER_OUT_TILED(0) |
+                           GX_TRANSFER_IN_FORMAT(GX_TRANSFER_FMT_RGB565) |
+                           GX_TRANSFER_OUT_FORMAT(GX_TRANSFER_FMT_RGB565) |
+                           GX_TRANSFER_SCALING(GX_TRANSFER_SCALE_NO));
     gspWaitForEvent(GSPGPU_EVENT_PPF, 0);
+    }
 
     perf_fbcopy_ticks = svcGetSystemTick() - start_ticks;
     if (debug) {
@@ -397,6 +422,11 @@ void N3dsRendererBase::write_px_to_framebuffer_gpu(uint8_t *__restrict source) {
     }
 
     gfxScreenSwapBuffers(screen, true);
+    if (trace_presentation_frame) {
+        diag_log("PRESENTATION_FRAME_DONE",
+                 "frame=%u stereo=%d eye_passes=%d",
+                 presentation_frame, stereo, eye_pass_count);
+    }
 }
 
 void n3ds_draw_diag_version_overlay() {
