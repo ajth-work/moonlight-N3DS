@@ -2,8 +2,9 @@
 
 Originally updated by Rocky on 2026-10-26. Updated by Codex at
 AJ's request on 2026-11-03 to record the GUI22 baseline and GUI23+
-direction. Updated on 2026-11-05 to record the GUI23.7 human-test gate
-and conditional GUI24 sequencing. This file is the shared understanding.
+direction. Updated on 2026-11-05 to record the GUI23.7 human-test gate,
+conditional GUI24 sequencing, and the standing operational-feedback
+mandate. This file is the shared understanding.
 Codex: read this before starting work, along with AGENTS.md.
 
 ## Branch map and consolidation status — 2026-11-01 snapshot
@@ -56,6 +57,15 @@ The remote branch audit confirmed `n3ds-main`, `product/gui`, `product/3d`, the 
 For a new product line: choose the closest product branch as the base, create a checkpoint tag, branch as `feature/<line>-<topic>`, verify the built CIA identity from its TMD, publish under the release workflow, merge back to its product branch (or promote it to `product/<line>` if it becomes a standing product), then delete the feature branch. A new line does not become a base for further feature stacking.
 
 ## GUI product direction — 2026-11-03 (AJ)
+
+### Operational feedback — standing GUI mandate (AJ, 2026-11-05)
+
+For operations that take perceptible time or can appear to freeze, keep the Moonlight GUI present and explain what the app is doing. Do not leave the user on an unexplained black or static screen while work is in progress.
+
+- **Log transmission:** Show the current transfer stage and a truthful progress indicator. When the total size is known, show bytes sent out of total and a percentage; when it is not known, show an indeterminate progress indicator and the current step instead of inventing a percentage. Distinguish transfer completion from Sunshine's acceptance or rejection, and state whether the local copy remains available.
+- **Log inventory:** Make clear whether the app is scanning the local SD card or contacting Sunshine for host-side data. If a local scan is slow or repeated on every visit, investigate the scan time and avoid unnecessary work; report what is being refreshed and show progress or a responsive loading state.
+- **Session teardown:** Keep a visible, step-by-step status for shutdown work (for example, input and audio handling), and show whether each step completed or failed. Include elapsed timing where the code can measure it. Do not make a black screen the only feedback while teardown runs.
+- **General rule:** Use measured progress for byte/count work and clear stage labels for discrete or indeterminate work. Preserve the app's version/status context while waiting, and make failures actionable rather than presenting a generic frozen-looking page.
 
 Current GitHub branch tips checked on 2026-11-03:
 
