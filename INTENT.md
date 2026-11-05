@@ -3,8 +3,8 @@
 Originally updated by Rocky on 2026-10-26. Updated by Codex at
 AJ's request on 2026-11-03 to record the GUI22 baseline and GUI23+
 direction. Updated on 2026-11-05 to record the GUI23.7 human-test gate,
-conditional GUI24 sequencing, and the standing operational-feedback
-mandate. This file is the shared understanding.
+conditional GUI24 sequencing, the operational-feedback mandate, and
+connection-failure recovery requirements. This file is the shared understanding.
 Codex: read this before starting work, along with AGENTS.md.
 
 ## Branch map and consolidation status — 2026-11-01 snapshot
@@ -67,6 +67,15 @@ For operations that take perceptible time or can appear to freeze, keep the Moon
 - **Session teardown:** Keep a visible, step-by-step status for shutdown work (for example, input and audio handling), and show whether each step completed or failed. Include elapsed timing where the code can measure it. Do not make a black screen the only feedback while teardown runs.
 - **Freeze and resource diagnosis:** Keep low-overhead, timestamped client-health samples in a bounded rolling log and persist checkpoints often enough that useful evidence survives a forced reboot. Capture trustworthy memory counters and, where available, CPU/GPU measurements; when direct utilization counters are unavailable, record clearly labeled proxies such as frame/decode/presentation timing, time since the last video frame, network health, input/audio progress, allocation failures, and worker or teardown states. Do not invent usage percentages. Make the saved client evidence easy to inspect from Check Logs and include it with the existing log-send flow, clearly distinguished from Sunshine's host-side logs.
 - **General rule:** Use measured progress for byte/count work and clear stage labels for discrete or indeterminate work. Preserve the app's version/status context while waiting, and make failures actionable rather than presenting a generic frozen-looking page.
+
+### Connection resilience and failure recovery — standing requirement (AJ, 2026-11-05)
+
+Expected host-connection, stream-start, active-stream, and teardown failures should remain recoverable inside Moonlight. A normal connection failure must not leave the client unusable or require a 3DS reboot.
+
+- Keep recovery context-specific: before streaming, return to the host/display/app step that can be retried; after a stream interruption or teardown problem, show a recovery menu with clear retry/reconnect and return-to-host/menu actions.
+- Identify the last completed step and the step that failed or is still waiting. Cover the relevant lifecycle stage (such as host reachability, pairing/authentication, display selection, app launch, stream setup, video/audio/input flow, or teardown).
+- Show actionable error detail when available. When the cause is unknown, say which stage was reached and that the cause is unknown instead of using a generic failure message.
+- Preserve host selection, settings, and diagnostic logs during recovery. If the process does hit a fatal failure, preserve the last available diagnostic checkpoint for the next launch.
 
 Current GitHub branch tips checked on 2026-11-03:
 
