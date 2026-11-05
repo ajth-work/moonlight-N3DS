@@ -554,15 +554,15 @@ void N3dsRendererBase::write_px_to_framebuffer_gpu(uint8_t *__restrict source) {
             const float destination_height =
                 (destination_top[diag_eye] - destination_bottom[diag_eye]) *
                 (GSP_SCREEN_HEIGHT_TOP / 2.0f);
-            const float scale_x = destination_width > 0.0f
-                                      ? source_width / destination_width
+            const float scale_x = destination_width > 0.0f && source_width > 0.0f
+                                      ? destination_width / source_width
                                       : 0.0f;
-            const float scale_y = destination_height > 0.0f
-                                      ? source_height / destination_height
+            const float scale_y = destination_height > 0.0f && source_height > 0.0f
+                                      ? destination_height / source_height
                                       : 0.0f;
             diag_log(
                 "TOP_PRESENTATION_DIAG",
-                "frame=%u completed=%u mode=%s aspect=%s eye=%s image=%dx%d uv=[%.6f,%.6f,%.6f,%.6f] dst_ndc=[%.4f,%.4f,%.4f,%.4f] dst_screen=400x240 scale_xy=[%.3f,%.3f] texture=%dx%d texture_layout=tiled texture_stride=tile_encoded source_stride_bytes=%d sampler_source=unit0_draw_command sampler_param=0x%08x min=%s mag=%s input_transfer=GX_DisplayTransfer:%dx%d->%dx%d:RGB565:flipV:out_tiled1:no_scale output_transfer=GX_DisplayTransfer:%dx%d->%dx%d:RGB565:out_tiled0:no_scale decoded_frames=%u top_renderer_draw_calls=%u completed_presentations=%u",
+                "frame=%u completed=%u mode=%s aspect=%s eye=%s image=%dx%d uv=[%.6f,%.6f,%.6f,%.6f] dst_ndc=[%.4f,%.4f,%.4f,%.4f] dst_screen=400x240 source_px=%.1fx%.1f destination_px=%.1fx%.1f scale_xy=[%.3f,%.3f] texture=%dx%d texture_layout=tiled texture_stride=tile_encoded source_stride_bytes=%d sampler_source=unit0_draw_command sampler_param=0x%08x min=%s mag=%s input_transfer=GX_DisplayTransfer:%dx%d->%dx%d:RGB565:flipV:out_tiled1:no_scale output_transfer=GX_DisplayTransfer:%dx%d->%dx%d:RGB565:out_tiled0:no_scale decoded_frames=%u top_renderer_draw_calls=%u completed_presentations=%u submitted=%u accepted=%u failed=%u last_failure=%d",
                 presentation_frame,
                 counters_after.completed_presentations,
                 n3ds_3d_mode_name(settings.mode),
@@ -572,6 +572,7 @@ void N3dsRendererBase::write_px_to_framebuffer_gpu(uint8_t *__restrict source) {
                 sampled_u_max[diag_eye], sampled_v_max[diag_eye],
                 destination_left[diag_eye], destination_bottom[diag_eye],
                 destination_right[diag_eye], destination_top[diag_eye],
+                source_width, source_height, destination_width, destination_height,
                 scale_x, scale_y, MOON_CTR_VIDEO_TEX_W,
                 MOON_CTR_VIDEO_TEX_H, MOON_CTR_VIDEO_TEX_W * px_size,
                 (unsigned int)texture_sampler_param, min_filter, mag_filter,
@@ -580,7 +581,11 @@ void N3dsRendererBase::write_px_to_framebuffer_gpu(uint8_t *__restrict source) {
                 surface_width, surface_height, surface_width,
                 counters_after.decoded_frames,
                 counters_after.top_renderer_draw_calls,
-                counters_after.completed_presentations);
+                counters_after.completed_presentations,
+                     counters_after.decoder_submitted,
+                     counters_after.decoder_accepted,
+                     counters_after.decoder_failed,
+                     counters_after.decoder_last_failure);
         }
     }
 }

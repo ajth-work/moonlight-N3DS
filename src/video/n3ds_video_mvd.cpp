@@ -178,10 +178,10 @@ static int n3ds_init(int videoFormat, int width, int height, int redrawRate,
 static void n3ds_destroy() { instance = nullptr; }
 
 static int n3ds_submit_decode_unit(PDECODE_UNIT decodeUnit) {
-    if (instance == nullptr) {
-        return DR_OK;
-    }
-    return instance->submit_decode_unit(decodeUnit);
+    const int result = instance == nullptr ? DR_OK
+                                           : instance->submit_decode_unit(decodeUnit);
+    diag_video_decoder_submission(result, result == DR_OK);
+    return result;
 }
 
 DECODER_RENDERER_CALLBACKS decoder_callbacks_n3ds_mvd = {

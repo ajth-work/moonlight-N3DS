@@ -11,7 +11,7 @@ extern "C" {
 #endif
 
 #define DIAG_WATCHDOG_LIMIT_MS 30000ULL
-#define DIAG_BUILD_VERSION "3.6.0-gui23.8-diag"
+#define DIAG_BUILD_VERSION "3.6.0-gui23.8.1-diag"
 #define DIAG_MAIN_STACK_REQUESTED_SIZE 0x40000U
 /* app.rsf SystemControlInfo.StackSize */
 #define DIAG_LOG_LINE_MAX 512
@@ -47,6 +47,10 @@ typedef struct {
     uint32_t decoded_frames;
     uint32_t top_renderer_draw_calls;
     uint32_t completed_presentations;
+    uint32_t decoder_submitted;
+    uint32_t decoder_accepted;
+    uint32_t decoder_failed;
+    int decoder_last_failure;
 } DIAG_VIDEO_COUNTERS;
 
 void diag_init(void);
@@ -64,6 +68,7 @@ void diag_video_counters_reset(void);
 void diag_video_frame_decoded(void);
 void diag_video_top_draw_call(void);
 void diag_video_presentation_completed(void);
+void diag_video_decoder_submission(int result, bool accepted);
 void diag_video_counters_snapshot(DIAG_VIDEO_COUNTERS *counters);
 void diag_ui_state(const char *screen, const char *state, bool graphical);
 void diag_stack_checkpoint(const char *boundary, uintptr_t stack_pointer);

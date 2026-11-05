@@ -3443,7 +3443,7 @@ static void stream(PSERVER_DATA server, PCONFIGURATION config, int appId,
     join_stream_worker(workers.dispatch_thread);
 
     diag_set_phase("stream.stopping");
-    diag_log("STREAM_STOP", "app_id=%d reason=connection_loop_ended", appId);
+    diag_log("STREAM_END", "app_id=%d reason=connection_loop_ended", appId);
     LiStopConnection();
     diag_phase_outcome("stream.stopping", "complete", GS_OK);
     N3dsConnectionListener::destroy_instance();

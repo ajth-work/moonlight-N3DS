@@ -18,6 +18,8 @@
  */
 
 #include "video.hpp"
+#include "../diagnostics.h"
+#include <Limelight.h>
 #include <stdexcept>
 
 static std::unique_ptr<MockVideoDecoder> instance = nullptr;
@@ -43,7 +45,10 @@ static int fakeDrSetup(int videoFormat, int width, int height, int redrawRate,
 static void fakeDrStart(void) {}
 static void fakeDrStop(void) {}
 static void fakeDrCleanup(void) { instance = nullptr; }
-static int fakeDrSubmitDecodeUnit(PDECODE_UNIT decodeUnit) { return DR_OK; }
+static int fakeDrSubmitDecodeUnit(PDECODE_UNIT decodeUnit) {
+    diag_video_decoder_submission(DR_OK, true);
+    return DR_OK;
+}
 
 DECODER_RENDERER_CALLBACKS decoder_callbacks_mock = {
     .setup = fakeDrSetup,

@@ -18,6 +18,8 @@
 #define UNIX_EPOCH_OFFSET_MS 2208988800000ULL
 #define DIAG_FORMATTED_LINE_MAX 4096
 #define DIAG_STACK_RECORD_CAPACITY 512
+#define DIAG_SESSION_MAX_BYTES (256U * 1024U)
+#define DIAG_SESSION_TAIL_COUNT 16
 
 static LightLock diag_lock;
 /* Protected by diag_lock, including formatting and file I/O. No logger calls
@@ -41,6 +43,10 @@ static FILE *diag_session_file = NULL;
 static char diag_session_id[48];
 static char diag_session_path[128];
 static unsigned long long diag_session_begin_epoch;
+static size_t diag_session_bytes;
+static bool diag_session_capped;
+static char diag_session_tail[DIAG_SESSION_TAIL_COUNT][DIAG_FORMATTED_LINE_MAX];
+static unsigned int diag_session_tail_count;
 static unsigned int diag_session_sequence;
 static bool diag_initialized = false;
 static volatile bool diag_logging_enabled = true;
@@ -68,6 +74,21 @@ static char diag_ui_bottom_state[32];
 static volatile uint32_t diag_video_decoded_frames = 0;
 static volatile uint32_t diag_video_top_draw_calls = 0;
 static volatile uint32_t diag_video_completed_presentations = 0;
+static volatile uint32_t diag_video_decoder_submitted = 0;
+static volatile uint32_t diag_video_decoder_accepted = 0;
+static volatile uint32_t diag_video_decoder_failed = 0;
+static volatile int diag_video_decoder_last_failure = 0;
+static u64 diag_video_last_presentation_ms = 0;
+static bool diag_video_freeze_reported = false;
+
+static bool session_tail_event(const char *event) {
+    return event != NULL &&
+           (strcmp(event, "STREAM_END") == 0 ||
+            strcmp(event, "STREAM_STOP") == 0 ||
+            strcmp(event, "FREEZE_DETECTED") == 0 ||
+            strcmp(event, "FINAL_PRESENTATION") == 0 ||
+            strcmp(event, "SESSION_END") == 0);
+}
 
 bool diag_cert_fingerprint(X509 *certificate, char *out,
                            unsigned int out_capacity) {
@@ -380,6 +401,12 @@ void diag_video_counters_reset(void) {
     __atomic_store_n(&diag_video_decoded_frames, 0, __ATOMIC_RELEASE);
     __atomic_store_n(&diag_video_top_draw_calls, 0, __ATOMIC_RELEASE);
     __atomic_store_n(&diag_video_completed_presentations, 0, __ATOMIC_RELEASE);
+    __atomic_store_n(&diag_video_decoder_submitted, 0, __ATOMIC_RELEASE);
+    __atomic_store_n(&diag_video_decoder_accepted, 0, __ATOMIC_RELEASE);
+    __atomic_store_n(&diag_video_decoder_failed, 0, __ATOMIC_RELEASE);
+    __atomic_store_n(&diag_video_decoder_last_failure, 0, __ATOMIC_RELEASE);
+    diag_video_last_presentation_ms = osGetTime();
+    diag_video_freeze_reported = false;
 }
 
 void diag_video_frame_decoded(void) {
@@ -392,6 +419,32 @@ void diag_video_top_draw_call(void) {
 
 void diag_video_presentation_completed(void) {
     __atomic_add_fetch(&diag_video_completed_presentations, 1, __ATOMIC_RELAXED);
+    diag_video_last_presentation_ms = osGetTime();
+    diag_video_freeze_reported = false;
+}
+
+void diag_video_decoder_submission(int result, bool accepted) {
+    __atomic_add_fetch(&diag_video_decoder_submitted, 1, __ATOMIC_RELAXED);
+    if (accepted) {
+        __atomic_add_fetch(&diag_video_decoder_accepted, 1, __ATOMIC_RELAXED);
+    } else {
+        __atomic_add_fetch(&diag_video_decoder_failed, 1, __ATOMIC_RELAXED);
+        __atomic_store_n(&diag_video_decoder_last_failure, result, __ATOMIC_RELEASE);
+        diag_log("DECODER_SUBMIT_FAILED", "result=%d", result);
+    }
+    const uint32_t decoded = __atomic_load_n(&diag_video_decoded_frames, __ATOMIC_ACQUIRE);
+    const uint32_t presented = __atomic_load_n(&diag_video_completed_presentations, __ATOMIC_ACQUIRE);
+    const u64 now_ms = osGetTime();
+    if (!diag_video_freeze_reported && decoded > presented &&
+        now_ms - diag_video_last_presentation_ms >= 3000) {
+        diag_video_freeze_reported = true;
+        diag_log("FREEZE_DETECTED", "decoded=%u presented=%u submitted=%u accepted=%u failed=%u last_failure=%d",
+                 decoded, presented,
+                 __atomic_load_n(&diag_video_decoder_submitted, __ATOMIC_ACQUIRE),
+                 __atomic_load_n(&diag_video_decoder_accepted, __ATOMIC_ACQUIRE),
+                 __atomic_load_n(&diag_video_decoder_failed, __ATOMIC_ACQUIRE),
+                 __atomic_load_n(&diag_video_decoder_last_failure, __ATOMIC_ACQUIRE));
+    }
 }
 
 void diag_video_counters_snapshot(DIAG_VIDEO_COUNTERS *counters) {
@@ -402,6 +455,14 @@ void diag_video_counters_snapshot(DIAG_VIDEO_COUNTERS *counters) {
         __atomic_load_n(&diag_video_top_draw_calls, __ATOMIC_ACQUIRE);
     counters->completed_presentations =
         __atomic_load_n(&diag_video_completed_presentations, __ATOMIC_ACQUIRE);
+    counters->decoder_submitted =
+        __atomic_load_n(&diag_video_decoder_submitted, __ATOMIC_ACQUIRE);
+    counters->decoder_accepted =
+        __atomic_load_n(&diag_video_decoder_accepted, __ATOMIC_ACQUIRE);
+    counters->decoder_failed =
+        __atomic_load_n(&diag_video_decoder_failed, __ATOMIC_ACQUIRE);
+    counters->decoder_last_failure =
+        __atomic_load_n(&diag_video_decoder_last_failure, __ATOMIC_ACQUIRE);
 }
 
 void diag_log(const char *event, const char *format, ...) {
@@ -430,7 +491,19 @@ void diag_log(const char *event, const char *format, ...) {
     }
     if (__atomic_load_n(&diag_logging_enabled, __ATOMIC_ACQUIRE) &&
         diag_session_file != NULL) {
-        if (fputs(diag_line, diag_session_file) == EOF ||
+        const size_t line_bytes = strlen(diag_line) + 1;
+        if (session_tail_event(event)) {
+            unsigned int index = diag_session_tail_count < DIAG_SESSION_TAIL_COUNT
+                                     ? diag_session_tail_count++
+                                     : DIAG_SESSION_TAIL_COUNT - 1;
+            if (index == DIAG_SESSION_TAIL_COUNT - 1 &&
+                diag_session_tail_count == DIAG_SESSION_TAIL_COUNT)
+                memmove(diag_session_tail, diag_session_tail + 1,
+                        sizeof(diag_session_tail[0]) * (DIAG_SESSION_TAIL_COUNT - 1));
+            snprintf(diag_session_tail[index], DIAG_FORMATTED_LINE_MAX, "%s", diag_line);
+        }
+        if (!diag_session_capped && diag_session_bytes + line_bytes <= DIAG_SESSION_MAX_BYTES) {
+            if (fputs(diag_line, diag_session_file) == EOF ||
             fputc('\n', diag_session_file) == EOF ||
             fflush(diag_session_file) != 0 ||
             fsync(fileno(diag_session_file)) != 0) {
@@ -438,6 +511,11 @@ void diag_log(const char *event, const char *format, ...) {
             diag_session_file = NULL;
             diag_session_id[0] = '\0';
             session_write_failed = true;
+            } else {
+                diag_session_bytes += line_bytes;
+            }
+        } else {
+            diag_session_capped = true;
         }
     }
     LightLock_Unlock(&diag_lock);
@@ -476,6 +554,10 @@ bool diag_session_begin(void) {
     } else {
         snprintf(diag_session_path, sizeof(diag_session_path), "%s", path);
         diag_session_begin_epoch = (unsigned long long)time(NULL);
+        diag_session_bytes = 0;
+        diag_session_capped = false;
+        diag_session_tail_count = 0;
+        memset(diag_session_tail, 0, sizeof(diag_session_tail));
     }
     LightLock_Unlock(&diag_lock);
     if (diag_session_file == NULL) {
@@ -555,11 +637,25 @@ void diag_session_end(const char *outcome, const char *reason) {
     active = diag_session_file != NULL;
     LightLock_Unlock(&diag_lock);
     if (!active) return;
+    DIAG_VIDEO_COUNTERS final_counters = {};
+    diag_video_counters_snapshot(&final_counters);
+    diag_log("FINAL_PRESENTATION", "decoded=%u draw_calls=%u presented=%u submitted=%u accepted=%u failed=%u last_failure=%d",
+             final_counters.decoded_frames, final_counters.top_renderer_draw_calls,
+             final_counters.completed_presentations, final_counters.decoder_submitted,
+             final_counters.decoder_accepted, final_counters.decoder_failed,
+             final_counters.decoder_last_failure);
     diag_log("SESSION_END", "scope=connection session_id=%s outcome=%s reason=%s",
              diag_session_id, outcome ? outcome : "failed",
              reason ? reason : "unspecified");
     LightLock_Lock(&diag_lock);
     if (diag_session_file != NULL) {
+        if (diag_session_capped) {
+            fputs("--- PROTECTED SESSION TAIL ---\n", diag_session_file);
+            for (unsigned int i = 0; i < diag_session_tail_count; ++i) {
+                fputs(diag_session_tail[i], diag_session_file);
+                fputc('\n', diag_session_file);
+            }
+        }
         fflush(diag_session_file);
         fsync(fileno(diag_session_file));
         fclose(diag_session_file);
