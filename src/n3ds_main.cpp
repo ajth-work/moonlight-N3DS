@@ -3042,11 +3042,16 @@ static void draw_stream_gamepad_panel(uint32_t rtt_ms, bool rtt_available,
         bottom.drawPanelButton({24, 99, 296, 126},
                                n3ds_3d_mode_name(stereo_settings.mode),
                                {35, 48, 60}, ink);
-        bottom.drawPanelButton({24, 132, 148, 159},
+        bottom.drawPanelButton({24, 132, 120, 159},
                                n3ds_3d_aspect_name(stereo_settings.aspect),
                                {35, 48, 60}, ink);
-        bottom.drawPanelButton({156, 132, 296, 159}, shift,
+        bottom.drawPanelButton({124, 132, 210, 159}, shift,
                                {35, 48, 60}, ink);
+        bottom.drawPanelButton({214, 132, 296, 159},
+                               stereo_settings.prefilter ? "PF ON" : "PF OFF",
+                               stereo_settings.prefilter ? Color{29, 112, 82}
+                                                         : Color{35, 48, 60},
+                               ink);
         bottom.drawLiveText(26, 164, "3D OUTPUT REQUIRES SLIDER UP",
                             TextStyle::Small, muted);
     } else {

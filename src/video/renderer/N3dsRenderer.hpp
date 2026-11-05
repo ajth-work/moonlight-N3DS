@@ -71,6 +71,7 @@ class N3dsRendererBase {
     int last_presentation_log_mode = -1;
     int last_presentation_log_aspect = -1;
     int last_presentation_log_shift = -1;
+    int last_presentation_log_prefilter = -1;
     int last_presentation_log_slider_milli = -1;
     int last_presentation_log_gfx3d = -1;
     int px_size;
@@ -78,6 +79,7 @@ class N3dsRendererBase {
     u32 *cmdlist = NULL;
     void *vramFb = NULL;
     void *vramTex = NULL;
+    u16 *prefilterBuffer = NULL;
 };
 
 class N3dsRendererTop : public N3dsRendererBase {

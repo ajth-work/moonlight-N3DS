@@ -11,6 +11,7 @@ constexpr int MAX_HORIZONTAL_SHIFT = 8;
 AtomicVar<int> current_mode(static_cast<int>(N3ds3DMode::OFF_2D));
 AtomicVar<int> current_aspect(static_cast<int>(N3ds3DAspect::FIT));
 AtomicVar<int> current_shift(0);
+AtomicVar<bool> current_prefilter(false);
 
 bool is_split_mode(N3ds3DMode mode) {
     return mode == N3ds3DMode::HSBS || mode == N3ds3DMode::HSBS_SWAP ||
@@ -21,7 +22,7 @@ bool is_split_mode(N3ds3DMode mode) {
 N3ds3DSettings n3ds_3d_settings_snapshot() {
     return {static_cast<N3ds3DMode>(current_mode.load()),
             static_cast<N3ds3DAspect>(current_aspect.load()),
-            current_shift.load()};
+            current_shift.load(), current_prefilter.load()};
 }
 
 void n3ds_3d_cycle_mode() {
@@ -36,6 +37,10 @@ void n3ds_3d_adjust_shift(int delta) {
     current_shift.store(
         std::max(-MAX_HORIZONTAL_SHIFT,
                  std::min(MAX_HORIZONTAL_SHIFT, current_shift.load() + delta)));
+}
+
+void n3ds_3d_toggle_prefilter() {
+    current_prefilter.store(!current_prefilter.load());
 }
 
 const char *n3ds_3d_mode_name(N3ds3DMode mode) {

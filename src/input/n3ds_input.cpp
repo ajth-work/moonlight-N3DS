@@ -325,6 +325,26 @@ void N3dsInput::n3dsinput_handle_event() {
                 panel_click_mode.store(click_mode);
                 diag_log("PANEL_MODE", "mode=%s",
                          click_mode ? "click" : "move");
+            } else if (panel_toolbar_page.load() == 3 &&
+                       touch.py >= 132 && touch.py < 160 &&
+                       touch.px >= 24 && touch.px < 121) {
+                n3ds_3d_cycle_aspect();
+                const N3ds3DSettings settings = n3ds_3d_settings_snapshot();
+                diag_log("PRESENTATION_CONTROL",
+                         "control=aspect mode=%s aspect=%s shift=%d prefilter=%d",
+                         n3ds_3d_mode_name(settings.mode),
+                         n3ds_3d_aspect_name(settings.aspect), settings.shift,
+                         settings.prefilter);
+            } else if (panel_toolbar_page.load() == 3 &&
+                       touch.py >= 132 && touch.py < 160 &&
+                       touch.px >= 214 && touch.px < 297) {
+                n3ds_3d_toggle_prefilter();
+                const N3ds3DSettings settings = n3ds_3d_settings_snapshot();
+                diag_log("PRESENTATION_CONTROL",
+                         "control=prefilter state=%s mode=%s aspect=%s shift=%d",
+                         settings.prefilter ? "on" : "off",
+                         n3ds_3d_mode_name(settings.mode),
+                         n3ds_3d_aspect_name(settings.aspect), settings.shift);
             } else if (touch.py >= 184 && touch.py < 230) {
                 int page = panel_toolbar_page.load();
                 if (touch.px < 42) {

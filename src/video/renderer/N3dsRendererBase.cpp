@@ -26,11 +26,62 @@
 #include <3ds.h>
 #include <cstdlib>
 #include <cstring>
+#include <algorithm>
 #include <stdbool.h>
 #include <stdexcept>
 #include <unistd.h>
 
 static AtomicVar<bool> top_screen_magnified = false;
+
+static void prefilter_rgb565(const u16 *source, u16 *destination,
+                             int image_width, int image_height,
+                             int reduction_x, int reduction_y,
+                             N3ds3DMode mode) {
+    const int eye_count = (mode == N3ds3DMode::HSBS ||
+                           mode == N3ds3DMode::HSBS_SWAP ||
+                           mode == N3ds3DMode::OU ||
+                           mode == N3ds3DMode::OU_SWAP)
+                              ? 2
+                              : 1;
+    const bool side_by_side = mode == N3ds3DMode::HSBS ||
+                              mode == N3ds3DMode::HSBS_SWAP;
+    const bool over_under = mode == N3ds3DMode::OU ||
+                            mode == N3ds3DMode::OU_SWAP;
+    for (int eye = 0; eye < eye_count; ++eye) {
+        const int left = side_by_side ? eye * (image_width / 2) : 0;
+        const int right = side_by_side ? (eye + 1) * (image_width / 2)
+                                       : image_width;
+        const int top = over_under ? eye * (image_height / 2) : 0;
+        const int bottom = over_under ? (eye + 1) * (image_height / 2)
+                                      : image_height;
+        for (int y = top; y < bottom; y += reduction_y) {
+            for (int x = left; x < right; x += reduction_x) {
+                unsigned int red = 0, green = 0, blue = 0, count = 0;
+                const int y_end = std::min(y + reduction_y, bottom);
+                const int x_end = std::min(x + reduction_x, right);
+                for (int sy = y; sy < y_end; ++sy) {
+                    for (int sx = x; sx < x_end; ++sx) {
+                        const u16 pixel = source[sy * MOON_CTR_VIDEO_TEX_W + sx];
+                        red += (pixel >> 11) & 0x1f;
+                        green += (pixel >> 5) & 0x3f;
+                        blue += pixel & 0x1f;
+                        ++count;
+                    }
+                }
+                const u16 average = static_cast<u16>(
+                    (((red + count / 2) / count) << 11) |
+                    (((green + count / 2) / count) << 5) |
+                    ((blue + count / 2) / count));
+                // Repeat each reduced sample over its original source-cell
+                // footprint. This preserves the existing normalized UVs.
+                for (int sy = y; sy < y_end; ++sy)
+                    for (int sx = x; sx < x_end; ++sx)
+                        destination[sy * MOON_CTR_VIDEO_TEX_W + sx] = average;
+            }
+        }
+    }
+}
+
 void n3ds_set_top_magnified(bool enabled) {
     top_screen_magnified.store(enabled);
 }
@@ -49,10 +100,14 @@ N3dsRendererBase::N3dsRendererBase(gfxScreen_t screen_in, int surface_width_in,
     vramFb = vramAlloc(surface_width * surface_height * px_size);
     // Needs to be able to hold an 800x480
     vramTex = vramAlloc(MOON_CTR_VIDEO_TEX_W * MOON_CTR_VIDEO_TEX_H * px_size);
+    if (screen == GFX_TOP)
+        prefilterBuffer = static_cast<u16 *>(
+            linearAlloc(MOON_CTR_VIDEO_TEX_W * MOON_CTR_VIDEO_TEX_H * px_size));
 }
 
 N3dsRendererBase::~N3dsRendererBase() {
     linearFree(cmdlist);
+    if (prefilterBuffer) linearFree(prefilterBuffer);
     vramFree(vramFb);
     vramFree(vramTex);
 
@@ -151,12 +206,14 @@ void N3dsRendererBase::write_px_to_framebuffer_gpu(uint8_t *__restrict source) {
         (last_presentation_log_mode != static_cast<int>(settings.mode) ||
          last_presentation_log_aspect != static_cast<int>(settings.aspect) ||
          last_presentation_log_shift != settings.shift ||
+         last_presentation_log_prefilter != static_cast<int>(settings.prefilter) ||
          last_presentation_log_slider_milli != slider_milli ||
          last_presentation_log_gfx3d != static_cast<int>(gfx_3d_enabled));
     if (screen == GFX_TOP) {
         last_presentation_log_mode = static_cast<int>(settings.mode);
         last_presentation_log_aspect = static_cast<int>(settings.aspect);
         last_presentation_log_shift = settings.shift;
+        last_presentation_log_prefilter = static_cast<int>(settings.prefilter);
         last_presentation_log_slider_milli = slider_milli;
         last_presentation_log_gfx3d = static_cast<int>(gfx_3d_enabled);
     }
@@ -173,9 +230,10 @@ void N3dsRendererBase::write_px_to_framebuffer_gpu(uint8_t *__restrict source) {
          ((counters_before.completed_presentations + 1) % 300 == 0));
     if (trace_presentation_frame) {
         diag_log("PRESENTATION_FRAME_BEGIN",
-                 "frame=%u mode=%s aspect=%s shift=%d slider_milli=%d gfx3d=%d stereo=%d eye_passes=%d image=%dx%d",
+                 "frame=%u mode=%s aspect=%s shift=%d prefilter=%d slider_milli=%d gfx3d=%d stereo=%d eye_passes=%d image=%dx%d",
                  presentation_frame, n3ds_3d_mode_name(settings.mode),
                  n3ds_3d_aspect_name(settings.aspect), settings.shift,
+                 settings.prefilter,
                  slider_milli, gfx_3d_enabled, stereo, eye_pass_count,
                  image_width, image_height);
     }
@@ -200,8 +258,52 @@ void N3dsRendererBase::write_px_to_framebuffer_gpu(uint8_t *__restrict source) {
     // significantly faster than the decoder.
 
     // Tile the source image into the scratch buffer.
+    const u16 *upload_source = reinterpret_cast<const u16 *>(source);
+    if (screen == GFX_TOP && settings.prefilter &&
+        settings.aspect != N3ds3DAspect::CROP && prefilterBuffer &&
+        image_width > 0 && image_height > 0 &&
+        image_width <= MOON_CTR_VIDEO_TEX_W &&
+        image_height <= MOON_CTR_VIDEO_TEX_H) {
+        const int region_width =
+            (settings.mode == N3ds3DMode::HSBS ||
+             settings.mode == N3ds3DMode::HSBS_SWAP)
+                ? image_width / 2
+                : image_width;
+        const int region_height =
+            (settings.mode == N3ds3DMode::OU ||
+             settings.mode == N3ds3DMode::OU_SWAP)
+                ? image_height / 2
+                : image_height;
+        const float region_aspect =
+            region_height > 0 ? static_cast<float>(region_width) / region_height
+                              : 400.0f / 240.0f;
+        float fit_x = 1.0f, fit_y = 1.0f;
+        if (settings.aspect == N3ds3DAspect::FIT) {
+            if (region_aspect > (400.0f / 240.0f))
+                fit_y = (400.0f / 240.0f) / region_aspect;
+            else
+                fit_x = region_aspect / (400.0f / 240.0f);
+        }
+        const int reduction_x = std::max(
+            1, static_cast<int>(region_width / (400.0f * fit_x) + 0.5f));
+        const int reduction_y = std::max(
+            1, static_cast<int>(region_height / (240.0f * fit_y) + 0.5f));
+        const size_t texture_bytes =
+            MOON_CTR_VIDEO_TEX_W * MOON_CTR_VIDEO_TEX_H * px_size;
+        memcpy(prefilterBuffer, source, texture_bytes);
+        prefilter_rgb565(upload_source, prefilterBuffer, image_width,
+                         image_height, reduction_x, reduction_y,
+                         settings.mode);
+        GSPGPU_FlushDataCache(prefilterBuffer, texture_bytes);
+        diag_log("PREFILTER_STAGE",
+                 "state=on mode=%s aspect=%s reduction_xy=[%d,%d] area_average=rgb565",
+                 n3ds_3d_mode_name(settings.mode),
+                 n3ds_3d_aspect_name(settings.aspect), reduction_x,
+                 reduction_y);
+        upload_source = prefilterBuffer;
+    }
     GX_DisplayTransfer(
-        (u32 *)source,
+        (u32 *)upload_source,
         GX_BUFFER_DIM(MOON_CTR_VIDEO_TEX_W, MOON_CTR_VIDEO_TEX_H),
         (u32 *)vramTex,
         GX_BUFFER_DIM(MOON_CTR_VIDEO_TEX_W, MOON_CTR_VIDEO_TEX_H),
@@ -562,11 +664,12 @@ void N3dsRendererBase::write_px_to_framebuffer_gpu(uint8_t *__restrict source) {
                                       : 0.0f;
             diag_log(
                 "TOP_PRESENTATION_DIAG",
-                "frame=%u completed=%u mode=%s aspect=%s eye=%s image=%dx%d uv=[%.6f,%.6f,%.6f,%.6f] dst_ndc=[%.4f,%.4f,%.4f,%.4f] dst_screen=400x240 source_px=%.1fx%.1f destination_px=%.1fx%.1f scale_xy=[%.3f,%.3f] texture=%dx%d texture_layout=tiled texture_stride=tile_encoded source_stride_bytes=%d sampler_source=unit0_draw_command sampler_param=0x%08x min=%s mag=%s input_transfer=GX_DisplayTransfer:%dx%d->%dx%d:RGB565:flipV:out_tiled1:no_scale output_transfer=GX_DisplayTransfer:%dx%d->%dx%d:RGB565:out_tiled0:no_scale decoded_frames=%u top_renderer_draw_calls=%u completed_presentations=%u submitted=%u accepted=%u failed=%u last_failure=%d",
+                "frame=%u completed=%u mode=%s aspect=%s prefilter=%d eye=%s image=%dx%d uv=[%.6f,%.6f,%.6f,%.6f] dst_ndc=[%.4f,%.4f,%.4f,%.4f] dst_screen=400x240 source_px=%.1fx%.1f destination_px=%.1fx%.1f scale_xy=[%.3f,%.3f] texture=%dx%d texture_layout=tiled texture_stride=tile_encoded source_stride_bytes=%d sampler_source=unit0_draw_command sampler_param=0x%08x min=%s mag=%s input_transfer=GX_DisplayTransfer:%dx%d->%dx%d:RGB565:flipV:out_tiled1:no_scale output_transfer=GX_DisplayTransfer:%dx%d->%dx%d:RGB565:out_tiled0:no_scale decoded_frames=%u top_renderer_draw_calls=%u completed_presentations=%u submitted=%u accepted=%u failed=%u last_failure=%d",
                 presentation_frame,
                 counters_after.completed_presentations,
                 n3ds_3d_mode_name(settings.mode),
                 n3ds_3d_aspect_name(settings.aspect),
+                settings.prefilter,
                 diag_eye == 0 ? "left" : "right", image_width, image_height,
                 sampled_u_min[diag_eye], sampled_v_min[diag_eye],
                 sampled_u_max[diag_eye], sampled_v_max[diag_eye],
