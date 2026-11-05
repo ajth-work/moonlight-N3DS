@@ -68,6 +68,11 @@ class N3dsRendererBase {
     int image_width;
     int image_height;
     u32 presentation_frame_counter = 0;
+    int last_presentation_log_mode = -1;
+    int last_presentation_log_aspect = -1;
+    int last_presentation_log_shift = -1;
+    int last_presentation_log_slider_milli = -1;
+    int last_presentation_log_gfx3d = -1;
     int px_size;
     bool debug;
     u32 *cmdlist = NULL;

@@ -140,15 +140,29 @@ void N3dsRendererBase::write_px_to_framebuffer_gpu(uint8_t *__restrict source) {
     const int slider_milli =
         static_cast<int>(osGet3DSliderState() * 1000.0f + 0.5f);
     const bool gfx_3d_enabled = gfxIs3D();
-    const bool stereo = screen == GFX_TOP && gfx_3d_enabled &&
+    const bool stereo = screen == GFX_TOP &&
                         settings.mode != N3ds3DMode::OFF_2D;
-    const int eye_pass_count = stereo ? 2 : 1;
+    const int eye_pass_count = screen == GFX_TOP ? 2 : 1;
     const N3ds3DSettings mono_settings{N3ds3DMode::OFF_2D, settings.aspect, 0};
     const u32 presentation_frame =
         screen == GFX_TOP ? ++presentation_frame_counter : 0;
+    const bool presentation_settings_changed =
+        screen == GFX_TOP &&
+        (last_presentation_log_mode != static_cast<int>(settings.mode) ||
+         last_presentation_log_aspect != static_cast<int>(settings.aspect) ||
+         last_presentation_log_shift != settings.shift ||
+         last_presentation_log_slider_milli != slider_milli ||
+         last_presentation_log_gfx3d != static_cast<int>(gfx_3d_enabled));
+    if (screen == GFX_TOP) {
+        last_presentation_log_mode = static_cast<int>(settings.mode);
+        last_presentation_log_aspect = static_cast<int>(settings.aspect);
+        last_presentation_log_shift = settings.shift;
+        last_presentation_log_slider_milli = slider_milli;
+        last_presentation_log_gfx3d = static_cast<int>(gfx_3d_enabled);
+    }
     const bool trace_presentation_frame =
-        presentation_frame == 1 || (presentation_frame != 0 &&
-                                    presentation_frame % 120 == 0);
+        presentation_settings_changed || presentation_frame == 1 ||
+        (presentation_frame != 0 && presentation_frame % 120 == 0);
     if (trace_presentation_frame) {
         diag_log("PRESENTATION_FRAME_BEGIN",
                  "frame=%u mode=%s aspect=%s shift=%d slider_milli=%d gfx3d=%d stereo=%d eye_passes=%d image=%dx%d",
@@ -178,9 +192,9 @@ void N3dsRendererBase::write_px_to_framebuffer_gpu(uint8_t *__restrict source) {
             GX_TRANSFER_IN_FORMAT(GX_TRANSFER_FMT_RGB565) |
             GX_TRANSFER_OUT_FORMAT(GX_TRANSFER_FMT_RGB565));
 
-    // Render each eye into its own native-size top-screen framebuffer. A
-    // mono frame remains a single pass; stereo mode is active only while the
-    // 3DS slider is up and a stereo presentation mode is selected.
+    // Render both top-screen eyes on every frame so switching into a stereo
+    // mode cannot expose an uninitialized or stale right-eye framebuffer.
+    // Bottom-screen rendering remains a single mono pass.
     for (int eye = 0; eye < eye_pass_count; ++eye) {
         const N3ds3DEyePresentation eye_presentation =
             n3ds_3d_eye_presentation(stereo ? settings : mono_settings,
@@ -237,7 +251,7 @@ void N3dsRendererBase::write_px_to_framebuffer_gpu(uint8_t *__restrict source) {
     C(GPUREG_TEXUNIT0_DIM, MOON_CTR_VIDEO_TEX_H | (MOON_CTR_VIDEO_TEX_W << 16));
     C(GPUREG_TEXUNIT0_ADDR1, osConvertVirtToPhys(vramTex) >> 3);
     C(GPUREG_TEXUNIT0_PARAM,
-      GPU_NEAREST | (GPU_LINEAR << 1)); // Linear min and mag filter
+      GPU_LINEAR | (GPU_LINEAR << 1)); // Linear minification and magnification filters
 
     // Shading
     // GPUCMD_AddMaskedWrite(GPUREG_SH_OUTATTR_CLOCK, 0x2, 1 << 8); // No Z, Yes
@@ -382,7 +396,23 @@ void N3dsRendererBase::write_px_to_framebuffer_gpu(uint8_t *__restrict source) {
 #undef ATTR_POS
 #undef ATTR_TEX
 
-    gspWaitForEvent(GSPGPU_EVENT_PPF, 0);
+    if (eye == 0) {
+        if (trace_presentation_frame) {
+            diag_log("PRESENTATION_PPF_WAIT",
+                     "frame=%u eye=left phase=pre_process begin",
+                     presentation_frame);
+        }
+        gspWaitForEvent(GSPGPU_EVENT_PPF, 0);
+        if (trace_presentation_frame) {
+            diag_log("PRESENTATION_PPF_WAIT",
+                     "frame=%u eye=left phase=pre_process returned",
+                     presentation_frame);
+        }
+    } else if (trace_presentation_frame) {
+        diag_log("PRESENTATION_PPF_WAIT",
+                 "frame=%u eye=right phase=pre_process skipped",
+                 presentation_frame);
+    }
 
     u32 *unused;
     u32 cmdlist_len;
@@ -399,7 +429,7 @@ void N3dsRendererBase::write_px_to_framebuffer_gpu(uint8_t *__restrict source) {
     gspWaitForEvent(GSPGPU_EVENT_P3D, 0);
 
     // Copy this rendered eye into its corresponding hardware framebuffer.
-    const bool use_right_eye = stereo && eye == 1;
+    const bool use_right_eye = screen == GFX_TOP && eye == 1;
     u32 *dest = (u32 *)gfxGetFramebuffer(
         screen, use_right_eye ? GFX_RIGHT : GFX_LEFT, NULL, NULL);
     GX_DisplayTransfer((u32 *)vramFb,
@@ -409,7 +439,17 @@ void N3dsRendererBase::write_px_to_framebuffer_gpu(uint8_t *__restrict source) {
                            GX_TRANSFER_IN_FORMAT(GX_TRANSFER_FMT_RGB565) |
                            GX_TRANSFER_OUT_FORMAT(GX_TRANSFER_FMT_RGB565) |
                            GX_TRANSFER_SCALING(GX_TRANSFER_SCALE_NO));
+    if (trace_presentation_frame) {
+        diag_log("PRESENTATION_PPF_WAIT",
+                 "frame=%u eye=%s phase=post_transfer begin",
+                 presentation_frame, eye == 0 ? "left" : "right");
+    }
     gspWaitForEvent(GSPGPU_EVENT_PPF, 0);
+    if (trace_presentation_frame) {
+        diag_log("PRESENTATION_PPF_WAIT",
+                 "frame=%u eye=%s phase=post_transfer returned",
+                 presentation_frame, eye == 0 ? "left" : "right");
+    }
     }
 
     perf_fbcopy_ticks = svcGetSystemTick() - start_ticks;

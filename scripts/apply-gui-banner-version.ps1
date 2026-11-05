@@ -1,7 +1,7 @@
 #requires -Version 5.1
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory = $true)]
+    [Parameter(Mandatory = $false)]
     [ValidatePattern('^\d+\.\d+\.\d+-gui\d+(?:\.\d+)?$')]
     [string]$Version,
 
@@ -13,6 +13,18 @@ Add-Type -AssemblyName System.Drawing
 
 $assetDirectory = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\3ds\res'))
 $templatePath = Join-Path $assetDirectory 'banner-template.png'
+if ([string]::IsNullOrWhiteSpace($Version)) {
+    $diagnosticsHeader = Join-Path $PSScriptRoot '..\src\diagnostics.h'
+    $headerText = [System.IO.File]::ReadAllText($diagnosticsHeader)
+    $match = [regex]::Match($headerText, '(?m)^#define DIAG_BUILD_VERSION "([^"]+)"\r?$')
+    if (-not $match.Success) {
+        throw "DIAG_BUILD_VERSION not found in $diagnosticsHeader."
+    }
+    $Version = $match.Groups[1].Value
+}
+if ($Version -notmatch '^\d+\.\d+\.\d+-gui\d+(?:\.\d+)?$') {
+    throw "Unsupported GUI version: $Version"
+}
 if ([string]::IsNullOrWhiteSpace($OutputPath)) {
     $OutputPath = Join-Path $assetDirectory 'banner.png'
 }
