@@ -1,4 +1,5 @@
 #include "diagnostics.h"
+#include "diagnostic_spool.h"
 
 #include <3ds.h>
 #include <openssl/bio.h>
@@ -18,7 +19,9 @@
 #define UNIX_EPOCH_OFFSET_MS 2208988800000ULL
 #define DIAG_FORMATTED_LINE_MAX 4096
 #define DIAG_STACK_RECORD_CAPACITY 512
-#define DIAG_SESSION_MAX_BYTES (256U * 1024U)
+#define DIAG_SESSION_MAX_BYTES (256U * 1024U) /* individual rotated segment */
+#define DIAG_SESSION_PARTS 29U
+#define DIAG_CRITICAL_BYTES (64U * 1024U)
 #define DIAG_SESSION_TAIL_COUNT 16
 
 static LightLock diag_lock;
@@ -45,6 +48,12 @@ static char diag_session_path[128];
 static unsigned long long diag_session_begin_epoch;
 static size_t diag_session_bytes;
 static bool diag_session_capped;
+static unsigned int diag_session_part;
+static bool diag_session_stream;
+static bool diag_storage_pressure;
+static unsigned int diag_record_sequence;
+static volatile uint32_t diag_wire_sent, diag_wire_total;
+
 static char diag_session_tail[DIAG_SESSION_TAIL_COUNT][DIAG_FORMATTED_LINE_MAX];
 static unsigned int diag_session_tail_count;
 static unsigned int diag_session_sequence;
@@ -87,7 +96,12 @@ static bool session_tail_event(const char *event) {
             strcmp(event, "STREAM_STOP") == 0 ||
             strcmp(event, "FREEZE_DETECTED") == 0 ||
             strcmp(event, "FINAL_PRESENTATION") == 0 ||
-            strcmp(event, "SESSION_END") == 0);
+            strcmp(event, "SESSION_END") == 0 ||
+            strcmp(event, "SESSION_PHASE") == 0 ||
+            strcmp(event, "SESSION_BEGIN") == 0 ||
+            strcmp(event, "STREAM_STARTED") == 0 ||
+            strcmp(event, "TOP_PRESENTATION_DIAG") == 0 ||
+            strstr(event, "_ERROR") != NULL);
 }
 
 bool diag_cert_fingerprint(X509 *certificate, char *out,
@@ -465,6 +479,81 @@ void diag_video_counters_snapshot(DIAG_VIDEO_COUNTERS *counters) {
         __atomic_load_n(&diag_video_decoder_last_failure, __ATOMIC_ACQUIRE);
 }
 
+
+void diag_upload_wire_progress(unsigned long long sent, unsigned long long total) {
+    __atomic_store_n(&diag_wire_sent, (uint32_t)sent, __ATOMIC_RELAXED);
+    __atomic_store_n(&diag_wire_total, (uint32_t)total, __ATOMIC_RELAXED);
+}
+void diag_upload_wire_snapshot(unsigned long long *sent, unsigned long long *total) {
+    if (sent) *sent = __atomic_load_n(&diag_wire_sent, __ATOMIC_RELAXED);
+    if (total) *total = __atomic_load_n(&diag_wire_total, __ATOMIC_RELAXED);
+}
+void diag_session_snapshot_lock(void) { LightLock_Lock(&diag_lock); }
+void diag_session_snapshot_unlock(void) { LightLock_Unlock(&diag_lock); }
+bool diag_session_path_active(const char *base) {
+    bool active;
+    LightLock_Lock(&diag_lock);
+    active = base != NULL && diag_session_file != NULL && strcmp(base, diag_session_path) == 0;
+    LightLock_Unlock(&diag_lock);
+    return active;
+}
+static void session_write_meta(bool ended) {
+    if (!diag_session_path[0]) return;
+    char path[180], temporary[184];
+    snprintf(path, sizeof(path), "%s.meta", diag_session_path);
+    snprintf(temporary, sizeof(temporary), "%s.tmp", path);
+    FILE *file = fopen(temporary, "w");
+    if (!file) return;
+    fprintf(file, "version=2\nbegin=%llu\nend=%llu\nactive=%d\ngaps=%d\nstream=%d\npart=%u\nbytes=%llu\n",
+            diag_session_begin_epoch, ended ? (unsigned long long)time(NULL) : 0,
+            !ended, diag_session_capped, diag_session_stream, diag_session_part,
+            diag_spool_retained_size(diag_session_path));
+    const bool ok = fflush(file) == 0 && fsync(fileno(file)) == 0;
+    fclose(file);
+    if (ok) rename(temporary, path); else unlink(temporary);
+}
+static bool session_rotate(void) {
+    char path[180];
+    if (diag_spool_has_pending(diag_session_path)) return false;
+    const unsigned int next = diag_session_part + 1;
+    if (next > DIAG_SESSION_PARTS) {
+        snprintf(path, sizeof(path), "%s.p%08u", diag_session_path, next - DIAG_SESSION_PARTS);
+        unlink(path);
+        diag_session_capped = true;
+    }
+    if (!diag_spool_allow_growth(diag_session_path, DIAG_SESSION_MAX_BYTES)) return false;
+    snprintf(path, sizeof(path), "%s.p%08u", diag_session_path, next);
+    FILE *next_file = fopen(path, "w");
+    if (!next_file) return false;
+    fflush(diag_session_file); fsync(fileno(diag_session_file)); fclose(diag_session_file);
+    diag_session_file = next_file;
+    diag_session_part = next;
+    diag_session_bytes = 0;
+    session_write_meta(false);
+    return true;
+}
+static void session_critical_write(void) {
+    char path[180]; snprintf(path, sizeof(path), "%s.tail", diag_session_path);
+    FILE *file = fopen(path, "a"); if (!file) return;
+    if (ftell(file) + (long)strlen(diag_line) + 1 > DIAG_CRITICAL_BYTES) {
+        fclose(file); file = fopen(path, "w"); if (!file) return;
+        for (unsigned int i = 0; i < diag_session_tail_count; ++i) fprintf(file, "%s\n", diag_session_tail[i]);
+    } else fprintf(file, "%s\n", diag_line);
+    fflush(file); fsync(fileno(file)); fclose(file);
+    session_write_meta(false);
+}
+static void prepare_log_mirror(void) {
+    FILE *marker = fopen("sdmc:/3ds/moonlight/.log-v2", "r");
+    if (marker) { fclose(marker); return; }
+    char archive[160];
+    snprintf(archive, sizeof(archive), "sdmc:/3ds/moonlight/moonlight-legacy-%llu.log", (unsigned long long)time(NULL));
+    rename(DIAG_LOG_PATH, archive);
+    snprintf(archive, sizeof(archive), "sdmc:/3ds/moonlight/moonlight-legacy-previous-%llu.log", (unsigned long long)time(NULL));
+    rename(DIAG_LOG_PATH ".1", archive);
+    marker = fopen("sdmc:/3ds/moonlight/.log-v2", "w");
+    if (marker) { fputs("bounded-mirror-v2\n", marker); fflush(marker); fsync(fileno(marker)); fclose(marker); }
+}
+
 void diag_log(const char *event, const char *format, ...) {
     va_list args;
     bool session_write_failed = false;
@@ -474,9 +563,9 @@ void diag_log(const char *event, const char *format, ...) {
     va_end(args);
 
     format_wall_time(diag_wall_time, sizeof(diag_wall_time));
-    snprintf(diag_line, sizeof(diag_line), "%s +%08llums %-18s %s", diag_wall_time,
+    snprintf(diag_line, sizeof(diag_line), "%s +%08llums %-18s %s record_seq=%u", diag_wall_time,
              (unsigned long long)diag_elapsed_ms(), event ? event : "EVENT",
-             diag_detail);
+             diag_detail, ++diag_record_sequence);
 
     snprintf(diag_recent[diag_recent_next], DIAG_LOG_LINE_MAX, "%s", diag_line);
     diag_recent_next = (diag_recent_next + 1) % DIAG_RECENT_LINE_COUNT;
@@ -484,25 +573,32 @@ void diag_log(const char *event, const char *format, ...) {
         diag_recent_count++;
     }
     if (__atomic_load_n(&diag_logging_enabled, __ATOMIC_ACQUIRE) && diag_file != NULL) {
-        fputs(diag_line, diag_file);
-        fputc('\n', diag_file);
-        fflush(diag_file);
-        fsync(fileno(diag_file));
+        if (ftell(diag_file) >= 4L * 1024L * 1024L) {
+            fflush(diag_file); fsync(fileno(diag_file)); fclose(diag_file);
+            unlink(DIAG_LOG_PATH ".1"); rename(DIAG_LOG_PATH, DIAG_LOG_PATH ".1");
+            diag_file = fopen(DIAG_LOG_PATH, "w");
+        }
+        const bool mirror_room = diag_file && (!diag_storage_pressure || ftell(diag_file) < 65536L);
+        if (diag_file && mirror_room) fputs(diag_line, diag_file);
+        if (diag_file && mirror_room) { fputc('\n', diag_file); fflush(diag_file); fsync(fileno(diag_file)); }
     }
     if (__atomic_load_n(&diag_logging_enabled, __ATOMIC_ACQUIRE) &&
         diag_session_file != NULL) {
         const size_t line_bytes = strlen(diag_line) + 1;
-        if (session_tail_event(event)) {
-            unsigned int index = diag_session_tail_count < DIAG_SESSION_TAIL_COUNT
-                                     ? diag_session_tail_count++
-                                     : DIAG_SESSION_TAIL_COUNT - 1;
-            if (index == DIAG_SESSION_TAIL_COUNT - 1 &&
-                diag_session_tail_count == DIAG_SESSION_TAIL_COUNT)
-                memmove(diag_session_tail, diag_session_tail + 1,
-                        sizeof(diag_session_tail[0]) * (DIAG_SESSION_TAIL_COUNT - 1));
-            snprintf(diag_session_tail[index], DIAG_FORMATTED_LINE_MAX, "%s", diag_line);
+        if (event != NULL && (strcmp(event, "STREAM_STARTED") == 0 || strcmp(event, "STREAM_CONFIG") == 0)) {
+            diag_session_stream = true;
         }
-        if (!diag_session_capped && diag_session_bytes + line_bytes <= DIAG_SESSION_MAX_BYTES) {
+        if (session_tail_event(event)) {
+            unsigned int index;
+            if (diag_session_tail_count == DIAG_SESSION_TAIL_COUNT) {
+                memmove(diag_session_tail, diag_session_tail + 1, sizeof(diag_session_tail[0]) * (DIAG_SESSION_TAIL_COUNT - 1));
+                index = DIAG_SESSION_TAIL_COUNT - 1;
+            } else index = diag_session_tail_count++;
+            snprintf(diag_session_tail[index], DIAG_FORMATTED_LINE_MAX, "%s", diag_line);
+            session_critical_write();
+        }
+        const bool room = !diag_storage_pressure && (diag_session_bytes + line_bytes <= DIAG_SESSION_MAX_BYTES || session_rotate());
+        if (room) {
             if (fputs(diag_line, diag_session_file) == EOF ||
             fputc('\n', diag_session_file) == EOF ||
             fflush(diag_session_file) != 0 ||
@@ -515,7 +611,7 @@ void diag_log(const char *event, const char *format, ...) {
                 diag_session_bytes += line_bytes;
             }
         } else {
-            diag_session_capped = true;
+            if (!diag_session_capped) { diag_session_capped = true; session_write_meta(false); }
         }
     }
     LightLock_Unlock(&diag_lock);
@@ -528,6 +624,11 @@ bool diag_session_begin(void) {
     int fd = -1;
     unsigned int attempt;
     if (!diag_is_enabled()) return false;
+    if (!diag_spool_allow_growth(DIAG_SESSION_DIR "/session-budget.log", DIAG_CRITICAL_BYTES + 8192)) {
+        diag_storage_pressure = true;
+        diag_log("STORAGE_PRESSURE", "new_recording=false reason=local_log_budget_full preserve_unsent=true");
+        return false;
+    }
     LightLock_Lock(&diag_lock);
     if (diag_session_file != NULL) {
         LightLock_Unlock(&diag_lock);
@@ -555,7 +656,12 @@ bool diag_session_begin(void) {
         snprintf(diag_session_path, sizeof(diag_session_path), "%s", path);
         diag_session_begin_epoch = (unsigned long long)time(NULL);
         diag_session_bytes = 0;
-        diag_session_capped = false;
+        diag_storage_pressure = !diag_spool_allow_growth(path, DIAG_SESSION_MAX_BYTES + DIAG_CRITICAL_BYTES + 8192);
+        diag_session_capped = diag_storage_pressure;
+        diag_record_sequence = 0;
+        diag_session_part = 0;
+        diag_session_stream = false;
+        session_write_meta(false);
         diag_session_tail_count = 0;
         memset(diag_session_tail, 0, sizeof(diag_session_tail));
     }
@@ -565,6 +671,7 @@ bool diag_session_begin(void) {
         return false;
     }
     diag_log("SESSION_BEGIN", "scope=connection session_id=%s", diag_session_id);
+    if (diag_storage_pressure) diag_log("STORAGE_PRESSURE", "routine_paused=true critical_only=true reason=local_log_budget_exhausted");
     diag_log("SESSION_PHASE", "name=host_contact session_id=%s", diag_session_id);
     return true;
 }
@@ -613,18 +720,18 @@ void diag_session_record_upload(const DIAG_SESSION *session, bool accepted,
     active = diag_session_file != NULL &&
              strcmp(diag_session_id, session->id) == 0;
     LightLock_Unlock(&diag_lock);
-    diag_log("DIAG_UPLOAD", "scope=%s session_id=%s upload_id=%s state=%s truncated=false source_bytes=%llu filtered_bytes=%llu request_bytes=%llu",
+    diag_log("DIAG_UPLOAD", "scope=%s session_id=%s upload_id=%s state=%s truncated=%s source_bytes=%llu filtered_bytes=%llu request_bytes=%llu",
              session->scope, session->id, upload_id,
-             accepted ? "accepted" : "failed", source_bytes, filtered_bytes,
+             accepted ? "accepted" : "failed", upload_info && upload_info->truncated ? "true" : "false", source_bytes, filtered_bytes,
              request_bytes);
     if (active) return;
     file = fopen(session->path, "a");
     if (file == NULL) return;
     format_wall_time(wall_time, sizeof(wall_time));
-    if (fprintf(file, "%s +%08llums DIAG_UPLOAD scope=%s session_id=%s upload_id=%s state=%s truncated=false source_bytes=%llu filtered_bytes=%llu request_bytes=%llu\n",
+    if (fprintf(file, "%s +%08llums DIAG_UPLOAD scope=%s session_id=%s upload_id=%s state=%s truncated=%s source_bytes=%llu filtered_bytes=%llu request_bytes=%llu\n",
                 wall_time, (unsigned long long)diag_elapsed_ms(), session->scope,
                 session->id, upload_id, accepted ? "accepted" : "failed",
-                source_bytes, filtered_bytes, request_bytes) >= 0) {
+                upload_info && upload_info->truncated ? "true" : "false", source_bytes, filtered_bytes, request_bytes) >= 0) {
         fflush(file);
         fsync(fileno(file));
     }
@@ -649,13 +756,7 @@ void diag_session_end(const char *outcome, const char *reason) {
              reason ? reason : "unspecified");
     LightLock_Lock(&diag_lock);
     if (diag_session_file != NULL) {
-        if (diag_session_capped) {
-            fputs("--- PROTECTED SESSION TAIL ---\n", diag_session_file);
-            for (unsigned int i = 0; i < diag_session_tail_count; ++i) {
-                fputs(diag_session_tail[i], diag_session_file);
-                fputc('\n', diag_session_file);
-            }
-        }
+        session_write_meta(true);
         fflush(diag_session_file);
         fsync(fileno(diag_session_file));
         fclose(diag_session_file);
@@ -685,6 +786,7 @@ void diag_init(void) {
     diag_phase_tick = diag_start_tick;
     mkdir("sdmc:/3ds", 0777);
     mkdir("sdmc:/3ds/moonlight", 0777);
+    prepare_log_mirror();
     diag_file = fopen(DIAG_LOG_PATH, "a");
     diag_initialized = true;
     diag_log("LOGGER_OPEN", "path=sd:/3ds/moonlight/moonlight.log opened=%s flush=fflush+fsync",
@@ -841,9 +943,7 @@ static void diag_http_breadcrumb_locked(const char *text) {
     if (__atomic_load_n(&diag_logging_enabled, __ATOMIC_ACQUIRE) &&
         diag_file != NULL) {
         fputs(text, diag_file);
-        fputc('\n', diag_file);
-        fflush(diag_file);
-        fsync(fileno(diag_file));
+        if (diag_file) { fputc('\n', diag_file); fflush(diag_file); fsync(fileno(diag_file)); }
     }
 }
 

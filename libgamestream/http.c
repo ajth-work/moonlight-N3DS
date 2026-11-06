@@ -424,7 +424,7 @@ static int _curl_progress(void *clientp, curl_off_t download_total,
     (void)download_total;
     (void)download_now;
     (void)upload_total;
-    (void)upload_now;
+    diag_upload_wire_progress((unsigned long long)upload_now, (unsigned long long)upload_total);
     return diag_cancel_requested() ? 1 : 0;
 }
 
@@ -652,7 +652,7 @@ static CURLcode _perform_https_attempt(const char *url, PHTTP_DATA data,
 }
 
 static int _http_request(char *url, PHTTP_DATA data, const char *pin,
-                         const char *post_body, size_t post_size) {
+                         const char *post_body, size_t post_size, const char *content_type) {
     if (curl == NULL || url == NULL || data == NULL) return GS_FAILED;
     if (curl_easy_setopt(curl, CURLOPT_FAILONERROR, post_body == NULL ? 1L : 0L) != CURLE_OK)
         return GS_FAILED;
@@ -683,7 +683,7 @@ static int _http_request(char *url, PHTTP_DATA data, const char *pin,
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, connection_timeout_s);
     curl_easy_setopt(curl, CURLOPT_HTTPGET, 1L);
     if (post_body != NULL) {
-        post_headers = curl_slist_append(NULL, "Content-Type: application/json");
+        post_headers = curl_slist_append(NULL, content_type ? content_type : "Content-Type: application/json");
         if (post_headers == NULL ||
             curl_easy_setopt(curl, CURLOPT_HTTPHEADER, post_headers) != CURLE_OK) {
             curl_slist_free_all(post_headers);
@@ -816,12 +816,12 @@ static int _http_request(char *url, PHTTP_DATA data, const char *pin,
 }
 
 int http_request(char *url, PHTTP_DATA data) {
-    return _http_request(url, data, NULL, NULL, 0);
+    return _http_request(url, data, NULL, NULL, 0, NULL);
 }
 
 int http_request_pinned(char *url, PHTTP_DATA data, const char *public_key_pin) {
     if (public_key_pin == NULL) return GS_FAILED;
-    return _http_request(url, data, public_key_pin, NULL, 0);
+    return _http_request(url, data, public_key_pin, NULL, 0, NULL);
 }
 
 int http_request_post_pinned(char *url, PHTTP_DATA data,
@@ -829,7 +829,12 @@ int http_request_post_pinned(char *url, PHTTP_DATA data,
                              size_t body_size) {
     if (public_key_pin == NULL || body == NULL || body_size == 0 ||
         body_size > 256U * 1024U) return GS_FAILED;
-    return _http_request(url, data, public_key_pin, body, body_size);
+    return _http_request(url, data, public_key_pin, body, body_size, NULL);
+}
+
+int http_request_post_raw_pinned(char *url, PHTTP_DATA data, const char *pin, const char *body, size_t size) {
+    if (!pin || !body || size == 0 || size > 240U * 1024U) return GS_FAILED;
+    return _http_request(url, data, pin, body, size, "Content-Type: application/octet-stream");
 }
 
 void http_cleanup() {

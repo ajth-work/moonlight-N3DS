@@ -484,6 +484,15 @@ int gs_request_pinned(PSERVER_DATA server, char *url, PHTTP_DATA data,
       : http_request_pinned(url, data, pin);
 }
 
+int gs_request_pinned_raw(PSERVER_DATA server, char *url, PHTTP_DATA data, const char *body, size_t size) {
+  char expected_prefix[1024], pin[53];
+  if (!server || !server->paired || !server->serverInfo.address || !url || !data || !body || size == 0 || size > 240U * 1024U) return GS_FAILED;
+  int length = snprintf(expected_prefix, sizeof(expected_prefix), "https://%s:%u/", server->serverInfo.address, server->httpsPort);
+  if (length < 0 || (size_t)length >= sizeof(expected_prefix) || strncmp(url, expected_prefix, (size_t)length) != 0 ||
+      !host_pin_store_load(server->serverInfo.address, server->httpPort, pin, sizeof(pin))) return GS_FAILED;
+  return http_request_post_raw_pinned(url, data, pin, body, size);
+}
+
 int gs_pair(PSERVER_DATA server, char* pin) {
   int ret = GS_OK;
   char* result = NULL;

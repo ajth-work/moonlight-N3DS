@@ -15,7 +15,7 @@ int main() {
     setenv("TZ", "America/Los_Angeles", 1);
     tzset();
     assert(DiagnosticInventory::format_local_timestamp("2026-01-01T00:30:00Z") ==
-           "2025-12-31 16:30:00 -0800");
+           "12/31 04:30 PM");
     assert(DiagnosticInventory::format_local_timestamp("bad") == "unknown");
 
     Entry missing;

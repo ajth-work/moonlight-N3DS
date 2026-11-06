@@ -56,6 +56,7 @@ void gs_free_display_list(PDISPLAY_INFO display_list);
 int gs_unpair(PSERVER_DATA server);
 int gs_request_pinned(PSERVER_DATA server, char *url, PHTTP_DATA data,
                       const char *request_body, size_t body_size);
+int gs_request_pinned_raw(PSERVER_DATA server, char *url, PHTTP_DATA data, const char *body, size_t size);
 int gs_pair(PSERVER_DATA server, char* pin);
 int gs_quit_app(PSERVER_DATA server);
 

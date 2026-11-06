@@ -11,7 +11,7 @@ extern "C" {
 #endif
 
 #define DIAG_WATCHDOG_LIMIT_MS 30000ULL
-#define DIAG_BUILD_VERSION "3.6.0-gui23.9.2-diag"
+#define DIAG_BUILD_VERSION "3.6.0-gui23.10-diag"
 #define DIAG_MAIN_STACK_REQUESTED_SIZE 0x40000U
 /* app.rsf SystemControlInfo.StackSize */
 #define DIAG_LOG_LINE_MAX 512
@@ -41,7 +41,14 @@ typedef struct {
     unsigned long long source_bytes;
     unsigned long long filtered_bytes;
     unsigned long long request_bytes;
+    bool truncated;
+    bool transfer_complete;
+    bool recording_complete;
+    unsigned int protocol_version;
 } DIAG_UPLOAD_INFO;
+
+void diag_upload_wire_progress(unsigned long long sent, unsigned long long total);
+void diag_upload_wire_snapshot(unsigned long long *sent, unsigned long long *total);
 
 typedef struct {
     uint32_t decoded_frames;

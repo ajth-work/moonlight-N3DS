@@ -21,6 +21,8 @@
 #include "config.hpp"
 #include "diagnostics.h"
 #include "diagnostic_inventory.hpp"
+#include "diagnostic_transfer_client.hpp"
+#include <sys/stat.h>
 #include "input/n3ds_input.hpp"
 #include "input/touch/TouchHandler.hpp"
 #include "system/AtomicVar.hpp"
@@ -394,6 +396,10 @@ static bool run_gui_menu(const std::string &title, const std::string &context,
     return true;
 }
 
+static std::vector<DiagnosticInventory::Entry> log_inventory_cache;
+static size_t log_inventory_cache_count = 0;
+static time_t log_inventory_cache_at = 0, log_inventory_root_time = 0, log_inventory_sessions_time = 0;
+
 class CheckLogsScreen : public MoonlightUi::DualScreenModel {
   public:
     enum class Result { Back, Send };
@@ -491,8 +497,22 @@ class CheckLogsScreen : public MoonlightUi::DualScreenModel {
 
     bool update(bool *redraw) override {
         *redraw = false;
+        if (loaded_ && (hidKeysDown() & KEY_X)) { loaded_ = false; log_inventory_cache_at = 0; }
         if (loaded_) return true;
-        entries_ = DiagnosticInventory::list("sdmc:/3ds/moonlight", 64, &total_count_);
+        struct stat root_stat{}, sessions_stat{};
+        stat("sdmc:/3ds/moonlight", &root_stat);
+        stat("sdmc:/3ds/moonlight/sessions", &sessions_stat);
+        const time_t now = time(NULL);
+        if (log_inventory_cache_at && now - log_inventory_cache_at < 30 &&
+            log_inventory_root_time == root_stat.st_mtime &&
+            log_inventory_sessions_time == sessions_stat.st_mtime) {
+            entries_ = log_inventory_cache; total_count_ = log_inventory_cache_count;
+        } else {
+            entries_ = DiagnosticInventory::list("sdmc:/3ds/moonlight", 64, &total_count_);
+            log_inventory_cache = entries_; log_inventory_cache_count = total_count_;
+            log_inventory_cache_at = now; log_inventory_root_time = root_stat.st_mtime;
+            log_inventory_sessions_time = sessions_stat.st_mtime;
+        }
         loaded_ = true;
         *redraw = true;
         return true;
@@ -608,7 +628,8 @@ class CheckLogsScreen : public MoonlightUi::DualScreenModel {
     }
 
     static std::string upload_status(const DiagnosticInventory::Entry &e) {
-        if (e.upload_state == "accepted") return "accepted by Sunshine";
+        if (e.upload_state == "accepted") return e.partial == "yes" ? "accepted · partial history" : "accepted by Sunshine";
+        if (e.upload_state == "paused") return "paused · send to resume";
         if (e.upload_state == "failed") return "last attempt failed";
         if (e.upload_state == "uncertain") return "attempt outcome unknown";
         return "no send attempt in log";
@@ -623,7 +644,7 @@ class CheckLogsScreen : public MoonlightUi::DualScreenModel {
 
     static MoonlightUi::Color status_color(const DiagnosticInventory::Entry &e) {
         if (e.app_state) return {105, 114, 122};
-        if (e.upload_state == "accepted") return {47, 151, 91};
+        if (e.upload_state == "accepted") return e.partial == "yes" ? MoonlightUi::Color{218, 143, 30} : MoonlightUi::Color{47, 151, 91};
         if (e.upload_state == "failed" || e.upload_state == "uncertain")
             return {218, 143, 30};
         return {194, 55, 61};
@@ -738,22 +759,22 @@ static void send_inventory_log(PSERVER_DATA server,
     const bool sent = upload_session(server, session, "manual_current_host",
                                      &upload_info);
     if (entry.filename == "moonlight.log") {
-        diag_log("DIAG_UPLOAD", "scope=host session_id=%s upload_id=%s state=%s truncated=false source_bytes=%llu filtered_bytes=%llu request_bytes=%llu",
+        diag_log("DIAG_UPLOAD", "scope=host session_id=%s upload_id=%s state=%s truncated=%s source_bytes=%llu filtered_bytes=%llu request_bytes=%llu",
                  session.id, upload_info.upload_id, sent ? "accepted" : "failed",
-                 upload_info.source_bytes, upload_info.filtered_bytes,
+                 upload_info.truncated ? "true" : "false", upload_info.source_bytes, upload_info.filtered_bytes,
                  upload_info.request_bytes);
     } else {
         diag_session_record_upload(&session, sent, &upload_info);
     }
     const bool pin_available = upload_pin_available(server);
     show_gui_message(sent ? "LOG SENT" : (pin_available ? "LOG TRANSFER FAILED" : "UPLOAD TRUST NEEDS REPAIR"),
-                     sent ? "Sunshine accepted the selected log." :
+                     sent ? (upload_info.recording_complete ? "Sunshine verified the full recording." : "Retained log accepted; history is partial.") :
                          (pin_available ? "The log remains saved on the SD card." :
                                           "The log remains saved locally; no host pin is stored."),
                      sent ? "The local copy is still available in Check Logs." :
                          (pin_available ? "Check host pairing, the saved pin, and host reachability." :
                                           "Choose Repair Upload Trust, then send this log again."),
-                     sent ? "UPLOAD ACCEPTED" : "LOG NOT SENT");
+                     sent ? (upload_info.recording_complete ? "FULL RECORDING ACCEPTED" : "PARTIAL HISTORY ACCEPTED") : "PAUSED OR NOT SENT");
 }
 
 static void show_check_logs(PSERVER_DATA server) {
@@ -1879,7 +1900,7 @@ static bool build_upload_json(const DIAG_SESSION &session, const char *outcome,
     input.seekg(0, std::ios::beg);
     if (!input) return false;
     std::string content, line;
-    bool truncated = false;
+    bool truncated = true; // v1 snapshot cannot attest full recording history.
     constexpr size_t content_limit = 240 * 1024;
     while (std::getline(input, line)) {
         line.push_back('\n');
@@ -1933,7 +1954,12 @@ static bool build_upload_json(const DIAG_SESSION &session, const char *outcome,
         ",\"content\":" + json_quote(content) + "}";
     if (body.size() > 256 * 1024) return false;
     if (upload_info != NULL)
+        {
         upload_info->request_bytes = static_cast<unsigned long long>(body.size());
+        upload_info->protocol_version = 1;
+        upload_info->truncated = true; // v1 cannot attest a complete segmented recording.
+        upload_info->recording_complete = false;
+    }
     return true;
 }
 
@@ -1970,7 +1996,7 @@ static void log_upload_attempt(unsigned int attempt, int result,
              response_summary);
 }
 
-static bool upload_session(PSERVER_DATA server, const DIAG_SESSION &session,
+static bool upload_session_legacy(PSERVER_DATA server, const DIAG_SESSION &session,
                            const char *outcome, DIAG_UPLOAD_INFO *upload_info) {
     if (server == NULL || !server->paired) return false;
     if (!upload_pin_available(server)) {
@@ -2002,6 +2028,154 @@ static bool upload_session(PSERVER_DATA server, const DIAG_SESSION &session,
     return result == GS_OK;
 }
 
+struct LogUploadTask {
+    PSERVER_DATA server;
+    DIAG_SESSION session;
+    const char *outcome;
+    DIAG_UPLOAD_INFO info{};
+    AtomicVar<bool> done{false};
+    LightLock lock;
+    DiagnosticTransfer::Progress progress;
+    DiagnosticTransfer::Result result;
+    bool accepted = false;
+};
+
+static void log_upload_entry(void *context) {
+    auto &task = *static_cast<LogUploadTask *>(context);
+    try {
+        DiagnosticTransfer::Capture capture;
+        capture.path = task.session.path;
+        capture.session_id = make_sunshine_session_id("active-session", task.session.id,
+                                                     task.session.begin_epoch);
+        capture.build = DIAG_BUILD_VERSION;
+        capture.begin = task.session.begin_epoch;
+        capture.end = task.session.end_epoch;
+        const std::string origin = "https://" + std::string(task.server->serverInfo.address) +
+                                   ":" + std::to_string(task.server->httpsPort);
+        http_set_timeout_s(30);
+        auto notify = [&task](const DiagnosticTransfer::Progress &progress) {
+            LightLock_Lock(&task.lock);
+            task.progress = progress;
+            LightLock_Unlock(&task.lock);
+        };
+        auto transport = [&task, &origin](const std::string &path, const std::string &body,
+                                         bool binary) {
+            DiagnosticTransfer::Response reply;
+            PHTTP_DATA response = http_create_data();
+            if (!response) return reply;
+            http_set_response_limit(response, DIAG_UPLOAD_RESPONSE_BODY_LIMIT);
+            diag_upload_wire_progress(0, body.size());
+            auto url = origin + path;
+            const int status = binary ?
+                gs_request_pinned_raw(task.server, url.data(), response, body.data(), body.size()) :
+                gs_request_pinned(task.server, url.data(), response, body.data(), body.size());
+            reply.transport_ok = status == GS_OK && !response->response_truncated;
+            reply.status = response->response_code;
+            if (response->memory && !response->response_truncated)
+                reply.body.assign(response->memory, response->size);
+            http_free_data(response);
+            return reply;
+        };
+        task.result = DiagnosticTransfer::upload(capture, transport, notify,
+                                                 [] { return diag_cancel_requested(); });
+        if (task.result.unsupported && !diag_cancel_requested()) {
+            DiagnosticTransfer::Progress legacy;
+            legacy.phase = "Legacy host: partial log only";
+            notify(legacy);
+            task.accepted = upload_session_legacy(task.server, task.session, task.outcome, &task.info);
+        } else {
+            task.accepted = task.result.accepted;
+            snprintf(task.info.upload_id, sizeof(task.info.upload_id), "%s", task.result.capture_id.c_str());
+            task.info.source_bytes = task.result.source_bytes;
+            task.info.filtered_bytes = task.result.content_bytes;
+            task.info.request_bytes = task.result.request_bytes;
+            task.info.protocol_version = 2;
+            task.info.transfer_complete = task.result.accepted;
+            task.info.recording_complete = task.result.complete;
+            task.info.truncated = !task.result.complete;
+        }
+    } catch (const std::exception &error) {
+        task.result.error = error.what();
+    }
+    http_set_timeout_s(60);
+    task.done.store(true);
+}
+
+class LogUploadScreen : public MoonlightUi::DualScreenModel {
+  public:
+    explicit LogUploadScreen(LogUploadTask &task) : task_(task) {}
+    void draw(MoonlightUi::Screen &top, MoonlightUi::Screen &bottom) override {
+        LightLock_Lock(&task_.lock);
+        const auto p = task_.progress;
+        LightLock_Unlock(&task_.lock);
+        top.drawHeader("SEND LOG", cancelling_ ? "PAUSING TRANSFER" : "PINNED HTTPS TO SUNSHINE");
+        top.drawAutoRateText(22, 78, p.phase.empty() ? "Starting upload worker..." : p.phase,
+                            top.width() - 44, {38, 43, 48});
+        const unsigned percent = p.total ? static_cast<unsigned>(std::min<uint64_t>(100,
+                                             p.acknowledged * 100 / p.total)) : 0;
+        top.drawProgressBar({22, 111, top.width() - 22, 134}, percent, {0, 137, 153});
+        top.drawAutoRateText(22, 149, "Host confirmed: " + std::to_string(p.acknowledged / 1024) +
+                            " / " + std::to_string(p.total / 1024) + " KiB", top.width() - 44, {38, 43, 48});
+        top.drawAutoRateText(22, 178, "Part " + std::to_string(p.part) + " of " +
+                            std::to_string(p.parts), top.width() - 44, {105, 114, 122});
+        top.drawFooter(DIAG_BUILD_VERSION, "B PAUSE Â· RETRY IN CHECK LOGS");
+        bottom.drawHeader("TRANSFER PROGRESS", "LOCAL SD â†’ YOUR PAIRED PC");
+        bottom.drawAutoRateText(18, 68, "Prepared SD data: " + std::to_string(p.prepared / 1024) +
+                               " / " + std::to_string(p.source / 1024) + " KiB", bottom.width() - 36, {38, 43, 48});
+        unsigned long long sent = 0, total = 0;
+        diag_upload_wire_snapshot(&sent, &total);
+        bottom.drawAutoRateText(18, 100, "Current request: " + std::to_string(sent) +
+                               " / " + std::to_string(total) + " B", bottom.width() - 36, {38, 43, 48});
+        bottom.drawProgressBar({18, 127, bottom.width() - 18, 145},
+            total ? static_cast<unsigned>(std::min<unsigned long long>(100, sent * 100 / total)) : 0,
+            {0, 137, 153});
+        bottom.drawAutoRateText(18, 162, cancelling_ ? "Waiting for the current request to stop..." :
+            "Final verification follows the last part.", bottom.width() - 36, {105, 114, 122});
+        bottom.drawAutoRateText(18, 188, "Local logs remain on your SD card.", bottom.width() - 36, {105, 114, 122});
+        bottom.drawFooter(DIAG_BUILD_VERSION, "B PAUSE Â· LOCAL COPY RETAINED");
+    }
+    bool update(bool *redraw) override { *redraw = ++frames_ % 6 == 0; return !task_.done.load(); }
+    bool handleInput(const MoonlightUi::InputEvent &event, bool *redraw) override {
+        *redraw = false;
+        if (event.type == MoonlightUi::InputEvent::Type::Back) {
+            cancelling_ = true; diag_request_cancel(); *redraw = true;
+        }
+        return true;
+    }
+  private:
+    LogUploadTask &task_;
+    unsigned frames_ = 0;
+    bool cancelling_ = false;
+};
+
+static bool upload_session(PSERVER_DATA server, const DIAG_SESSION &session,
+                           const char *outcome, DIAG_UPLOAD_INFO *upload_info) {
+    if (!server || !server->paired || !upload_pin_available(server)) return false;
+    LogUploadTask task;
+    task.server = server; task.session = session; task.outcome = outcome;
+    LightLock_Init(&task.lock);
+    diag_cancel_reset();
+    s32 priority = 0x30;
+    svcGetThreadPriority(&priority, CUR_THREAD_HANDLE);
+    Thread worker = threadCreate(log_upload_entry, &task, 0x20000, priority, -1, false);
+    if (!worker) { diag_log("DIAG_UPLOAD_ERROR", "reason=worker_unavailable"); return false; }
+    LogUploadScreen screen(task);
+    if (!MoonlightUi::runDualScreen(screen) && !task.done.load()) diag_request_cancel();
+    threadJoin(worker, 0xFFFFFFFFFFFFFFFFULL);
+    threadFree(worker);
+    restore_consoles_after_dual_screen_ui();
+    log_inventory_cache_at = 0;
+    if (upload_info) *upload_info = task.info;
+    diag_log("DIAG_TRANSFER_RESULT",
+        "protocol=%u capture_id=%s transfer_complete=%s recording_complete=%s source_bytes=%llu content_bytes=%llu cancelled=%s error=%s",
+        task.info.protocol_version, task.info.upload_id, task.accepted ? "true" : "false",
+        task.info.recording_complete ? "true" : "false", task.info.source_bytes,
+        task.info.filtered_bytes, task.result.cancelled ? "true" : "false", task.result.error.c_str());
+    diag_cancel_reset();
+    return task.accepted;
+}
+
+
 static void finish_session(PSERVER_DATA server, const char *outcome,
                            const char *reason) {
     DIAG_SESSION session{};
@@ -2012,11 +2186,11 @@ static void finish_session(PSERVER_DATA server, const char *outcome,
     const bool sent = upload_session(server, session, outcome, &upload_info);
     diag_session_record_upload(&session, sent, &upload_info);
     show_gui_message(sent ? "LOGS SENT" : "LOG UPLOAD FAILED",
-                     sent ? "Sunshine acknowledged this session's diagnostics."
+                     sent ? (upload_info.recording_complete ? "Sunshine verified the full recording." : "Retained log accepted; history is partial.")
                           : "The session log remains saved on the SD card.",
                      sent ? "The local copy is still available in Check Logs."
                           : "See DIAG_UPLOAD_ATTEMPT in Check Logs.",
-                     sent ? "UPLOAD ACCEPTED" : "LOG NOT SENT");
+                     sent ? (upload_info.recording_complete ? "FULL RECORDING ACCEPTED" : "PARTIAL HISTORY ACCEPTED") : "PAUSED OR NOT SENT");
 }
 
 static void send_current_session(PSERVER_DATA server) {
@@ -2038,11 +2212,11 @@ static void send_current_session(PSERVER_DATA server) {
     const bool sent = upload_session(server, session, "manual_send", &upload_info);
     diag_session_record_upload(&session, sent, &upload_info);
     show_gui_message(sent ? "LOGS SENT" : "LOG UPLOAD FAILED",
-                     sent ? "Sunshine acknowledged this session's diagnostics."
+                     sent ? (upload_info.recording_complete ? "Sunshine verified the full recording." : "Retained log accepted; history is partial.")
                           : "The session log remains saved on the SD card.",
                      sent ? "The local copy is still available in Check Logs."
                           : "See DIAG_UPLOAD_ATTEMPT in Check Logs.",
-                     sent ? "UPLOAD ACCEPTED" : "LOG NOT SENT");
+                     sent ? (upload_info.recording_complete ? "FULL RECORDING ACCEPTED" : "PARTIAL HISTORY ACCEPTED") : "PAUSED OR NOT SENT");
 }
 
 static void toggle_automatic_upload(PSERVER_DATA server) {

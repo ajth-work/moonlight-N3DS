@@ -1,4 +1,5 @@
 #include "diagnostic_inventory.hpp"
+#include "diagnostic_transfer_client.hpp"
 
 #include <algorithm>
 #include <cstdio>
@@ -184,7 +185,7 @@ void scan_upload_state(const std::string &path, Entry &entry,
                 receipt.session = session;
                 (*receipts)[session] = receipt;
             }
-            parse_line(entry, line);
+            if (receipts == NULL) parse_line(entry, line);
         }
     }
     fclose(f);
@@ -197,7 +198,7 @@ void add_directory(const std::string &path, std::vector<Entry> &out,
     if (!dir) return;
     struct dirent *item;
     while ((item = readdir(dir)) != NULL) {
-        if (item->d_name[0] == '.') continue;
+        if (item->d_name[0] == '.' || DiagnosticTransfer::is_sidecar(item->d_name)) continue;
         const std::string full = path + "/" + item->d_name;
         struct stat st;
         if (lstat(full.c_str(), &st) != 0 || !S_ISREG(st.st_mode)) continue;
@@ -215,8 +216,39 @@ void add_directory(const std::string &path, std::vector<Entry> &out,
          * misattribute its last session's facts to the whole file. */
         if (e.filename == "moonlight.log") scan_upload_state(full, e, receipts);
         else if (!e.app_state) {
-            scan_file(full, e);
-            scan_upload_state(full, e);
+            const auto meta = DiagnosticTransfer::read_meta(full + ".meta");
+            if (meta.count("version") && meta.at("version") == "2") {
+                const auto count = [&meta](const char *key) -> unsigned long long {
+                    const auto it = meta.find(key);
+                    return it == meta.end() ? 0 : strtoull(it->second.c_str(), NULL, 10);
+                };
+                e.start_epoch = count("begin"); e.end_epoch = count("end");
+                e.start_local = format_epoch_local(e.start_epoch);
+                if (e.end_epoch) e.end_local = format_epoch_local(e.end_epoch);
+                e.has_stream = count("stream") != 0;
+                e.scope = e.has_stream ? "stream" : "connection";
+                e.size = count("bytes");
+                e.session = item->d_name;
+                if (e.session.rfind("session-", 0) == 0 && e.session.size() > 12)
+                    e.session = e.session.substr(8, e.session.size() - 12);
+                e.partial = count("active") || count("gaps") ? "yes" : "no";
+                if (e.end_epoch >= e.start_epoch && e.end_epoch)
+                    e.duration = std::to_string(e.end_epoch - e.start_epoch) + " s";
+                const auto receipt = DiagnosticTransfer::read_meta(full + ".receipt");
+                const auto field = [&receipt](const char *key) {
+                    const auto it = receipt.find(key);
+                    return it == receipt.end() ? std::string() : it->second;
+                };
+                if (!field("state").empty()) {
+                    e.upload_state = field("state"); e.upload_id = field("capture");
+                    e.upload_source_bytes = strtoull(field("source_bytes").c_str(), NULL, 10);
+                    e.upload_filtered_bytes = strtoull(field("content_bytes").c_str(), NULL, 10);
+                    if (field("recording_complete") != "1") e.partial = "yes";
+                }
+            } else {
+                scan_file(full, e);
+                scan_upload_state(full, e);
+            }
         }
         if (e.start_local != "unknown" && e.end_local == "unknown") {
             e.completion = "interrupted/incomplete";
@@ -230,7 +262,7 @@ void add_directory(const std::string &path, std::vector<Entry> &out,
                 if (tb >= ta) e.duration = std::to_string((long long)(tb - ta)) + " s";
             }
         }
-        if (e.start_local != "unknown") e.start_local = format_local_timestamp(e.start_local);
+        if (e.start_local.find('T') != std::string::npos) e.start_local = format_local_timestamp(e.start_local);
         if (e.end_local != "unknown" && e.end_local.find('T') != std::string::npos)
             e.end_local = format_local_timestamp(e.end_local);
         out.push_back(e);
@@ -324,7 +356,7 @@ std::vector<Entry> list(const std::string &root, size_t limit,
         Entry &entry = entries[i];
         const std::map<std::string, Entry>::const_iterator receipt =
             receipts.find(entry.session);
-        if (entry.session == "unknown" || receipt == receipts.end()) continue;
+        if (entry.session == "unknown" || receipt == receipts.end() || !entry.upload_id.empty()) continue;
         entry.upload_state = receipt->second.upload_state;
         entry.upload_id = receipt->second.upload_id;
         entry.upload_source_bytes = receipt->second.upload_source_bytes;
