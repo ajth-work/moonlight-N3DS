@@ -47,6 +47,8 @@ static char diag_session_id[48];
 static char diag_session_path[128];
 static unsigned long long diag_session_begin_epoch;
 static size_t diag_session_bytes;
+static unsigned long long diag_session_retained_bytes;
+static unsigned long long diag_session_tail_bytes;
 static bool diag_session_capped;
 static unsigned int diag_session_part;
 static bool diag_session_stream;
@@ -507,7 +509,7 @@ static void session_write_meta(bool ended) {
     fprintf(file, "version=2\nbegin=%llu\nend=%llu\nactive=%d\ngaps=%d\nstream=%d\npart=%u\nbytes=%llu\n",
             diag_session_begin_epoch, ended ? (unsigned long long)time(NULL) : 0,
             !ended, diag_session_capped, diag_session_stream, diag_session_part,
-            diag_spool_retained_size(diag_session_path));
+            diag_session_retained_bytes);
     const bool ok = fflush(file) == 0 && fsync(fileno(file)) == 0;
     fclose(file);
     if (ok) rename(temporary, path); else unlink(temporary);
@@ -518,6 +520,12 @@ static bool session_rotate(void) {
     const unsigned int next = diag_session_part + 1;
     if (next > DIAG_SESSION_PARTS) {
         snprintf(path, sizeof(path), "%s.p%08u", diag_session_path, next - DIAG_SESSION_PARTS);
+        struct stat old_part;
+        if (stat(path, &old_part) == 0 && old_part.st_size > 0) {
+            const unsigned long long old_size = (unsigned long long)old_part.st_size;
+            diag_session_retained_bytes = diag_session_retained_bytes > old_size
+                ? diag_session_retained_bytes - old_size : 0;
+        }
         unlink(path);
         diag_session_capped = true;
     }
@@ -539,7 +547,14 @@ static void session_critical_write(void) {
         fclose(file); file = fopen(path, "w"); if (!file) return;
         for (unsigned int i = 0; i < diag_session_tail_count; ++i) fprintf(file, "%s\n", diag_session_tail[i]);
     } else fprintf(file, "%s\n", diag_line);
-    fflush(file); fsync(fileno(file)); fclose(file);
+    fflush(file); fsync(fileno(file));
+    const long new_tail_size = ftell(file);
+    fclose(file);
+    if (new_tail_size >= 0) {
+        diag_session_retained_bytes -= diag_session_tail_bytes;
+        diag_session_tail_bytes = (unsigned long long)new_tail_size;
+        diag_session_retained_bytes += diag_session_tail_bytes;
+    }
     session_write_meta(false);
 }
 static void prepare_log_mirror(void) {
@@ -609,6 +624,7 @@ void diag_log(const char *event, const char *format, ...) {
             session_write_failed = true;
             } else {
                 diag_session_bytes += line_bytes;
+                diag_session_retained_bytes += line_bytes;
             }
         } else {
             if (!diag_session_capped) { diag_session_capped = true; session_write_meta(false); }
@@ -619,16 +635,40 @@ void diag_log(const char *event, const char *format, ...) {
         diag_log("SESSION_SINK_ERROR", "reason=write_or_sync_failed");
 }
 
+bool diag_sdmc_get_free_bytes(unsigned long long *free_bytes) {
+    FS_Archive archive = 0;
+    u64 available = 0;
+    if (free_bytes == NULL) return false;
+    *free_bytes = 0;
+    Result result = FSUSER_OpenArchive(&archive, ARCHIVE_SDMC,
+                                       fsMakePath(PATH_EMPTY, ""));
+    if (R_FAILED(result)) return false;
+    result = FSUSER_GetFreeBytes(&available, archive);
+    FSUSER_CloseArchive(archive);
+    if (R_FAILED(result)) return false;
+    *free_bytes = (unsigned long long)available;
+    return true;
+}
+
 bool diag_session_begin(void) {
     char path[128];
     int fd = -1;
     unsigned int attempt;
+    unsigned long long free_bytes = 0;
+    const unsigned long long minimum_bytes = DIAG_CRITICAL_BYTES + 8192;
+    const unsigned long long preferred_bytes = DIAG_SESSION_MAX_BYTES + minimum_bytes;
     if (!diag_is_enabled()) return false;
-    if (!diag_spool_allow_growth(DIAG_SESSION_DIR "/session-budget.log", DIAG_CRITICAL_BYTES + 8192)) {
+    const bool free_bytes_known = diag_sdmc_get_free_bytes(&free_bytes);
+    diag_log("SESSION_STORAGE_CHECK",
+             "source=sdmc_free_bytes known=%s free_bytes=%llu minimum_bytes=%llu preferred_bytes=%llu",
+             free_bytes_known ? "true" : "false", free_bytes, minimum_bytes,
+             preferred_bytes);
+    if (free_bytes_known && free_bytes < minimum_bytes) {
         diag_storage_pressure = true;
-        diag_log("STORAGE_PRESSURE", "new_recording=false reason=local_log_budget_full preserve_unsent=true");
+        diag_log("STORAGE_PRESSURE", "new_recording=false reason=sdmc_free_space_below_critical_reserve preserve_unsent=true");
         return false;
     }
+    diag_storage_pressure = free_bytes_known && free_bytes < preferred_bytes;
     LightLock_Lock(&diag_lock);
     if (diag_session_file != NULL) {
         LightLock_Unlock(&diag_lock);
@@ -656,7 +696,9 @@ bool diag_session_begin(void) {
         snprintf(diag_session_path, sizeof(diag_session_path), "%s", path);
         diag_session_begin_epoch = (unsigned long long)time(NULL);
         diag_session_bytes = 0;
-        diag_storage_pressure = !diag_spool_allow_growth(path, DIAG_SESSION_MAX_BYTES + DIAG_CRITICAL_BYTES + 8192);
+        diag_session_retained_bytes = 0;
+        diag_session_tail_bytes = 0;
+        diag_storage_pressure = free_bytes_known && free_bytes < preferred_bytes;
         diag_session_capped = diag_storage_pressure;
         diag_record_sequence = 0;
         diag_session_part = 0;
@@ -671,7 +713,7 @@ bool diag_session_begin(void) {
         return false;
     }
     diag_log("SESSION_BEGIN", "scope=connection session_id=%s", diag_session_id);
-    if (diag_storage_pressure) diag_log("STORAGE_PRESSURE", "routine_paused=true critical_only=true reason=local_log_budget_exhausted");
+    if (diag_storage_pressure) diag_log("STORAGE_PRESSURE", "routine_paused=true critical_only=true reason=sdmc_free_space_below_session_reserve");
     diag_log("SESSION_PHASE", "name=host_contact session_id=%s", diag_session_id);
     return true;
 }

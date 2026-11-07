@@ -11,7 +11,7 @@ extern "C" {
 #endif
 
 #define DIAG_WATCHDOG_LIMIT_MS 30000ULL
-#define DIAG_BUILD_VERSION "3.6.0-gui23.11-diag"
+#define DIAG_BUILD_VERSION "3.6.0-gui23.12-diag"
 #define DIAG_MAIN_STACK_REQUESTED_SIZE 0x40000U
 /* app.rsf SystemControlInfo.StackSize */
 #define DIAG_LOG_LINE_MAX 512
@@ -65,6 +65,7 @@ void diag_close(void);
 void diag_set_enabled(bool enabled);
 bool diag_is_enabled(void);
 bool diag_session_begin(void);
+bool diag_sdmc_get_free_bytes(unsigned long long *free_bytes);
 void diag_session_end(const char *outcome, const char *reason);
 bool diag_session_available(void);
 bool diag_session_get_info(DIAG_SESSION *session);

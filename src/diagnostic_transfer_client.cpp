@@ -1,5 +1,6 @@
 #include "diagnostic_transfer_client.hpp"
 #include "diagnostic_spool.h"
+#include "diagnostics.h"
 
 #include <algorithm>
 #include <array>
@@ -9,6 +10,7 @@
 #include <cstring>
 #include <dirent.h>
 #include <fstream>
+#include <functional>
 #include <iomanip>
 #include <memory>
 #include <sstream>
@@ -34,6 +36,8 @@ struct Frozen {
     std::string build;
     uint64_t begin = 0, end = 0;
 };
+using LocalProgress = std::function<void(const std::string &, uint64_t,
+                                         uint64_t, uint64_t)>;
 uint64_t size_of(const std::string &path) {
     struct stat st;
     return lstat(path.c_str(), &st) == 0 && S_ISREG(st.st_mode) && st.st_size >= 0
@@ -135,26 +139,67 @@ bool allowed_source(const std::string &base, const std::string &source) {
         return false;
     return source.substr(base.size() + 1).find_first_of("/\\") == std::string::npos;
 }
-std::vector<std::string> parts(const std::string &base) {
+std::vector<std::string> parts(const std::string &base, bool managed,
+                               uint64_t expected_parts, const Cancel &cancel,
+                               const LocalProgress &report,
+                               uint64_t *entries_checked,
+                               uint64_t *retained_bytes) {
     std::vector<std::string> paths;
     const auto directory = dirname(base), prefix = basename(base) + ".p";
+    uint64_t checked = 0, retained = 0;
+    if (managed) {
+        const uint64_t first = expected_parts > 29 ? expected_parts - 28 : 1;
+        for (uint64_t part = first; part <= expected_parts && expected_parts != 0; ++part) {
+            if (cancel())
+                throw std::runtime_error("Cancelled");
+            char suffix[24];
+            snprintf(suffix, sizeof(suffix), ".p%08llu",
+                     static_cast<unsigned long long>(part));
+            const auto path = base + suffix;
+            ++checked;
+            const auto size = size_of(path);
+            if (size) {
+                paths.push_back(path);
+                retained += size;
+            }
+            if (report)
+                report("Checking saved log segments", checked, retained, 0);
+        }
+        if (entries_checked) *entries_checked = checked;
+        if (retained_bytes) *retained_bytes = retained;
+        return paths;
+    }
     DIR *dir = opendir(directory.c_str());
     if (!dir)
         return paths;
     while (auto *entry = readdir(dir)) {
+        if (cancel()) {
+            closedir(dir);
+            throw std::runtime_error("Cancelled");
+        }
         const std::string name = entry->d_name;
         if (name.size() == prefix.size() + 8 && name.compare(0, prefix.size(), prefix) == 0 &&
             std::all_of(name.begin() + prefix.size(), name.end(),
                         [](unsigned char c) { return c >= '0' && c <= '9'; }) &&
-            exists(directory + "/" + name))
-            paths.push_back(directory + "/" + name);
+            exists(directory + "/" + name)) {
+            const auto path = directory + "/" + name;
+            paths.push_back(path);
+            retained += size_of(path);
+        }
+        if (++checked % 8 == 0 && report)
+            report("Checking saved log segments", checked, retained, 0);
     }
     closedir(dir);
     std::sort(paths.begin(), paths.end());
+    if (entries_checked) *entries_checked = checked;
+    if (retained_bytes) *retained_bytes = retained;
+    if (report)
+        report("Checking saved log segments", checked, retained, 0);
     return paths;
 }
 void copy_prefix(const std::string &source, const std::string &dest, uint64_t bytes,
-                 const Cancel &cancel) {
+                 const Cancel &cancel,
+                 const std::function<void(uint64_t)> &copied) {
     FILE *in = fopen(source.c_str(), "rb"), *out = fopen((dest + ".tmp").c_str(), "wb");
     if (!in || !out) {
         if (in)
@@ -165,6 +210,8 @@ void copy_prefix(const std::string &source, const std::string &dest, uint64_t by
     }
     std::array<char, 16384> buffer;
     try {
+        const uint64_t total_bytes = bytes;
+        uint64_t copied_bytes = 0;
         while (bytes) {
             if (cancel())
                 throw std::runtime_error("Cancelled");
@@ -172,6 +219,9 @@ void copy_prefix(const std::string &source, const std::string &dest, uint64_t by
             if (fread(buffer.data(), 1, n, in) != n || fwrite(buffer.data(), 1, n, out) != n)
                 throw std::runtime_error("SD snapshot incomplete");
             bytes -= n;
+            copied_bytes += n;
+            if (copied && (copied_bytes == total_bytes || copied_bytes % (64 * 1024) < n))
+                copied(copied_bytes);
         }
         durable(out);
         fclose(in);
@@ -189,9 +239,11 @@ void copy_prefix(const std::string &source, const std::string &dest, uint64_t by
         throw;
     }
 }
-Frozen freeze(const Capture &c, const Cancel &cancel) {
+Frozen freeze(const Capture &c, const Cancel &cancel,
+              const LocalProgress &report) {
     Frozen f;
     if (exists(c.path + ".capture")) {
+        if (report) report("Checking saved upload snapshot", 0, 0, 0);
         std::ifstream input(c.path + ".capture");
         std::string magic;
         input >> magic >> std::quoted(f.build) >> f.begin >> f.end >> f.complete >> f.unclean;
@@ -199,10 +251,17 @@ Frozen freeze(const Capture &c, const Cancel &cancel) {
             throw std::runtime_error("Invalid pending capture");
         Source s;
         while (input >> std::quoted(s.path) >> s.size) {
+            if (cancel())
+                throw std::runtime_error("Cancelled");
             if (!allowed_source(c.path, s.path) || s.size > SessionLimit ||
                 size_of(s.path) < s.size || f.sources.size() >= 34)
                 throw std::runtime_error("Pending capture source missing");
             f.sources.push_back(s);
+            if (report) {
+                uint64_t retained = 0;
+                for (const auto &source : f.sources) retained += source.size;
+                report("Checking saved upload snapshot", f.sources.size(), retained, 0);
+            }
         }
         if (f.sources.empty())
             throw std::runtime_error("Pending capture empty");
@@ -213,6 +272,7 @@ Frozen freeze(const Capture &c, const Cancel &cancel) {
         SnapshotLock() { diag_session_snapshot_lock(); }
         ~SnapshotLock() { diag_session_snapshot_unlock(); }
     } snapshot_lock;
+    if (report) report("Reading session metadata", 0, 0, 0);
     const auto meta = read_meta(c.path + ".meta");
     atomic_text(c.path + ".pin", "preparing\n");
     const bool managed = meta.count("version") && meta.at("version") == "2";
@@ -223,13 +283,20 @@ Frozen freeze(const Capture &c, const Cancel &cancel) {
     f.end = std::max(c.begin, c.end);
     if (managed && meta.count("end") && meta.at("end") != "0")
         f.end = std::max<uint64_t>(f.begin, std::strtoull(meta.at("end").c_str(), nullptr, 10));
-    auto paths = parts(c.path);
-    if (managed && meta.count("part") &&
-        paths.size() != std::strtoul(meta.at("part").c_str(), nullptr, 10))
+    const uint64_t expected_parts = managed && meta.count("part")
+        ? std::strtoull(meta.at("part").c_str(), nullptr, 10) : 0;
+    uint64_t local_entries = 0, local_retained = 0;
+    auto paths = parts(c.path, managed, expected_parts, cancel, report,
+                       &local_entries, &local_retained);
+    if (report)
+        report("Preparing local session files", local_entries, local_retained, 0);
+    if (managed && meta.count("part") && paths.size() != expected_parts)
         f.complete = false;
     paths.insert(paths.begin(), c.path);
     uint64_t total = 0;
     for (size_t i = 0; i < paths.size(); ++i) {
+        if (cancel())
+            throw std::runtime_error("Cancelled");
         uint64_t bytes = size_of(paths[i]);
         if (!bytes)
             continue;
@@ -241,20 +308,35 @@ Frozen freeze(const Capture &c, const Cancel &cancel) {
             f.complete = false;
             break;
         }
+        ++local_entries;
         if (i + 1 == paths.size()) {
             if (!diag_spool_allow_growth(c.path.c_str(), static_cast<size_t>(bytes)))
                 throw std::runtime_error("SD log storage full");
-            copy_prefix(paths[i], c.path + ".snapshot", bytes, cancel);
+            copy_prefix(paths[i], c.path + ".snapshot", bytes, cancel,
+                        [&](uint64_t copied) {
+                            if (report)
+                                report("Copying local log snapshot", local_entries,
+                                       total + bytes, copied);
+                        });
             f.sources.push_back({c.path + ".snapshot", bytes});
         } else
             f.sources.push_back({paths[i], bytes});
         total += bytes;
+        if (report)
+            report("Preparing local session files", local_entries, total, 0);
     }
+    if (cancel())
+        throw std::runtime_error("Cancelled");
     const auto tail = size_of(c.path + ".tail");
     if (tail && tail <= 64 * 1024) {
         if (!diag_spool_allow_growth(c.path.c_str(), static_cast<size_t>(tail)))
             throw std::runtime_error("SD log storage full");
-        copy_prefix(c.path + ".tail", c.path + ".snapshot-tail", tail, cancel);
+        copy_prefix(c.path + ".tail", c.path + ".snapshot-tail", tail, cancel,
+                    [&](uint64_t copied) {
+                        if (report)
+                            report("Copying critical log tail", local_entries,
+                                   total + tail, copied);
+                    });
         f.sources.push_back({c.path + ".snapshot-tail", tail});
     }
     std::ostringstream out;
@@ -365,12 +447,6 @@ std::map<std::string, std::string> read_meta(const std::string &path) {
 bool is_sidecar(const std::string &name) {
     return name.find(".log.") != std::string::npos || name == ".log-v2" ||
            name == "moonlight.log.1";
-}
-uint64_t retained_size(const std::string &base) {
-    uint64_t total = size_of(base) + size_of(base + ".tail");
-    for (const auto &p : parts(base))
-        total += size_of(p);
-    return total;
 }
 std::map<std::string, std::string> parse_response(const std::string &body) {
     if (body.size() > 1024)
@@ -486,7 +562,15 @@ Result upload(const Capture &capture, const Transport &transport, const Notify &
             throw std::runtime_error("Unsupported host protocol");
         progress.phase = "Preparing local SD log";
         notify(progress);
-        const auto frozen = freeze(capture, cancel);
+        const auto local_report = [&](const std::string &phase, uint64_t entries,
+                                      uint64_t retained, uint64_t copied) {
+            progress.phase = phase;
+            progress.local_entries_checked = entries;
+            progress.local_retained_bytes = retained;
+            progress.local_snapshot_bytes = copied;
+            notify(progress);
+        };
+        const auto frozen = freeze(capture, cancel, local_report);
         result.complete = frozen.complete;
         result.unclean = frozen.unclean;
         for (const auto &source : frozen.sources)
@@ -623,62 +707,11 @@ extern "C" bool diag_spool_has_pending(const char *base) {
     return base && (access((std::string(base) + ".capture").c_str(), F_OK) == 0 ||
                     access((std::string(base) + ".pin").c_str(), F_OK) == 0);
 }
-extern "C" unsigned long long diag_spool_retained_size(const char *base) {
-    return base ? DiagnosticTransfer::retained_size(base) : 0;
-}
 extern "C" bool diag_spool_allow_growth(const char *current_base, size_t amount) {
-    using namespace DiagnosticTransfer;
-    if (!current_base)
-        return false;
-    const std::string base = current_base;
-    auto root = base.find("/sessions/") != std::string::npos
-                    ? base.substr(0, base.find("/sessions/"))
-                    : base.substr(0, base.find_last_of('/'));
-    uint64_t bytes = 0;
-    std::vector<std::pair<time_t, std::string>> removable;
-    for (const auto &dirpath : {root, root + "/sessions"}) {
-        DIR *dir = opendir(dirpath.c_str());
-        if (!dir)
-            continue;
-        while (auto *entry = readdir(dir)) {
-            const std::string name = entry->d_name, path = dirpath + "/" + name;
-            if (name[0] == '.' ||
-                (name.rfind("session-", 0) != 0 && name.rfind("moonlight", 0) != 0))
-                continue;
-            struct stat st;
-            if (lstat(path.c_str(), &st) != 0 || !S_ISREG(st.st_mode))
-                continue;
-            bytes += static_cast<uint64_t>(st.st_size);
-            if (name.size() > 4 && name.substr(name.size() - 4) == ".log" && path != base &&
-                !diag_spool_has_pending(path.c_str())) {
-                auto receipt = read_meta(path + ".receipt");
-                auto meta = read_meta(path + ".meta");
-                if (receipt["state"] == "accepted" && meta["active"] == "0")
-                    removable.emplace_back(st.st_mtime, path);
-            }
-        }
-        closedir(dir);
-    }
-    std::sort(removable.begin(), removable.end());
-    for (const auto &candidate : removable) {
-        if (bytes + amount <= StorageLimit)
-            break;
-        const auto parent = candidate.second.substr(0, candidate.second.find_last_of('/')),
-                   prefix = candidate.second.substr(candidate.second.find_last_of('/') + 1);
-        DIR *dir = opendir(parent.c_str());
-        if (!dir)
-            continue;
-        while (auto *entry = readdir(dir)) {
-            const std::string name = entry->d_name;
-            if (name == prefix || name.compare(0, prefix.size() + 1, prefix + ".") == 0) {
-                const auto path = parent + "/" + name;
-                struct stat st;
-                if (lstat(path.c_str(), &st) == 0 && S_ISREG(st.st_mode) &&
-                    unlink(path.c_str()) == 0)
-                    bytes -= static_cast<uint64_t>(st.st_size);
-            }
-        }
-        closedir(dir);
-    }
-    return bytes + amount <= StorageLimit;
+    (void)current_base;
+    unsigned long long free_bytes = 0;
+    constexpr unsigned long long reserve_bytes = 128 * 1024;
+    if (!diag_sdmc_get_free_bytes(&free_bytes))
+        return true;
+    return free_bytes >= static_cast<unsigned long long>(amount) + reserve_bytes;
 }

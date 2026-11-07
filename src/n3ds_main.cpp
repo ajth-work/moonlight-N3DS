@@ -2108,31 +2108,73 @@ class LogUploadScreen : public MoonlightUi::DualScreenModel {
         LightLock_Lock(&task_.lock);
         const auto p = task_.progress;
         LightLock_Unlock(&task_.lock);
-        top.drawHeader("SEND LOG", cancelling_ ? "PAUSING TRANSFER" : "PINNED HTTPS TO SUNSHINE");
+        const bool wire_phase = p.phase == "Sending to Sunshine" ||
+                                p.phase == "Verifying full capture" ||
+                                p.phase == "Complete capture accepted" ||
+                                p.phase == "Retained log accepted; partial history";
+        const bool connecting = p.phase == "Connecting to Sunshine";
+        const std::string subtitle = cancelling_ ? "CANCELLING SAFELY" :
+            wire_phase ? "PINNED HTTPS TO SUNSHINE" :
+            connecting ? "CHECKING HOST ENDPOINT" : "LOCAL SD PREPARATION";
+        top.drawHeader("SEND LOG", subtitle);
         top.drawAutoRateText(22, 78, p.phase.empty() ? "Starting upload worker..." : p.phase,
                             top.width() - 44, {38, 43, 48});
-        const unsigned percent = p.total ? static_cast<unsigned>(std::min<uint64_t>(100,
-                                             p.acknowledged * 100 / p.total)) : 0;
-        top.drawProgressBar({22, 111, top.width() - 22, 134}, percent, {0, 137, 153});
-        top.drawAutoRateText(22, 149, "Host confirmed: " + std::to_string(p.acknowledged / 1024) +
-                            " / " + std::to_string(p.total / 1024) + " KiB", top.width() - 44, {38, 43, 48});
-        top.drawAutoRateText(22, 178, "Part " + std::to_string(p.part) + " of " +
-                            std::to_string(p.parts), top.width() - 44, {105, 114, 122});
-        top.drawFooter(DIAG_BUILD_VERSION, "B PAUSE · RETRY IN CHECK LOGS");
-        bottom.drawHeader("TRANSFER PROGRESS", "LOCAL SD → YOUR PAIRED PC");
-        bottom.drawAutoRateText(18, 68, "Prepared SD data: " + std::to_string(p.prepared / 1024) +
-                               " / " + std::to_string(p.source / 1024) + " KiB", bottom.width() - 36, {38, 43, 48});
-        unsigned long long sent = 0, total = 0;
-        diag_upload_wire_snapshot(&sent, &total);
-        bottom.drawAutoRateText(18, 100, "Current request: " + std::to_string(sent) +
-                               " / " + std::to_string(total) + " B", bottom.width() - 36, {38, 43, 48});
-        bottom.drawProgressBar({18, 127, bottom.width() - 18, 145},
-            total ? static_cast<unsigned>(std::min<unsigned long long>(100, sent * 100 / total)) : 0,
-            {0, 137, 153});
-        bottom.drawAutoRateText(18, 162, cancelling_ ? "Waiting for the current request to stop..." :
-            "Final verification follows the last part.", bottom.width() - 36, {105, 114, 122});
+        if (wire_phase) {
+            const unsigned percent = p.total ? static_cast<unsigned>(std::min<uint64_t>(100,
+                                                 p.acknowledged * 100 / p.total)) : 0;
+            top.drawProgressBar({22, 111, top.width() - 22, 134}, percent, {0, 137, 153});
+            top.drawAutoRateText(22, 149, "Host confirmed: " + std::to_string(p.acknowledged / 1024) +
+                                " / " + std::to_string(p.total / 1024) + " KiB", top.width() - 44, {38, 43, 48});
+            top.drawAutoRateText(22, 178, "Part " + std::to_string(p.part) + " of " +
+                                std::to_string(p.parts), top.width() - 44, {105, 114, 122});
+        } else if (connecting) {
+            top.drawAutoRateText(22, 116, "No log data has been sent yet.",
+                                top.width() - 44, {38, 43, 48});
+            top.drawAutoRateText(22, 150, "Waiting for the paired PC to respond.",
+                                top.width() - 44, {105, 114, 122});
+        } else {
+            top.drawAutoRateText(22, 112, "Local entries checked: " +
+                                std::to_string(p.local_entries_checked), top.width() - 44, {38, 43, 48});
+            top.drawAutoRateText(22, 145, "Session data found: " +
+                                std::to_string(p.local_retained_bytes / 1024) + " KiB",
+                                top.width() - 44, {38, 43, 48});
+            top.drawAutoRateText(22, 178, "Snapshot copied: " +
+                                std::to_string(p.local_snapshot_bytes / 1024) + " KiB",
+                                top.width() - 44, {105, 114, 122});
+        }
+        top.drawFooter(DIAG_BUILD_VERSION, "B CANCEL - RETRY IN CHECK LOGS");
+        bottom.drawHeader("TRANSFER PROGRESS", connecting ? "CHECKING HOST" : "LOCAL SD TO PAIRED PC");
+        if (wire_phase) {
+            bottom.drawAutoRateText(18, 68, "Prepared SD data: " + std::to_string(p.prepared / 1024) +
+                                   " / " + std::to_string(p.source / 1024) + " KiB", bottom.width() - 36, {38, 43, 48});
+            unsigned long long sent = 0, total = 0;
+            diag_upload_wire_snapshot(&sent, &total);
+            bottom.drawAutoRateText(18, 100, "Current request: " + std::to_string(sent) +
+                                   " / " + std::to_string(total) + " B", bottom.width() - 36, {38, 43, 48});
+            bottom.drawProgressBar({18, 127, bottom.width() - 18, 145},
+                total ? static_cast<unsigned>(std::min<unsigned long long>(100, sent * 100 / total)) : 0,
+                {0, 137, 153});
+            bottom.drawAutoRateText(18, 162, cancelling_ ? "Waiting for the current request to stop..." :
+                "Final verification follows the last part.", bottom.width() - 36, {105, 114, 122});
+        } else if (connecting) {
+            bottom.drawAutoRateText(18, 72, "Connecting to the paired PC.",
+                                   bottom.width() - 36, {38, 43, 48});
+            bottom.drawAutoRateText(18, 105, "Local logs remain on this SD card.",
+                                   bottom.width() - 36, {105, 114, 122});
+        } else {
+            bottom.drawAutoRateText(18, 68, "Local files checked: " +
+                                   std::to_string(p.local_entries_checked), bottom.width() - 36, {38, 43, 48});
+            bottom.drawAutoRateText(18, 100, "Session data found: " +
+                                   std::to_string(p.local_retained_bytes / 1024) + " KiB",
+                                   bottom.width() - 36, {38, 43, 48});
+            bottom.drawAutoRateText(18, 132, "Snapshot copied: " +
+                                   std::to_string(p.local_snapshot_bytes / 1024) + " KiB",
+                                   bottom.width() - 36, {38, 43, 48});
+            bottom.drawAutoRateText(18, 164, cancelling_ ? "Stopping at the next SD checkpoint..." :
+                "Host transfer starts after local preparation.", bottom.width() - 36, {105, 114, 122});
+        }
         bottom.drawAutoRateText(18, 188, "Local logs remain on your SD card.", bottom.width() - 36, {105, 114, 122});
-        bottom.drawFooter(DIAG_BUILD_VERSION, "B PAUSE · LOCAL COPY RETAINED");
+        bottom.drawFooter(DIAG_BUILD_VERSION, "B CANCEL - LOCAL COPY RETAINED");
     }
     bool update(bool *redraw) override { *redraw = ++frames_ % 6 == 0; return !task_.done.load(); }
     bool handleInput(const MoonlightUi::InputEvent &event, bool *redraw) override {

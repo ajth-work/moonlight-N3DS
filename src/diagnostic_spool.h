@@ -6,7 +6,6 @@ extern "C" {
 #endif
 bool diag_spool_allow_growth(const char *current_base, size_t amount);
 bool diag_spool_has_pending(const char *base);
-unsigned long long diag_spool_retained_size(const char *base);
 bool diag_session_path_active(const char *base);
 void diag_session_snapshot_lock(void);
 void diag_session_snapshot_unlock(void);

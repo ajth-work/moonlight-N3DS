@@ -7,7 +7,6 @@
 namespace DiagnosticTransfer {
 constexpr std::size_t ChunkLimit = 240 * 1024;
 constexpr std::size_t SessionLimit = 8 * 1024 * 1024;
-constexpr std::size_t StorageLimit = 64 * 1024 * 1024;
 struct Response {
     bool transport_ok = false;
     long status = 0;
@@ -16,6 +15,8 @@ struct Response {
 struct Progress {
     std::string phase;
     uint64_t acknowledged = 0, total = 0, prepared = 0, source = 0;
+    uint64_t local_entries_checked = 0, local_retained_bytes = 0,
+             local_snapshot_bytes = 0;
     unsigned part = 0, parts = 0;
 };
 struct Capture {
