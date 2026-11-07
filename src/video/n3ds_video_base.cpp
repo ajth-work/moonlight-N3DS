@@ -30,9 +30,10 @@
 
 VideoDecoderBase::VideoDecoderBase(int width, int height) {
     surface_height = GSP_SCREEN_WIDTH;
-    // Each eye is composed at native 400x240 size from its own source
-    // rectangle, including side-by-side and over-under stereo streams.
-    surface_width = GSP_SCREEN_HEIGHT_TOP;
+    // Mono uses the full top display surface for wide output when the stream
+    // is wider than the native per-eye width. Stereo remains 400px per eye.
+    surface_width = width > GSP_SCREEN_HEIGHT_TOP ? GSP_SCREEN_HEIGHT_TOP_2X
+                                                 : GSP_SCREEN_HEIGHT_TOP;
     // Clamp output image to max dimensions supported by the renderer
     image_width = width > MOON_CTR_VIDEO_TEX_W ? MOON_CTR_VIDEO_TEX_W : width;
     image_height =

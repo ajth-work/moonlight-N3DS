@@ -126,12 +126,13 @@ N3dsRendererBase::~N3dsRendererBase() {
     vramFree(vramFb);
     vramFree(vramTex);
 
-    // Restore mono output before returning to the host menu. Skip graphics
-    // calls after HOME has taken GPU ownership; rendering already follows this
-    // guard to avoid waiting on a framebuffer the app no longer owns.
+    // Clear the top framebuffer at the width used by its active output mode.
+    // Skip graphics calls after HOME has taken GPU ownership.
+    const bool restore_wide_top =
+        screen == GFX_TOP && surface_width == GSP_SCREEN_HEIGHT_TOP_2X;
     if (screen == GFX_TOP && gspHasGpuRight()) {
         if (gfxIs3D()) gfxSet3D(false);
-        gfxSetWide(false);
+        gfxSetWide(restore_wide_top);
     }
     if (gspHasGpuRight()) {
         u8 *framebuf = gfxGetFramebuffer(screen, GFX_LEFT, NULL, NULL);
@@ -139,8 +140,8 @@ N3dsRendererBase::~N3dsRendererBase() {
         gfxScreenSwapBuffers(screen, true);
     }
 
-    // Return to the default display width before exiting.
-    if (surface_width == GSP_SCREEN_HEIGHT_TOP_2X && gspHasGpuRight()) {
+    // Leave the system in the default display width after clearing the frame.
+    if (restore_wide_top && gspHasGpuRight()) {
         gfxSetWide(false);
     }
 }
@@ -207,12 +208,21 @@ void N3dsRendererBase::write_px_to_framebuffer_gpu(uint8_t *__restrict source) {
     }
 
     const N3ds3DSettings settings = n3ds_3d_settings_snapshot();
+    if (screen == GFX_TOP) {
+        if (settings.mode == N3ds3DMode::OFF_2D)
+            ensure_3d_disabled();
+        else
+            ensure_3d_enabled();
+    }
     const int slider_milli =
         static_cast<int>(osGet3DSliderState() * 1000.0f + 0.5f);
     const bool gfx_3d_enabled = gfxIs3D();
     const bool stereo = screen == GFX_TOP &&
                         settings.mode != N3ds3DMode::OFF_2D;
-    const int eye_pass_count = screen == GFX_TOP ? 2 : 1;
+    const int eye_pass_count =
+        screen == GFX_TOP ? (stereo ? 2 : 1) : 1;
+    const int render_surface_width =
+        screen == GFX_TOP && stereo ? GSP_SCREEN_HEIGHT_TOP : surface_width;
     const N3ds3DSettings mono_settings{N3ds3DMode::OFF_2D, settings.aspect, 0};
     const u32 presentation_frame =
         screen == GFX_TOP ? ++presentation_frame_counter : 0;
@@ -294,20 +304,32 @@ void N3dsRendererBase::write_px_to_framebuffer_gpu(uint8_t *__restrict source) {
              settings.mode == N3ds3DMode::OU_SWAP)
                 ? image_height / 2
                 : image_height;
+        const float target_aspect =
+            surface_height > 0
+                ? static_cast<float>(render_surface_width) / surface_height
+                : 400.0f / 240.0f;
         const float region_aspect =
             region_height > 0 ? static_cast<float>(region_width) / region_height
-                              : 400.0f / 240.0f;
+                              : target_aspect;
+        const bool split_stereo =
+            settings.mode == N3ds3DMode::HSBS ||
+            settings.mode == N3ds3DMode::HSBS_SWAP ||
+            settings.mode == N3ds3DMode::OU ||
+            settings.mode == N3ds3DMode::OU_SWAP;
         float fit_x = 1.0f, fit_y = 1.0f;
-        if (settings.aspect == N3ds3DAspect::FIT) {
-            if (region_aspect > (400.0f / 240.0f))
-                fit_y = (400.0f / 240.0f) / region_aspect;
+        if (split_stereo && settings.aspect == N3ds3DAspect::FIT) {
+            if (region_aspect > target_aspect)
+                fit_y = target_aspect / region_aspect;
             else
-                fit_x = region_aspect / (400.0f / 240.0f);
+                fit_x = region_aspect / target_aspect;
         }
         const int reduction_x = std::max(
-            1, static_cast<int>(region_width / (400.0f * fit_x) + 0.5f));
+            1, static_cast<int>(region_width /
+                                    (render_surface_width * fit_x) +
+                                0.5f));
         const int reduction_y = std::max(
-            1, static_cast<int>(region_height / (240.0f * fit_y) + 0.5f));
+            1, static_cast<int>(region_height / (surface_height * fit_y) +
+                                0.5f));
         prefilter_ran = true;
         const size_t texture_bytes =
             MOON_CTR_VIDEO_TEX_W * MOON_CTR_VIDEO_TEX_H * px_size;
@@ -373,9 +395,9 @@ void N3dsRendererBase::write_px_to_framebuffer_gpu(uint8_t *__restrict source) {
     C(GPUREG_COLORBUFFER_LOC, osConvertVirtToPhys(vramFb) >> 3);
     C(GPUREG_DEPTHBUFFER_LOC, 0);
     C(GPUREG_RENDERBUF_DIM,
-      (1 << 24) | ((surface_width - 1) << 12) | surface_height);
+      (1 << 24) | ((render_surface_width - 1) << 12) | surface_height);
     C(GPUREG_FRAMEBUFFER_DIM,
-      (1 << 24) | ((surface_width - 1) << 12) | surface_height);
+      (1 << 24) | ((render_surface_width - 1) << 12) | surface_height);
     C(GPUREG_FRAMEBUFFER_BLOCK32, 0);
 
     C(GPUREG_DEPTH_COLOR_MASK, 0xF << 8); // Write RGBA, no depth
@@ -392,8 +414,9 @@ void N3dsRendererBase::write_px_to_framebuffer_gpu(uint8_t *__restrict source) {
 
     C(GPUREG_VIEWPORT_WIDTH, f32tof24(surface_height / 2));
     C(GPUREG_VIEWPORT_INVW, f32tof31(2.0 / ((double)surface_height)) << 1);
-    C(GPUREG_VIEWPORT_HEIGHT, f32tof24(surface_width / 2));
-    C(GPUREG_VIEWPORT_INVH, f32tof31(2.0 / ((double)surface_width)) << 1);
+    C(GPUREG_VIEWPORT_HEIGHT, f32tof24(render_surface_width / 2));
+    C(GPUREG_VIEWPORT_INVH,
+      f32tof31(2.0 / ((double)render_surface_width)) << 1);
 
     C(GPUREG_SCISSORTEST_MODE, 0);
     C(GPUREG_SCISSORTEST_POS, 0);
@@ -628,8 +651,8 @@ void N3dsRendererBase::write_px_to_framebuffer_gpu(uint8_t *__restrict source) {
     u32 *dest = (u32 *)gfxGetFramebuffer(
         screen, use_right_eye ? GFX_RIGHT : GFX_LEFT, NULL, NULL);
     GX_DisplayTransfer((u32 *)vramFb,
-                       GX_BUFFER_DIM(surface_height, surface_width), dest,
-                       GX_BUFFER_DIM(surface_height, surface_width),
+                       GX_BUFFER_DIM(surface_height, render_surface_width), dest,
+                       GX_BUFFER_DIM(surface_height, render_surface_width),
                        GX_TRANSFER_OUT_TILED(0) |
                            GX_TRANSFER_IN_FORMAT(GX_TRANSFER_FMT_RGB565) |
                            GX_TRANSFER_OUT_FORMAT(GX_TRANSFER_FMT_RGB565) |
@@ -684,10 +707,10 @@ void N3dsRendererBase::write_px_to_framebuffer_gpu(uint8_t *__restrict source) {
                 MOON_CTR_VIDEO_TEX_H;
             const float destination_width =
                 (destination_right[diag_eye] - destination_left[diag_eye]) *
-                (GSP_SCREEN_WIDTH / 2.0f);
+                (render_surface_width / 2.0f);
             const float destination_height =
                 (destination_top[diag_eye] - destination_bottom[diag_eye]) *
-                (GSP_SCREEN_HEIGHT_TOP / 2.0f);
+                (surface_height / 2.0f);
             const float scale_x = destination_width > 0.0f && source_width > 0.0f
                                       ? destination_width / source_width
                                       : 0.0f;
@@ -696,7 +719,7 @@ void N3dsRendererBase::write_px_to_framebuffer_gpu(uint8_t *__restrict source) {
                                       : 0.0f;
             diag_log(
                 "TOP_PRESENTATION_DIAG",
-                "frame=%u completed=%u mode=%s aspect=%s prefilter=%d eye=%s image=%dx%d uv=[%.6f,%.6f,%.6f,%.6f] dst_ndc=[%.4f,%.4f,%.4f,%.4f] dst_screen=400x240 source_px=%.1fx%.1f destination_px=%.1fx%.1f scale_xy=[%.3f,%.3f] texture=%dx%d texture_layout=tiled texture_stride=tile_encoded source_stride_bytes=%d sampler_source=unit0_draw_command sampler_param=0x%08x min=%s mag=%s input_transfer=GX_DisplayTransfer:%dx%d->%dx%d:RGB565:flipV:out_tiled1:no_scale output_transfer=GX_DisplayTransfer:%dx%d->%dx%d:RGB565:out_tiled0:no_scale decoded_frames=%u top_renderer_draw_calls=%u completed_presentations=%u submitted=%u accepted=%u failed=%u last_failure=%d",
+                "frame=%u completed=%u mode=%s aspect=%s prefilter=%d eye=%s image=%dx%d uv=[%.6f,%.6f,%.6f,%.6f] dst_ndc=[%.4f,%.4f,%.4f,%.4f] dst_screen=%dx%d source_px=%.1fx%.1f destination_px=%.1fx%.1f scale_xy=[%.3f,%.3f] texture=%dx%d texture_layout=tiled texture_stride=tile_encoded source_stride_bytes=%d sampler_source=unit0_draw_command sampler_param=0x%08x min=%s mag=%s input_transfer=GX_DisplayTransfer:%dx%d->%dx%d:RGB565:flipV:out_tiled1:no_scale output_transfer=GX_DisplayTransfer:%dx%d->%dx%d:RGB565:out_tiled0:no_scale decoded_frames=%u top_renderer_draw_calls=%u completed_presentations=%u submitted=%u accepted=%u failed=%u last_failure=%d",
                 presentation_frame,
                 counters_after.completed_presentations,
                 n3ds_3d_mode_name(settings.mode),
@@ -707,13 +730,14 @@ void N3dsRendererBase::write_px_to_framebuffer_gpu(uint8_t *__restrict source) {
                 sampled_u_max[diag_eye], sampled_v_max[diag_eye],
                 destination_left[diag_eye], destination_bottom[diag_eye],
                 destination_right[diag_eye], destination_top[diag_eye],
+                render_surface_width, surface_height,
                 source_width, source_height, destination_width, destination_height,
                 scale_x, scale_y, MOON_CTR_VIDEO_TEX_W,
                 MOON_CTR_VIDEO_TEX_H, MOON_CTR_VIDEO_TEX_W * px_size,
                 (unsigned int)texture_sampler_param, min_filter, mag_filter,
                 MOON_CTR_VIDEO_TEX_W, MOON_CTR_VIDEO_TEX_H,
                 MOON_CTR_VIDEO_TEX_W, MOON_CTR_VIDEO_TEX_H, surface_height,
-                surface_width, surface_height, surface_width,
+                render_surface_width, surface_height, render_surface_width,
                 counters_after.decoded_frames,
                 counters_after.top_renderer_draw_calls,
                 counters_after.completed_presentations,

@@ -33,9 +33,8 @@ N3dsRendererTop::N3dsRendererTop(int dest_width, int dest_height, int src_width,
                        px_size, debug_in) {}
 
 void N3dsRendererTop::write_px_to_framebuffer(uint8_t *source) {
-    // Keep both top-screen eye buffers available in every mode. The physical
-    // slider controls the perceived depth; it must not gate frame rendering.
-    ensure_3d_enabled();
+    // The shared presentation path selects mono-wide or per-eye output from
+    // one settings snapshot so display mode and render dimensions stay aligned.
     write_px_to_framebuffer_gpu(source);
 }
 
